@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local config and secrets
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.token
+
+# Media and generated artifacts
+*.mp4
+*.mov
+*.mkv
+*.wav
+*.mp3
+*.m4a
+*.aac
+*.flac
+*.ogg
+renders/
+exports/
+voice/generated/
+
+# Model and cache artifacts
+models/
+checkpoints/
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
