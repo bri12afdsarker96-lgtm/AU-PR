@@ -309,7 +309,17 @@ def _state_payload() -> dict:
 
 
 def serve(port: int = DEFAULT_PORT, open_browser: bool = True) -> ThreadingHTTPServer:
-    server = ThreadingHTTPServer(("127.0.0.1", port), _Handler)
+    server = None
+    last_error: OSError | None = None
+    for candidate in range(port, port + 20):  # 端口被占自动顺延，避免双击闪退
+        try:
+            server = ThreadingHTTPServer(("127.0.0.1", candidate), _Handler)
+            port = candidate
+            break
+        except OSError as exc:
+            last_error = exc
+    if server is None:
+        raise OSError(f"端口 {port}~{port + 19} 均被占用：{last_error}")
     url = f"http://127.0.0.1:{port}/"
     print(f"水星配音对齐工作室已启动：{url}（Ctrl+C 退出）")
     if open_browser:

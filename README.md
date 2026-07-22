@@ -49,7 +49,7 @@ pyinstaller --noconfirm --clean --onedir --name "水星配音对齐工作室" `
   --paths source `
   --add-data "source\dub_align_studio\web;dub_align_studio\web" `
   --collect-submodules dub_align_studio --collect-submodules integrated_workbench `
-  --console source\dub_align_studio\__main__.py
+  --console source\dub_align_studio\launcher.py
 ```
 
 产物在 `dist\水星配音对齐工作室\`；ffmpeg.exe/ffprobe.exe 放 exe 同目录或 PATH
