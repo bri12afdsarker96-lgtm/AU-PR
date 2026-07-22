@@ -86,6 +86,40 @@ class ManualFallbackTests(unittest.TestCase):
         self.assertIn("再点一次「下载」", hint)
 
 
+class WhisperCliLayoutTests(unittest.TestCase):
+    """官方 whisper-bin-x64.zip 内含一层 Release\\ 目录（v1.9.1 打包命令核实）——
+    解压后必须能定位 whisper-cli.exe（用户 2026-07-22 报「解压后仍未找到」）。"""
+
+    def setUp(self):
+        self._backup = studio_settings.SETTINGS_FILE
+        self.temp = Path(tempfile.mkdtemp(prefix="wcli_"))
+        studio_settings.SETTINGS_FILE = self.temp / "settings.json"
+        studio_settings.set_data_root(self.temp / "数据")
+
+    def tearDown(self):
+        studio_settings.SETTINGS_FILE = self._backup
+        shutil.rmtree(self.temp, ignore_errors=True)
+
+    def _place(self, relative: str) -> Path:
+        target = studio_settings.whisper_home() / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"MZ")
+        return target
+
+    def test_official_zip_release_layout_found(self):
+        exe = self._place("Release/whisper-cli.exe")
+        self.assertEqual(studio_settings.whisper_cli_path(), exe)
+
+    def test_legacy_build_layout_still_first(self):
+        legacy = self._place("build/bin/Release/whisper-cli.exe")
+        self._place("Release/whisper-cli.exe")
+        self.assertEqual(studio_settings.whisper_cli_path(), legacy)
+
+    def test_unknown_nested_layout_found_recursively(self):
+        exe = self._place("某未来版本/bin/whisper-cli.exe")
+        self.assertEqual(studio_settings.whisper_cli_path(), exe)
+
+
 class UiPreviewContractTests(unittest.TestCase):
     def test_preview_slider_is_percent_based(self):
         html = (Path(fonts.__file__).parent / "web" / "index.html").read_text(encoding="utf-8")

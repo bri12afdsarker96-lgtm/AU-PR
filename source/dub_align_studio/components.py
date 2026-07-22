@@ -174,9 +174,14 @@ def _download_whisper_runtime(log: LogFn) -> None:
     log("解压运行时…")
     with zipfile.ZipFile(target) as bundle:
         bundle.extractall(studio_settings.whisper_home())
-    if not studio_settings.whisper_cli_path():
-        raise RuntimeError("解压后仍未找到 whisper-cli，请检查压缩包内容或换目录重试。")
-    log("✅ whisper-cli 运行时就绪。")
+    exe = studio_settings.whisper_cli_path()
+    if not exe:
+        home = studio_settings.whisper_home()
+        top = "、".join(sorted(p.name for p in home.iterdir())[:8]) if home.is_dir() else "（空）"
+        raise RuntimeError(
+            f"解压完成但未找到 whisper-cli.exe。解压目录 {home} 顶层内容：{top}。"
+            "请把此信息发给开发。")
+    log(f"✅ whisper-cli 运行时就绪：{exe}")
 
 
 def _download_model(key: str, log: LogFn) -> None:

@@ -127,7 +127,11 @@ def whisper_runtime_zip(filename: str) -> Path:
 
 
 def whisper_cli_path() -> Path | None:
-    """whisper-cli 可执行文件：总目录优先，其次旧组件目录，最后 PATH。"""
+    """whisper-cli 可执行文件：总目录优先，其次旧组件目录，最后 PATH。
+
+    已知布局直查 + 递归搜索兜底：官方 whisper-bin-x64.zip 用
+    Compress-Archive 打包，内含一层 Release\\ 目录（v1.9.1 核实）；
+    上游未来再改打包结构也能靠递归搜索找到。"""
     import shutil
 
     roots = [whisper_home()]
@@ -138,11 +142,17 @@ def whisper_cli_path() -> Path | None:
     for root in roots:
         for candidate in (
             root / "build" / "bin" / "Release" / "whisper-cli.exe",
+            root / "Release" / "whisper-cli.exe",  # 官方 zip 的真实布局
             root / "whisper-cli.exe",
             root / "build" / "bin" / "whisper-cli",
         ):
             if candidate.exists():
                 return candidate
+        if root.is_dir():  # 布局不认识时递归找（目录很小，代价可忽略）
+            for name in ("whisper-cli.exe", "whisper-cli"):
+                found = next(iter(root.rglob(name)), None)
+                if found is not None and found.is_file():
+                    return found
     found = shutil.which("whisper-cli") or shutil.which("whisper-cli.exe")
     return Path(found) if found else None
 
