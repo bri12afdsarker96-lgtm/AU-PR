@@ -19,14 +19,9 @@ from pathlib import Path
 from typing import Callable
 
 from integrated_workbench.component_download import download_verified_file
-from integrated_workbench.model_registry import (
-    model_path,
-    model_status,
-    registry_entry,
-    runtime_status,
-    runtime_zip_path,
-    whisper_root,
-)
+from integrated_workbench.model_registry import registry_entry, validate_component_file
+
+from . import settings as studio_settings
 
 LogFn = Callable[[str], None]
 
@@ -68,9 +63,9 @@ def component_statuses() -> list[dict]:
     for item in COMPONENTS:
         entry = dict(item)
         if item["kind"] == "download":
-            status = runtime_status() if item["key"] == "whisper_cli" else model_status(item["key"])
-            entry["installed"] = status.usable
-            entry["detail"] = status.label if status.usable else status.detail
+            installed, detail = _download_status(item["key"])
+            entry["installed"] = installed
+            entry["detail"] = detail
         elif item["kind"] == "pip":
             installed = _pip_installed(str(item["package"]))
             entry["installed"] = installed
@@ -101,6 +96,24 @@ def install_component(key: str, log: LogFn) -> None:
         _download_model(key, log)
 
 
+def _download_status(key: str) -> tuple[bool, str]:
+    """下载类组件状态：在设置的组件根下校验（SHA256）。"""
+    root_note = f"保存位置：{studio_settings.component_root()}"
+    if key == "whisper_cli":
+        exe = studio_settings.whisper_cli_path()
+        if exe:
+            return True, f"就绪：{exe}"
+        return False, f"缺少 whisper-cli（{root_note}）。"
+    entry = registry_entry(key)
+    path = studio_settings.whisper_models_dir() / str(entry["filename"])
+    validation = validate_component_file(path, int(entry["size_bytes"]), str(entry["sha256"]))
+    if validation.ok:
+        return True, f"校验通过：{path}"
+    if path.exists():
+        return False, f"文件损坏（{validation.message}），请重新下载。{root_note}"
+    return False, f"未下载（{root_note}）。"
+
+
 def _progress(log: LogFn):
     milestones = {25, 50, 75, 100}
 
@@ -118,7 +131,7 @@ def _progress(log: LogFn):
 
 def _download_whisper_runtime(log: LogFn) -> None:
     entry = registry_entry("whisper_cli")
-    target = runtime_zip_path()
+    target = studio_settings.whisper_runtime_zip(str(entry["filename"]))
     log(f"开始下载 {entry['filename']}（SHA256 校验，支持断点续传）…")
     result = download_verified_file(
         list(entry["urls"]), target, _progress(log),
@@ -127,25 +140,24 @@ def _download_whisper_runtime(log: LogFn) -> None:
     log(f"  {result.message}")
     log("解压运行时…")
     with zipfile.ZipFile(target) as bundle:
-        bundle.extractall(whisper_root())
-    status = runtime_status()
-    if not status.usable:
-        raise RuntimeError(f"解压后仍未就绪：{status.detail}")
+        bundle.extractall(studio_settings.whisper_home())
+    if not studio_settings.whisper_cli_path():
+        raise RuntimeError("解压后仍未找到 whisper-cli，请检查压缩包内容或换目录重试。")
     log("✅ whisper-cli 运行时就绪。")
 
 
 def _download_model(key: str, log: LogFn) -> None:
     entry = registry_entry(key)
-    target = model_path(key)
+    target = studio_settings.whisper_models_dir() / str(entry["filename"])
     log(f"开始下载 {entry['filename']}（SHA256 校验，支持断点续传）…")
     result = download_verified_file(
         list(entry["urls"]), target, _progress(log),
         int(entry["size_bytes"]), str(entry["sha256"]),
     )
     log(f"  {result.message}")
-    status = model_status(key)
-    if not status.usable:
-        raise RuntimeError(f"下载后校验未通过：{status.detail}")
+    validation = validate_component_file(target, int(entry["size_bytes"]), str(entry["sha256"]))
+    if not validation.ok:
+        raise RuntimeError(f"下载后校验未通过：{validation.message}")
     log(f"✅ 模型 {entry['name']} 就绪。")
 
 

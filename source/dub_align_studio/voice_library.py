@@ -140,6 +140,49 @@ def _load_entry(voice_dir: Path) -> VoiceEntry | None:
     )
 
 
+def export_voices_zip(library_root: Path) -> bytes:
+    """把整个音色库打包为 zip 字节（跨机备份/迁移；下次导入即用）。"""
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    root = voices_root(library_root)
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as bundle:
+        for entry in list_voices(library_root):
+            voice_dir = root / entry.voice_id
+            for file in voice_dir.iterdir():
+                if file.is_file():
+                    bundle.write(file, f"{entry.voice_id}/{file.name}")
+    return buffer.getvalue()
+
+
+def import_voices_zip(library_root: Path, payload: bytes) -> list[str]:
+    """导入音色包 zip；重名音色自动加序号，返回导入的 voice_id 列表。"""
+    import io
+    import tempfile
+    import zipfile
+
+    imported: list[str] = []
+    with zipfile.ZipFile(io.BytesIO(payload)) as bundle:
+        names = [n for n in bundle.namelist() if "/" in n and not n.endswith("/")]
+        voice_ids = sorted({n.split("/", 1)[0] for n in names})
+        if not voice_ids:
+            raise ValueError("音色包为空或结构不对（应为 音色ID/参考音频.* …）。")
+        with tempfile.TemporaryDirectory(prefix="voice_import_") as temp:
+            bundle.extractall(temp)
+            for voice_id in voice_ids:
+                voice_dir = Path(temp) / voice_id
+                entry = _load_entry(voice_dir)
+                if entry is None:
+                    continue
+                saved = register_voice(library_root, entry.name, entry.reference_wav,
+                                       transcript=entry.transcript, note=entry.note)
+                imported.append(saved.voice_id)
+    if not imported:
+        raise ValueError("音色包里没有可导入的音色（缺参考音频）。")
+    return imported
+
+
 def _safe_id(name: str) -> str:
     cleaned = re.sub(r"[^\w一-鿿-]+", "_", name.strip()).strip("_")
     return cleaned or "voice"

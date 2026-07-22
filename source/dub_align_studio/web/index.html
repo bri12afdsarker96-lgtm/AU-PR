@@ -25,7 +25,7 @@ body{
   font:14px/1.7 "PingFang SC","Microsoft YaHei UI","Noto Sans SC",system-ui,sans-serif;
   min-height:100vh;
 }
-.wrap{max-width:1140px;margin:0 auto;padding:0 26px}
+.wrap{max-width:1560px;width:94%;margin:0 auto;padding:0 12px}
 ::selection{background:rgba(228,185,99,.25)}
 
 /* ───────── 顶栏 ───────── */
@@ -136,8 +136,9 @@ td.mut{color:var(--muted)} tr:hover td{background:rgba(228,185,99,.035)}
 .badge{font-size:11px;padding:2px 11px;border-radius:99px;border:1px solid var(--line2);color:var(--muted);font-variant-numeric:tabular-nums}
 
 /* ───────── 手机预览（文本框页） ───────── */
-.g3ov{display:grid;grid-template-columns:250px 1fr 1fr;gap:16px;align-items:start}
-.phone{width:250px;aspect-ratio:9/16;flex:none;margin:0 auto;position:relative;border-radius:22px;overflow:hidden;
+.g3ov{display:grid;grid-template-columns:minmax(200px,300px) minmax(320px,1fr) minmax(320px,1fr);gap:16px;align-items:start}
+@media(max-width:1180px){.g3ov{grid-template-columns:minmax(200px,280px) 1fr}.g3ov>.card:last-child{grid-column:1/-1}}
+.phone{width:260px;aspect-ratio:9/16;flex:none;margin:0 auto;position:relative;border-radius:22px;overflow:hidden;
   border:1px solid var(--line2);box-shadow:0 20px 50px rgba(0,0,0,.5), inset 0 0 0 1px rgba(255,255,255,.04);
   background:linear-gradient(160deg,#3B3242 0%,#241F2E 34%,#151218 78%)}
 .phone::before{content:"";position:absolute;inset:0;
@@ -178,6 +179,14 @@ td.mut{color:var(--muted)} tr:hover td{background:rgba(228,185,99,.035)}
 .pill.ok{color:var(--ok);background:var(--ok-bg);border:1px solid rgba(111,191,143,.3)}
 .pill.no{color:var(--bad);background:var(--bad-bg);border:1px solid rgba(224,104,95,.3)}
 
+.modal{position:fixed;inset:0;z-index:50;display:none;place-items:center;background:rgba(0,0,0,.6);backdrop-filter:blur(4px)}
+.modal.on{display:grid}
+.modal .box{width:min(560px,92vw);max-height:78vh;display:flex;flex-direction:column;background:var(--panel2);border:1px solid var(--line2);border-radius:var(--r);padding:18px 20px;box-shadow:0 30px 80px rgba(0,0,0,.6)}
+.modal .cur{font-size:12px;color:var(--gold);margin:8px 0;word-break:break-all;font-variant-numeric:tabular-nums}
+.modal .list{flex:1;overflow:auto;border:1px solid var(--line);border-radius:var(--rs);background:var(--field)}
+.modal .item{padding:9px 14px;font-size:13px;cursor:pointer;border-bottom:1px solid var(--line)}
+.modal .item:hover{background:var(--hover, #22222C);color:var(--gold)}
+.modal .foot{display:flex;gap:10px;margin-top:12px;justify-content:flex-end}
 footer{border-top:1px solid var(--line);margin-top:20px;padding:22px 0 30px;
   text-align:center;font-size:11px;color:var(--faint);letter-spacing:2px}
 footer b{color:var(--muted);font-weight:600}
@@ -234,8 +243,12 @@ footer b{color:var(--muted);font-weight:600}
         <div><span class="f">计时尺子</span><select id="aligner"></select></div>
         <div><span class="f">画面比例</span><select id="aspect"></select></div>
       </div>
-      <div class="sp"><span class="f">分镜目录</span><input type="text" id="shots" placeholder="D:\素材\分镜（1.mp4、2.mp4 …）"></div>
-      <div class="sp"><span class="f">输出目录</span><input type="text" id="outdir" placeholder="D:\输出\第01集"></div>
+      <div class="sp"><span class="f">分镜目录</span>
+        <div class="row"><input type="text" id="shots" placeholder="D:\素材\分镜（1.mp4、2.mp4 …）">
+        <button class="btn" onclick="pickDir('shots')">📁 选择</button></div></div>
+      <div class="sp"><span class="f">输出目录</span>
+        <div class="row"><input type="text" id="outdir" placeholder="D:\输出\第01集">
+        <button class="btn" onclick="pickDir('outdir')">📁 选择</button></div></div>
       <div class="grid g2e sp">
         <div><span class="f">停顿上限（秒）· 0 = 不压缩</span>
           <div class="row"><input type="range" id="pause" min="0" max="1.5" step="0.05" value="0.2" oninput="pv.textContent=(+this.value).toFixed(2)"><span class="val" id="pv">0.20</span></div></div>
@@ -244,7 +257,8 @@ footer b{color:var(--muted);font-weight:600}
       </div>
       <div class="row" style="gap:22px;flex-wrap:wrap">
         <label class="row mini" style="gap:7px"><input type="checkbox" id="burn" checked>烧录字幕</label>
-        <span class="row mini" style="gap:7px">字号(px)<input type="number" id="subsize" value="64" style="width:82px"></span>
+        <span class="row mini" style="gap:7px">位置<select id="subPos" style="width:88px;flex:none" onchange="syncPv&&syncPv()"></select></span>
+        <span class="row mini" style="gap:7px">字号(px)<input type="number" id="subsize" value="64" style="width:82px" oninput="syncPv&&syncPv()"></span>
         <span class="row mini" style="gap:7px">Seed <input type="number" id="seed" value="42" style="width:88px"></span>
         <label class="row mini" style="gap:7px"><input type="checkbox" id="capcut">完成后导出剪映草稿</label>
       </div>
@@ -277,7 +291,11 @@ footer b{color:var(--muted);font-weight:600}
         <div class="scan" style="top:33%"></div><div class="scan" style="top:66%"></div>
         <div class="hud"><i></i><i></i><i></i></div>
       </div>
-      <p style="text-align:center;font-size:10.5px;color:var(--faint);letter-spacing:2px;margin-top:10px">实时预览 · 1080 × 1920</p>
+      <p style="text-align:center;font-size:10.5px;color:var(--faint);letter-spacing:2px;margin-top:10px" id="pvInfo">实时预览</p>
+      <div class="row" style="margin-top:8px">
+        <span class="mini" style="flex:none">预览大小</span>
+        <input type="range" id="pvScale" min="180" max="460" step="10" value="260" oninput="syncPv()">
+      </div>
     </div>
 
     <div class="card">
@@ -327,6 +345,8 @@ footer b{color:var(--muted);font-weight:600}
   <div class="grid g2e">
     <div class="card">
       <h2>登记新音色</h2>
+      <p class="mini" style="margin:-6px 0 10px;line-height:1.7">💡 不选音色时使用<b style="color:var(--gold)">默认声线（引擎自带）</b>，开箱即可出声；
+        登记任意 5–30 秒干净人声即可克隆专属声线。音色永久保存在本机，可打包迁移。</p>
       <div class="sp"><span class="f">音色名称</span><input type="text" id="vName" placeholder="晚棠 / 青梧 / 主播甲 …"></div>
       <div class="sp"><span class="f">参考音频</span><input type="file" id="vFile" accept="audio/*"></div>
       <div class="sp"><span class="f">参考音频转写（可空）</span>
@@ -336,6 +356,11 @@ footer b{color:var(--muted);font-weight:600}
     <div class="card">
       <h2>已登记音色 <span class="badge" id="vCount">0</span></h2>
       <p class="mini" id="vRootHint" style="margin:-8px 0 12px;font-size:11px;color:var(--faint)"></p>
+      <div class="row" style="margin-bottom:12px">
+        <a class="btn" href="/api/voices/export" download="音色包.zip" style="text-decoration:none">📦 导出音色包</a>
+        <button class="btn" onclick="vPack.click()">📥 导入音色包</button>
+        <input type="file" id="vPack" accept=".zip" style="display:none" onchange="importVoicePack(this)">
+      </div>
       <div class="vlist" id="vList"></div>
     </div>
   </div>
@@ -350,6 +375,10 @@ footer b{color:var(--muted);font-weight:600}
   <div class="grid g2e">
     <div class="card">
       <h2>组件工具箱 <button class="btn" style="margin-left:auto;padding:7px 14px" onclick="loadComponents()">↻ 刷新</button></h2>
+      <div class="sp"><span class="f">组件保存位置（模型等大文件；默认软件目录旁，可改到其他盘避免占用 C 盘）</span>
+        <div class="row"><input type="text" id="compRoot">
+          <button class="btn" onclick="pickDir('compRoot')">📁 选择</button>
+          <button class="btn line" onclick="saveCompRoot()">保存</button></div></div>
       <p class="hint">缺什么点击即可下载/安装（多源 + SHA256 校验 + 断点续传）；进度在右侧日志滚动。</p>
       <div id="compList"><p class="empty">读取中…</p></div>
     </div>
@@ -364,12 +393,26 @@ footer b{color:var(--muted);font-weight:600}
   </div>
 </section>
 
+<div class="modal" id="dirModal">
+  <div class="box">
+    <h2 style="font-size:13px;color:var(--gold);letter-spacing:2px">选择文件夹</h2>
+    <div class="cur" id="dirCur">—</div>
+    <div class="list" id="dirList"></div>
+    <div class="foot">
+      <button class="btn" onclick="dirModal.classList.remove('on')">取消</button>
+      <button class="btn gold" onclick="chooseDir()">✔ 选择此文件夹</button>
+    </div>
+  </div>
+</div>
+
 <footer><b>水星配音对齐工作室</b> · 整篇克隆 → 逐行对齐 → 一键成片 · 非商用 · 本地离线运行</footer>
 </main>
 
 <script>
 const $=id=>document.getElementById(id);
 let overlays=[], logTarget='mainlog', polling=null, POSITIONS=[];
+const ASPECT_CANVAS={'9:16 竖屏':[1080,1920],'16:9 横屏':[1920,1080],'1:1 方形':[1080,1080],'4:3':[1440,1080],'3:4':[1080,1440]};
+const SUB_POS_RATIO={'顶部':0.06,'中上':0.30,'中部':0.48,'中下':0.68,'底部':0.885};
 const ENGINE_LABEL={dots_local:'dots.tts（本地 · 48kHz）',fish_local:'fish-speech（本地服务）',mock:'mock（测试）'};
 const still=matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -424,7 +467,10 @@ async function loadState(){
   fill('aligner',s.aligners.map(k=>[k,k==='whisper'?'whisper（推荐）':k]));
   fill('aspect',s.aspects.map(k=>[k,k]));
   fill('edPos',s.positions.map(k=>[k,k]));
-  fill('voice',[['','（无）']].concat(s.voices.map(v=>[v.voice_id,v.voice_id+'｜'+v.name])));
+  fill('voice',[['','默认声线（引擎自带）']].concat(s.voices.map(v=>[v.voice_id,v.voice_id+'｜'+v.name])));
+  fill('subPos', Object.keys(SUB_POS_RATIO).map(k=>[k,k])); $('subPos').value='底部';
+  fill('xlsxCol', 'ABCDEFGH'.split('').map(c=>[c,c+' 列'])); $('xlsxCol').value='B';
+  $('aspect').addEventListener('change',()=>syncPv());
   $('vRootHint').textContent='库目录：'+s.voice_root;
   $('vCount').textContent=s.voices.length;
   const list=$('vList');list.innerHTML='';
@@ -486,20 +532,37 @@ function showGuide(key){
 
 /* ── 手机实时预览：已添加的 + 正在编辑的（虚线框） ── */
 const POS_RATIO={'顶部':6,'中上':30,'中部':47,'中下':66,'底部':84};
-function pvNode(o,ghost){
+function pvCanvas(){ return ASPECT_CANVAS[$('aspect')?.value] || [1080,1920]; }
+function pvNode(o,ghost,pvW){
   const el=document.createElement('div');
   el.className='ov'+(o.boxed?' boxed':'')+(ghost?' ghost':'');
   el.textContent=o.text||'（文本）';
   el.style.top=(POS_RATIO[o.position]??47)+'%';
-  el.style.fontSize=Math.max(6,(o.font_size_px*250/1080)).toFixed(1)+'px';
+  el.style.fontSize=Math.max(6,(o.font_size_px*pvW/pvCanvas()[0])).toFixed(1)+'px';
   el.style.color=o.color;return el;
 }
 function syncPv(fromInput){
   if(!fromInput){const on=document.querySelector('.sw.on');if(on)$('edColor').value=on.dataset.c;}
   $('edSizeV').textContent=$('edSize').value;
-  const phone=$('phone');phone.querySelectorAll('.ov').forEach(x=>x.remove());
-  overlays.forEach(o=>phone.appendChild(pvNode(o,false)));
-  phone.appendChild(pvNode(editorOverlay(),true));
+  const [cw,ch]=pvCanvas();
+  const pvW=+($('pvScale')?.value||260);
+  const phone=$('phone');
+  phone.style.width=pvW+'px';
+  phone.style.aspectRatio=cw+'/'+ch;
+  const info=$('pvInfo'); if(info)info.textContent=`实时预览 · ${cw} × ${ch}（${$('aspect')?.value||'9:16 竖屏'}）`;
+  phone.querySelectorAll('.ov').forEach(x=>x.remove());
+  overlays.forEach(o=>phone.appendChild(pvNode(o,false,pvW)));
+  phone.appendChild(pvNode(editorOverlay(),true,pvW));
+  // 字幕位置示意（跟随一键成片页的字幕位置/字号设置）
+  if($('burn')?.checked){
+    const sub=document.createElement('div');
+    sub.className='ov sub';
+    sub.textContent='—— 字幕位置示意 ——';
+    sub.style.top=((SUB_POS_RATIO[$('subPos')?.value]??0.885)*94)+'%';
+    sub.style.fontSize=Math.max(6,((+$('subsize')?.value||64)*pvW/cw)).toFixed(1)+'px';
+    sub.style.color='#FFFFFF';sub.style.opacity='.8';
+    phone.appendChild(sub);
+  }
 }
 function editorOverlay(){
   return {text:$('edText').value.trim(),position:$('edPos').value||'中部',
@@ -550,6 +613,7 @@ async function run(action,target){
     voice_id:$('voice').value,shots_dir:$('shots').value.trim(),output_dir:$('outdir').value.trim(),
     max_pause:+$('pause').value,speed:+$('speed').value,seed:+$('seed').value,
     burn_subtitles:$('burn').checked,subtitle_size:+$('subsize').value||64,
+    subtitle_position:$('subPos').value||'底部',
     export_capcut:$('capcut').checked,aspect:$('aspect').value,overlays};
   const j=await (await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})).json();
   if(j.error){paint(['❌ '+j.error]);return;}
@@ -564,7 +628,72 @@ async function poll(){
 }
 function paint(lines){const el=$(logTarget);el.textContent=lines.join('\n');el.scrollTop=el.scrollHeight;}
 
-renderOverlays();loadState();loadComponents();poll();  /* 载入时同步一次任务状态：刷新不丢日志与时间轴 */
+/* ── 目录选择浮层 ── */
+let dirTarget=null, dirCurrent='';
+async function pickDir(targetId){
+  dirTarget=targetId;
+  const start=$(targetId).value.trim();
+  await browseDir(start||'');
+  $('dirModal').classList.add('on');
+}
+async function browseDir(path){
+  const q=path?('?path='+encodeURIComponent(path)):'';
+  const s=await (await fetch('/api/browse'+q)).json();
+  if(s.error&&!s.dirs?.length){alert(s.error);}
+  dirCurrent=s.path||'';
+  $('dirCur').textContent=dirCurrent||'（选择磁盘）';
+  const list=$('dirList');list.innerHTML='';
+  if(!s.roots&&s.parent!==null&&s.parent!==undefined&&s.parent!==dirCurrent){
+    const up=document.createElement('div');up.className='item';up.textContent='⬆ 上一级';
+    up.onclick=()=>browseDir(s.parent||'');list.appendChild(up);
+  }
+  (s.dirs||[]).forEach(name=>{
+    const el=document.createElement('div');el.className='item';el.textContent='📁 '+name;
+    el.onclick=()=>browseDir(s.roots?name:(dirCurrent.replace(/[\\/]+$/,'')+(dirCurrent.includes('\\')||name.includes(':')?'\\':'/')+name));
+    list.appendChild(el);
+  });
+  if(!(s.dirs||[]).length){const e=document.createElement('div');e.className='item';e.style.color='var(--faint)';e.textContent='（没有子文件夹）';list.appendChild(e);}
+}
+function chooseDir(){
+  if(dirTarget&&dirCurrent)$(dirTarget).value=dirCurrent;
+  $('dirModal').classList.remove('on');
+}
+
+/* ── 文案导入（xlsx / txt）── */
+async function importScript(input,kind){
+  const f=input.files[0]; input.value=''; if(!f)return;
+  const q=new URLSearchParams({kind, column:$('xlsxCol').value});
+  const r=await fetch('/api/script/parse?'+q,{method:'POST',body:f});
+  const j=await r.json();
+  if(j.error){alert(j.error);return;}
+  $('text').value=j.lines.join('\n');
+  alert(`已导入 ${j.lines.length} 行文案`+(kind==='xlsx'?`（${$('xlsxCol').value} 列）`:''));
+}
+
+/* ── 设置：组件保存位置 ── */
+async function loadSettings(){
+  try{const s=await (await fetch('/api/settings')).json();$('compRoot').value=s.component_root||'';}catch(e){}
+}
+async function saveCompRoot(){
+  const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({component_root:$('compRoot').value.trim()})});
+  const j=await r.json();
+  if(j.error){alert(j.error);return;}
+  alert('已保存组件位置：'+j.component_root+'\n（已下载的文件不会自动搬移，可手动移动后点刷新）');
+  loadComponents();
+}
+
+/* ── 音色包导入 ── */
+async function importVoicePack(input){
+  const f=input.files[0]; input.value=''; if(!f)return;
+  const r=await fetch('/api/voices/import',{method:'POST',body:f});
+  const j=await r.json();
+  if(j.error){alert(j.error);return;}
+  alert('已导入 '+j.imported.length+' 个音色');
+  loadState();
+}
+
+renderOverlays();loadState();loadComponents();loadSettings();poll();  /* 载入时同步一次任务状态：刷新不丢日志与时间轴 */
 </script>
 </body>
 </html>

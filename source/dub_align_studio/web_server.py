@@ -26,8 +26,10 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from . import components as toolbox
+from . import settings as studio_settings
 from . import studio_pipeline as pipeline
 from . import voice_library
+from . import xlsx_reader
 from .aligners import WhisperAligner
 from .engines import DotsLocalEngine, FishLocalEngine, MockEngine, SynthesisOptions
 from .overlays import POSITION_PRESETS, overlays_from_dicts
@@ -97,7 +99,10 @@ def _run_job(action: str, payload: dict) -> None:
             voice = voice_library.get_voice(STUDIO_HOME, str(payload["voice_id"])).to_ref()
         style = None
         if payload.get("burn_subtitles", True):
-            style = SubtitleStyle(font_size_px=int(payload.get("subtitle_size") or 64))
+            style = SubtitleStyle(
+                font_size_px=int(payload.get("subtitle_size") or 64),
+                position=str(payload.get("subtitle_position") or "底部"),
+            )
         overlays = overlays_from_dicts(payload.get("overlays") or [])
         aspect = str(payload.get("aspect") or pipeline.DEFAULT_ASPECT)
         config = pipeline.make_render_config(aspect)
@@ -212,6 +217,23 @@ class _Handler(BaseHTTPRequestHandler):
         if route == "/api/job":
             self._json(JOB.snapshot())
             return
+        if route == "/api/browse":
+            query = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+            self._json(_browse(query.get("path") or ""))
+            return
+        if route == "/api/settings":
+            self._json({"component_root": str(studio_settings.component_root()),
+                        "default_component_root": str(studio_settings.default_component_root())})
+            return
+        if route == "/api/voices/export":
+            payload = voice_library.export_voices_zip(STUDIO_HOME)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition", "attachment; filename=voices.zip")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         if route == "/api/components":
             self._json({"components": toolbox.component_statuses()})
             return
@@ -266,6 +288,43 @@ class _Handler(BaseHTTPRequestHandler):
             finally:
                 temp.unlink(missing_ok=True)
             return
+        if route == "/api/settings":
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+                root = studio_settings.set_component_root(str(payload.get("component_root") or ""))
+                self._json({"ok": True, "component_root": str(root)})
+            except Exception as exc:
+                self._json({"error": f"保存失败：{exc}"}, 400)
+            return
+        if route == "/api/script/parse":
+            query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+            length = int(self.headers.get("Content-Length") or 0)
+            data = self.rfile.read(length) if 0 < length <= _MAX_UPLOAD else b""
+            kind = (query.get("kind") or "").lower()
+            try:
+                if kind == "xlsx":
+                    lines = xlsx_reader.read_column(data, query.get("column") or "B")
+                elif kind == "txt":
+                    text = data.decode("utf-8-sig", errors="replace")
+                    lines = [line.strip() for line in text.replace("\r\n", "\n").split("\n") if line.strip()]
+                else:
+                    raise ValueError("kind 应为 xlsx 或 txt。")
+                if not lines:
+                    raise ValueError("没有读到任何文案行（xlsx 请确认列号；txt 请确认一行一句）。")
+                self._json({"ok": True, "lines": lines})
+            except Exception as exc:
+                self._json({"error": str(exc)}, 400)
+            return
+        if route == "/api/voices/import":
+            length = int(self.headers.get("Content-Length") or 0)
+            data = self.rfile.read(length) if 0 < length <= _MAX_UPLOAD else b""
+            try:
+                imported = voice_library.import_voices_zip(STUDIO_HOME, data)
+                self._json({"ok": True, "imported": imported})
+            except Exception as exc:
+                self._json({"error": str(exc)}, 400)
+            return
         if route == "/api/run":
             length = int(self.headers.get("Content-Length") or 0)
             try:
@@ -293,6 +352,30 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({"ok": True})
             return
         self._json({"error": "not found"}, 404)
+
+
+def _browse(path_text: str) -> dict:
+    """本机目录浏览（选择文件夹用）：空路径给根列表（Windows 盘符 / Linux 根）。"""
+    import os
+    import string
+
+    if not path_text.strip():
+        if os.name == "nt":
+            drives = [f"{d}:\\" for d in string.ascii_uppercase if Path(f"{d}:\\").exists()]
+            return {"path": "", "parent": None, "dirs": drives, "roots": True}
+        path_text = "/"
+    current = Path(path_text)
+    if not current.is_dir():
+        return {"error": f"目录不存在：{current}", "path": str(current), "dirs": []}
+    dirs = []
+    try:
+        for child in sorted(current.iterdir(), key=lambda x: x.name.lower()):
+            if child.is_dir() and not child.name.startswith((".", "$")):
+                dirs.append(child.name)
+    except PermissionError:
+        return {"error": f"无权限访问：{current}", "path": str(current), "dirs": []}
+    parent = str(current.parent) if current.parent != current else ""
+    return {"path": str(current), "parent": parent, "dirs": dirs, "roots": False}
 
 
 def _state_payload() -> dict:

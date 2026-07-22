@@ -22,8 +22,10 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from integrated_workbench.model_registry import best_verified_model, whisper_cli_path, whisper_root
+from integrated_workbench.model_registry import MODEL_REGISTRY, validate_component_file
 from integrated_workbench.proc import run_silent
+
+from . import settings as studio_settings
 
 from .timing import LineTiming
 
@@ -137,8 +139,8 @@ class WhisperAligner:
     key: str = "whisper"
 
     def probe(self) -> AlignerStatus:
-        executable = whisper_cli_path()
-        model = best_verified_model()
+        executable = _whisper_cli()
+        model = _best_model()
         if executable and model:
             return AlignerStatus(self.key, True, f"whisper-cli 就绪：{executable.name}，模型 {model.name}")
         missing = []
@@ -160,9 +162,9 @@ class WhisperAligner:
         return allocate_line_durations(cues, lines, total_seconds)
 
     def _transcribe(self, master_wav: Path, total_seconds: float) -> list[Cue]:
-        executable = whisper_cli_path()
-        model = best_verified_model()
-        runtime_root = whisper_root()
+        executable = _whisper_cli()
+        model = _best_model()
+        runtime_root = studio_settings.whisper_home()
         scratch = Path(tempfile.mkdtemp(prefix="dub_align_whisper_"))
         try:
             wav16k = scratch / "master_16k.wav"
@@ -188,6 +190,21 @@ class WhisperAligner:
             raise RuntimeError("whisper 转写超时。") from exc
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _whisper_cli() -> Path | None:
+    """whisper-cli：软件设置的组件根优先，其次 PATH（settings.whisper_cli_path 已含两者）。"""
+    return studio_settings.whisper_cli_path()
+
+
+def _best_model() -> Path | None:
+    """校验通过的 ggml 模型：按 small→base→tiny 优先级在设置根下查找。"""
+    for key in ("small", "base", "tiny"):
+        entry = MODEL_REGISTRY[key]
+        path = studio_settings.whisper_models_dir() / str(entry["filename"])
+        if validate_component_file(path, int(entry["size_bytes"]), str(entry["sha256"])).ok:
+            return path
+    return None
 
 
 _SRT_TIME = re.compile(r"(\d+):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(\d+):(\d{2}):(\d{2})[,.](\d{3})")

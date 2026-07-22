@@ -26,11 +26,18 @@ DEFAULT_FONT_CANDIDATES = [
 ]
 
 
+# 字幕位置预设 → 垂直比例（底部为 None，走 bottom_margin 原逻辑）
+SUBTITLE_POSITIONS: dict[str, float | None] = {
+    "顶部": 0.06, "中上": 0.30, "中部": 0.48, "中下": 0.68, "底部": None,
+}
+
+
 @dataclass(frozen=True)
 class SubtitleStyle:
-    """字幕样式。font_size_px 为像素字号（相对输出画布高度，用户自定义的核心项）。"""
+    """字幕样式。font_size_px 为像素字号；position 为五档垂直位置（默认底部）。"""
 
     font_size_px: int = 64
+    position: str = "底部"
     color: str = "white"
     border_width: int = 3
     border_color: str = "black"
@@ -118,10 +125,17 @@ def drawtext_filters(
             f"fontcolor={style.color}:"
             f"borderw={int(style.border_width)}:bordercolor={style.border_color}:"
             "x=(w-text_w)/2:"
-            f"y=h-text_h-{int(style.bottom_margin_px)}:"
+            f"y={_subtitle_y(style)}:"
             f"enable='between(t,{entry.start:.3f},{entry.end:.3f})'"
         )
     return filters
+
+
+def _subtitle_y(style: SubtitleStyle) -> str:
+    ratio = SUBTITLE_POSITIONS.get(style.position, None)
+    if ratio is None:
+        return f"h-text_h-{int(style.bottom_margin_px)}"
+    return f"(h-text_h)*{ratio:.3f}"
 
 
 # ------------------------------------------------------------------ SRT
