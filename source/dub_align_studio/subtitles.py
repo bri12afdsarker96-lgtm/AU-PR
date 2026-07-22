@@ -38,6 +38,7 @@ class SubtitleStyle:
 
     font_size_px: int = 64
     position: str = "底部"
+    font_name: str = ""  # 字体库字体名/文件名；空 = 系统默认
     color: str = "white"
     border_width: int = 3
     border_color: str = "black"
@@ -74,6 +75,17 @@ def find_cjk_font(candidates: list[Path] | None = None) -> Path | None:
         if candidate.exists():
             return candidate
     return None
+
+
+def pick_font(font_name: str | None) -> Path | None:
+    """样式指定字体优先（字体库解析），否则系统中文字体兜底。"""
+    if font_name:
+        from .fonts import resolve_font
+
+        chosen = resolve_font(font_name)
+        if chosen:
+            return chosen
+    return find_cjk_font()
 
 
 def effective_chars_per_line(style: SubtitleStyle, canvas_width: int | None) -> int:

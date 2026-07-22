@@ -43,6 +43,7 @@ class OverlayText:
     box_opacity: float = 0.5
     start: float = 0.0
     end: float = 0.0
+    font_name: str = ""  # 字体库字体；空 = 跟随全局/系统
     max_chars_per_line: int = 12
     max_lines: int = 3
 
@@ -82,8 +83,13 @@ def overlay_filters(
         text_path = textfile_dir / f"overlay_{order:02d}.txt"
         text_path.write_text(wrap_subtitle_text(overlay.text, wrap_style, canvas_width), encoding="utf-8")
 
+        chosen = font
+        if overlay.font_name:
+            from .subtitles import pick_font
+
+            chosen = pick_font(overlay.font_name) or font
         parts = [
-            f"fontfile='{_filter_path(font)}'",
+            f"fontfile='{_filter_path(chosen)}'",
             f"textfile='{_filter_path(text_path)}'",
             f"fontsize={int(overlay.font_size_px)}",
             f"fontcolor={normalize_color(overlay.color)}",

@@ -22,7 +22,7 @@ body{
     radial-gradient(700px 420px at -5% 30%, rgba(228,185,99,.03), transparent 55%),
     var(--bg);
   color:var(--text);
-  font:14px/1.7 "PingFang SC","Microsoft YaHei UI","Noto Sans SC",system-ui,sans-serif;
+  font:15.5px/1.75 "PingFang SC","Microsoft YaHei UI","Noto Sans SC",system-ui,sans-serif;
   min-height:100vh;
 }
 .wrap{max-width:1560px;width:94%;margin:0 auto;padding:0 12px}
@@ -38,15 +38,15 @@ header{border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20;
 .mark::before{content:"";position:absolute;inset:0;display:block;margin:auto;width:14px;height:14px;
   background:var(--ink);clip-path:polygon(50% 0,100% 50%,50% 100%,0 50%)}
 .brand{line-height:1.25}
-.brand b{font-size:17.5px;letter-spacing:1px;font-weight:700}
+.brand b{font-size:19px;letter-spacing:1px;font-weight:700}
 .brand i{display:block;font-style:normal;font-size:10px;color:var(--faint);letter-spacing:4.5px;margin-top:2px}
 .flags{margin-left:auto;display:flex;gap:8px}
-.flag{font-size:11px;color:var(--gold);letter-spacing:1.5px;padding:5px 13px;border-radius:99px;
+.flag{font-size:12px;color:var(--gold);letter-spacing:1.5px;padding:5px 13px;border-radius:99px;
   border:1px solid rgba(228,185,99,.32);background:rgba(228,185,99,.06)}
 
 nav{display:flex;gap:4px;padding-bottom:13px}
 nav button{appearance:none;border:0;background:transparent;color:var(--muted);cursor:pointer;
-  font:600 13px/1 inherit;letter-spacing:2px;padding:10px 19px;border-radius:99px;transition:.16s}
+  font:600 14.5px/1 inherit;letter-spacing:2px;padding:10px 19px;border-radius:99px;transition:.16s}
 nav button:hover{color:var(--text);background:var(--panel)}
 nav button.on{color:var(--ink);background:linear-gradient(135deg,var(--gold-hi),var(--gold));
   box-shadow:0 4px 16px rgba(228,185,99,.22)}
@@ -54,13 +54,13 @@ nav button:focus-visible,.btn:focus-visible{outline:2px solid var(--gold);outlin
 
 /* ───────── 论点条：对齐时间轴 ───────── */
 .thesis{padding:26px 0 6px}
-.thesis h1{font-size:21px;font-weight:700;letter-spacing:.5px;text-wrap:balance}
+.thesis h1{font-size:25px;font-weight:700;letter-spacing:.5px;text-wrap:balance}
 .thesis h1 em{font-style:normal;color:var(--gold)}
-.thesis p{color:var(--muted);font-size:12.5px;margin-top:4px;letter-spacing:.5px}
+.thesis p{color:var(--muted);font-size:14px;margin-top:4px;letter-spacing:.5px}
 .rig{margin:18px 0 22px;background:linear-gradient(180deg,var(--panel2),var(--panel));
   border:1px solid var(--line);border-radius:var(--r);padding:18px 20px 14px;
   box-shadow:0 14px 40px rgba(0,0,0,.35)}
-.rig .lab{display:flex;justify-content:space-between;font-size:10.5px;color:var(--faint);letter-spacing:2px;margin-bottom:8px}
+.rig .lab{display:flex;justify-content:space-between;font-size:12px;color:var(--faint);letter-spacing:2px;margin-bottom:8px}
 .rig .lab b{color:var(--gold);font-weight:600}
 canvas#wave{width:100%;height:64px;display:block;border-radius:8px}
 .lane{display:flex;gap:5px;margin-top:10px;min-height:44px}
@@ -68,12 +68,12 @@ canvas#wave{width:100%;height:64px;display:block;border-radius:8px}
 .seg{position:relative;height:44px;border-radius:9px;cursor:default;flex-grow:1;overflow:hidden;
   background:linear-gradient(180deg,#2A2318,#221D13);border:1px solid var(--line2);transition:.18s}
 .seg:hover{border-color:var(--gold);transform:translateY(-2px);box-shadow:0 8px 20px rgba(0,0,0,.4)}
-.seg small{position:absolute;left:10px;top:6px;font-size:10px;color:var(--faint);letter-spacing:1px;
+.seg small{position:absolute;left:10px;top:6px;font-size:11.5px;color:var(--faint);letter-spacing:1px;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:90%}
-.seg b{position:absolute;left:10px;bottom:6px;font-size:11.5px;color:var(--gold);font-weight:600;
+.seg b{position:absolute;left:10px;bottom:6px;font-size:13px;color:var(--gold);font-weight:600;
   font-variant-numeric:tabular-nums}
 .seg::after{content:"";position:absolute;right:0;top:0;bottom:0;width:1px;background:rgba(228,185,99,.25)}
-.rig .foot{display:flex;gap:18px;margin-top:11px;font-size:11px;color:var(--faint);letter-spacing:1px;flex-wrap:wrap}
+.rig .foot{display:flex;gap:18px;margin-top:11px;font-size:12.5px;color:var(--faint);letter-spacing:1px;flex-wrap:wrap}
 .rig .foot span b{color:var(--muted);font-weight:600}
 
 /* ───────── 通用 ───────── */
@@ -85,14 +85,14 @@ section{display:none}section.on{display:block}
 @media(max-width:920px){.g2,.g2e,.g3ov{grid-template-columns:1fr!important}}
 .card{background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--line);
   border-radius:var(--r);padding:21px 23px;box-shadow:0 12px 34px rgba(0,0,0,.28)}
-.card h2{font-size:12px;color:var(--gold);letter-spacing:3px;font-weight:700;
+.card h2{font-size:13.5px;color:var(--gold);letter-spacing:3px;font-weight:700;
   display:flex;align-items:center;gap:10px;margin-bottom:16px}
 .card h2::after{content:"";height:1px;flex:1;background:linear-gradient(90deg,var(--line2),transparent)}
-.f{display:block;font-size:11px;color:var(--muted);letter-spacing:1.5px;margin-bottom:6px}
+.f{display:block;font-size:12.5px;color:var(--muted);letter-spacing:1.5px;margin-bottom:6px}
 .sp{margin-bottom:14px}
 .row{display:flex;gap:10px;align-items:center}.row>*{min-width:0}
 textarea,input[type=text],input[type=number],select{width:100%;background:var(--field);color:var(--text);
-  border:1px solid var(--line);border-radius:var(--rs);padding:10px 13px;font:inherit;outline:none;transition:.15s}
+  border:1px solid var(--line);border-radius:var(--rs);padding:11px 14px;font:inherit;outline:none;transition:.15s}
 textarea:focus,input:focus,select:focus{border-color:var(--gold-deep);box-shadow:0 0 0 3px rgba(228,185,99,.09)}
 textarea{resize:vertical;min-height:118px;line-height:1.9}
 select{appearance:none;padding-right:34px;
@@ -104,12 +104,12 @@ input[type=file]{color:var(--muted);font-size:12px}
 input[type=file]::file-selector-button{appearance:none;cursor:pointer;border:1px solid var(--line2);
   border-radius:8px;background:var(--field);color:var(--gold);font:600 12px/1 inherit;
   padding:9px 15px;margin-right:12px;letter-spacing:1px}
-.mini{font-size:12px;color:var(--muted)}
-.val{min-width:46px;text-align:center;flex:none;font-size:12px;color:var(--gold);
+.mini{font-size:13px;color:var(--muted)}
+.val{min-width:46px;text-align:center;flex:none;font-size:13px;color:var(--gold);
   font-variant-numeric:tabular-nums;background:var(--field);border:1px solid var(--line);border-radius:8px;padding:4px 7px}
 
 .btn{appearance:none;cursor:pointer;border:1px solid var(--line2);border-radius:var(--rs);
-  background:var(--field);color:var(--text);font:600 12.5px/1 inherit;letter-spacing:1.5px;
+  background:var(--field);color:var(--text);font:600 14px/1 inherit;letter-spacing:1.5px;
   padding:12px 19px;transition:.16s;white-space:nowrap}
 .btn:hover{border-color:var(--gold-deep);color:var(--gold)}
 .btn:active{transform:translateY(1px)}
@@ -122,12 +122,12 @@ input[type=file]::file-selector-button{appearance:none;cursor:pointer;border:1px
 
 .console{margin-top:14px;background:#0B0906;border:1px solid var(--line);border-radius:var(--rs);
   padding:15px 17px;height:238px;overflow:auto;white-space:pre-wrap;word-break:break-all;
-  font:12px/1.9 ui-monospace,Consolas,"Cascadia Mono",monospace;color:#CEC8B8}
+  font:13px/1.9 ui-monospace,Consolas,"Cascadia Mono",monospace;color:#CEC8B8}
 .console .dim{color:var(--faint)}
 .console::-webkit-scrollbar{width:9px}.console::-webkit-scrollbar-thumb{background:var(--line2);border-radius:9px}
 
-table{width:100%;border-collapse:collapse;font-size:12.5px}
-th{color:var(--gold);text-align:left;font-weight:600;letter-spacing:1.5px;font-size:11px;padding:8px 10px;border-bottom:1px solid var(--line2)}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th{color:var(--gold);text-align:left;font-weight:600;letter-spacing:1.5px;font-size:12.5px;padding:8px 10px;border-bottom:1px solid var(--line2)}
 td{padding:10px;border-bottom:1px solid var(--line)}
 td.mut{color:var(--muted)} tr:hover td{background:rgba(228,185,99,.035)}
 .x{color:var(--bad);cursor:pointer;font-weight:700;padding:2px 9px;border-radius:7px}
@@ -173,8 +173,8 @@ td.mut{color:var(--muted)} tr:hover td{background:rgba(228,185,99,.035)}
 .dot{width:9px;height:9px;border-radius:50%;flex:none}
 .dot.ok{background:var(--ok);box-shadow:0 0 10px rgba(111,191,143,.5)}
 .dot.no{background:var(--bad);box-shadow:0 0 10px rgba(224,104,95,.4)}
-.check b{font-size:13px;min-width:130px;font-weight:600}
-.check span{color:var(--muted);font-size:12px;overflow:hidden;text-overflow:ellipsis}
+.check b{font-size:14.5px;min-width:140px;font-weight:600}
+.check span{color:var(--muted);font-size:13px;overflow:hidden;text-overflow:ellipsis}
 .pill{margin-left:auto;flex:none;font-size:10.5px;letter-spacing:1.5px;padding:3px 11px;border-radius:99px}
 .pill.ok{color:var(--ok);background:var(--ok-bg);border:1px solid rgba(111,191,143,.3)}
 .pill.no{color:var(--bad);background:var(--bad-bg);border:1px solid rgba(224,104,95,.3)}
@@ -265,9 +265,8 @@ footer b{color:var(--muted);font-weight:600}
       </div>
       <div class="row" style="gap:22px;flex-wrap:wrap">
         <label class="row mini" style="gap:7px"><input type="checkbox" id="burn" checked>烧录字幕</label>
-        <span class="row mini" style="gap:7px">位置<select id="subPos" style="width:88px;flex:none" onchange="syncPv&&syncPv()"></select></span>
-        <span class="row mini" style="gap:7px">字号(px)<input type="number" id="subsize" value="64" style="width:82px" oninput="syncPv&&syncPv()"></span>
-        <span class="row mini" style="gap:7px">Seed <input type="number" id="seed" value="42" style="width:88px"></span>
+        <span class="mini" style="color:var(--faint)">字幕位置/字号/字体 → 在「文本框」页设置并实时预览</span>
+        <span class="row mini" style="gap:7px">Seed <input type="number" id="seed" value="42" style="width:92px"></span>
         <label class="row mini" style="gap:7px"><input type="checkbox" id="capcut">完成后导出剪映草稿</label>
       </div>
     </div>
@@ -306,6 +305,17 @@ footer b{color:var(--muted);font-weight:600}
       </div>
     </div>
 
+    <div>
+    <div class="card" style="margin-bottom:16px">
+      <h2>字幕样式（烧录时生效）</h2>
+      <div class="grid g2e sp">
+        <div><span class="f">字幕位置</span><select id="subPos" onchange="syncPv()"></select></div>
+        <div><span class="f">字幕字号 <span class="val" id="subSizeV" style="padding:2px 8px">64</span></span>
+          <input type="range" id="subsize" min="32" max="140" step="4" value="64" oninput="syncPv()"></div>
+      </div>
+      <div class="sp"><span class="f">字幕字体（字体库下载或自行放入，见工具箱）</span>
+        <select id="subFont" onchange="syncPv()"></select></div>
+    </div>
     <div class="card">
       <h2>编辑文本框</h2>
       <div class="sp"><span class="f">文本内容</span>
@@ -315,6 +325,7 @@ footer b{color:var(--muted);font-weight:600}
         <div><span class="f">字号 <span class="val" id="edSizeV" style="padding:2px 8px">72</span></span>
           <input type="range" id="edSize" min="32" max="160" step="4" value="72" oninput="syncPv()"></div>
       </div>
+      <div class="sp"><span class="f">字体</span><select id="edFont" onchange="syncPv()"></select></div>
       <div class="sp"><span class="f">颜色</span>
         <div class="row" id="swatches">
           <div class="sw on" data-c="#FFFFFF" style="background:#FFFFFF"></div>
@@ -333,6 +344,7 @@ footer b{color:var(--muted);font-weight:600}
         <div><span class="f">结束（秒 · 0 = 片尾）</span><input type="number" id="edEnd" value="0" step="0.5"></div>
       </div>
       <button class="btn gold" onclick="addOverlay()">＋ 添加到列表</button>
+    </div>
     </div>
 
     <div class="card">
@@ -383,13 +395,15 @@ footer b{color:var(--muted);font-weight:600}
   <div class="grid g2e">
     <div class="card">
       <h2>组件工具箱 <button class="btn" style="margin-left:auto;padding:7px 14px" onclick="loadComponents()">↻ 刷新</button></h2>
-      <div class="sp"><span class="f">组件保存位置（模型等大文件；默认软件目录旁，可改到其他盘避免占用 C 盘）</span>
+      <div class="sp"><span class="f">数据总目录（组件/模型/音色库/克隆音频/字体 全部存放于此；整个文件夹可拷到其他电脑直接使用）</span>
         <div class="row"><input type="text" id="compRoot">
           <button class="btn" onclick="pickDir('compRoot')">📁 选择</button>
-          <button class="btn line" onclick="saveCompRoot()">保存</button></div></div>
+          <button class="btn line" onclick="saveCompRoot()">保存</button>
+          <button class="btn gold" onclick="run('envcheck','checklog')">🩺 环境自检</button></div></div>
       <p class="hint">缺什么点击即可下载/安装（多源 + SHA256 校验 + 断点续传）；进度在右侧日志滚动。</p>
       <div id="compList"><p class="empty">读取中…</p></div>
     </div>
+
     <div class="card">
       <h2>链路自检</h2>
       <div class="row" style="margin-bottom:12px">
@@ -397,6 +411,14 @@ footer b{color:var(--muted);font-weight:600}
         <button class="btn line" onclick="run('verify','checklog')">端到端渲染自检</button>
       </div>
       <div class="console" id="checklog" style="height:262px"><span class="dim">—— 就绪 ——</span></div>
+    </div>
+    <div class="card" style="margin-top:16px;grid-column:1/-1">
+      <h2>字体库 <span class="badge" id="fontCount">0</span>
+        <button class="btn" style="margin-left:auto;padding:7px 14px" onclick="fontUp.click()">📥 上传字体(ttf/otf/zip)</button>
+        <input type="file" id="fontUp" accept=".ttf,.otf,.ttc,.zip" style="display:none" onchange="uploadFont(this)">
+        <button class="btn" style="padding:7px 14px" onclick="loadFonts()">↻ 刷新</button></h2>
+      <p class="hint" id="fontDirHint">自媒体常用开源字体一键下载；也可把 ttf/otf/ttc 直接放进字体目录。字幕与文本框的字体在「文本框」页选择。</p>
+      <div id="fontList"><p class="empty">读取中…</p></div>
     </div>
   </div>
 </section>
@@ -541,17 +563,32 @@ function showGuide(key){
 /* ── 手机实时预览：已添加的 + 正在编辑的（虚线框） ── */
 const POS_RATIO={'顶部':6,'中上':30,'中部':47,'中下':66,'底部':84};
 function pvCanvas(){ return ASPECT_CANVAS[$('aspect')?.value] || [1080,1920]; }
+const loadedFaces=new Set();
+function ensureFace(fontFile){
+  if(!fontFile||loadedFaces.has(fontFile))return;
+  loadedFaces.add(fontFile);
+  const fam='studio-'+fontFile.replace(/[^\w-]/g,'_');
+  const face=new FontFace(fam,`url("/fonts/${encodeURIComponent(fontFile)}")`);
+  face.load().then(f=>document.fonts.add(f)).catch(()=>{});
+}
+function faceFamily(fontFile){
+  if(!fontFile)return '';
+  ensureFace(fontFile);
+  return 'studio-'+fontFile.replace(/[^\w-]/g,'_')+', ';
+}
 function pvNode(o,ghost,pvW){
   const el=document.createElement('div');
   el.className='ov'+(o.boxed?' boxed':'')+(ghost?' ghost':'');
   el.textContent=o.text||'（文本）';
   el.style.top=(POS_RATIO[o.position]??47)+'%';
   el.style.fontSize=Math.max(6,(o.font_size_px*pvW/pvCanvas()[0])).toFixed(1)+'px';
+  if(o.font_name)el.style.fontFamily=faceFamily(o.font_name)+'inherit';
   el.style.color=o.color;return el;
 }
 function syncPv(fromInput){
   if(!fromInput){const on=document.querySelector('.sw.on');if(on)$('edColor').value=on.dataset.c;}
   $('edSizeV').textContent=$('edSize').value;
+  if($('subSizeV'))$('subSizeV').textContent=$('subsize').value;
   const [cw,ch]=pvCanvas();
   const pvW=+($('pvScale')?.value||260);
   const phone=$('phone');
@@ -569,11 +606,14 @@ function syncPv(fromInput){
     sub.style.top=((SUB_POS_RATIO[$('subPos')?.value]??0.885)*94)+'%';
     sub.style.fontSize=Math.max(6,((+$('subsize')?.value||64)*pvW/cw)).toFixed(1)+'px';
     sub.style.color='#FFFFFF';sub.style.opacity='.8';
+    const sf=$('subFont')?.value; if(sf)sub.style.fontFamily=faceFamily(sf)+'inherit';
+    sub.textContent='字幕示意 · '+($('subFont')?.selectedOptions[0]?.textContent||'默认');
     phone.appendChild(sub);
   }
 }
 function editorOverlay(){
   return {text:$('edText').value.trim(),position:$('edPos').value||'中部',
+    font_name:$('edFont')?.value||'',
     font_size_px:+$('edSize').value||72,color:$('edColor').value.trim()||'#FFFFFF',
     border_width:+$('edBorder').value||0,boxed:$('edBox').checked,
     start:+$('edStart').value||0,end:+$('edEnd').value||0};
@@ -621,7 +661,7 @@ async function run(action,target){
     voice_id:$('voice').value,shots_dir:$('shots').value.trim(),output_dir:$('outdir').value.trim(),
     max_pause:+$('pause').value,speed:+$('speed').value,seed:+$('seed').value,
     burn_subtitles:$('burn').checked,subtitle_size:+$('subsize').value||64,
-    subtitle_position:$('subPos').value||'底部',
+    subtitle_position:$('subPos').value||'底部',subtitle_font:$('subFont')?.value||'',
     export_capcut:$('capcut').checked,aspect:$('aspect').value,overlays};
   const j=await (await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})).json();
   if(j.error){paint(['❌ '+j.error]);return;}
@@ -678,17 +718,67 @@ async function importScript(input,kind){
   alert(`已导入 ${j.lines.length} 行文案`+(kind==='xlsx'?`（${$('xlsxCol').value} 列）`:''));
 }
 
-/* ── 设置：组件保存位置 ── */
+/* ── 设置：数据总目录 ── */
 async function loadSettings(){
-  try{const s=await (await fetch('/api/settings')).json();$('compRoot').value=s.component_root||'';}catch(e){}
+  try{const s=await (await fetch('/api/settings')).json();$('compRoot').value=s.data_root||'';}catch(e){}
 }
 async function saveCompRoot(){
   const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({component_root:$('compRoot').value.trim()})});
+    body:JSON.stringify({data_root:$('compRoot').value.trim()})});
   const j=await r.json();
   if(j.error){alert(j.error);return;}
-  alert('已保存组件位置：'+j.component_root+'\n（已下载的文件不会自动搬移，可手动移动后点刷新）');
-  loadComponents();
+  alert('已保存数据总目录：'+j.data_root+'\n（已下载的文件不会自动搬移；把旧文件夹整体移入新目录后点「环境自检」即可识别）');
+  loadComponents();loadFonts();loadState();
+}
+
+/* ── 字体库 ── */
+async function loadFonts(){
+  try{
+    const s=await (await fetch('/api/fonts')).json();
+    $('fontCount').textContent=s.installed.length;
+    $('fontDirHint').textContent='字体目录：'+s.fonts_dir+' —— 可直接放入 ttf/otf/ttc；字幕与文本框字体在「文本框」页选择。';
+    const box=$('fontList');box.innerHTML='';
+    const installedFiles=new Set(s.installed.map(f=>f.file));
+    s.pack.forEach(f=>{
+      const el=document.createElement('div');el.className='check';
+      const action=f.installed?'<span class="pill ok">已就绪</span>'
+        :`<button class="btn line" style="padding:8px 16px" onclick="installFont('${f.key}')">下载</button>`;
+      el.innerHTML=`<span class="dot ${f.installed?'ok':'no'}"></span><b>${esc(f.name)}</b>
+        <span>${esc(f.note)}</span><span style="margin-left:auto;flex:none">${action}</span>`;
+      box.appendChild(el);});
+    const extras=s.installed.filter(f=>!s.pack.some(pk=>pk.file===f.file));
+    extras.forEach(f=>{
+      const el=document.createElement('div');el.className='check';
+      el.innerHTML=`<span class="dot ok"></span><b>${esc(f.name)}</b>
+        <span class="mut">用户放入 · ${esc(f.file)}</span><span class="pill ok" style="margin-left:auto">已就绪</span>`;
+      box.appendChild(el);});
+    // 填充字幕/文本框字体下拉（按文件名传值，渲染端 resolve）
+    const pairs=[['','默认（系统字体）']].concat(s.installed.map(f=>[f.file,f.name]));
+    for(const id of ['subFont','edFont']){
+      const el=$(id); if(!el)continue;
+      const keep=el.value; fill(id,pairs);
+      el.value=[...el.options].some(o=>o.value===keep)?keep:'';
+    }
+  }catch(e){}
+}
+async function installFont(key){
+  logTarget='checklog';
+  const j=await (await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({action:'font',font_key:key})})).json();
+  if(j.error){paint(['❌ '+j.error]);return;}
+  if(polling)clearInterval(polling);
+  polling=setInterval(async()=>{await poll();
+    const st=await (await fetch('/api/job')).json();
+    if(!st.running&&st.done){loadFonts();}
+  },700);poll();
+}
+async function uploadFont(input){
+  const f=input.files[0]; input.value=''; if(!f)return;
+  const q=new URLSearchParams({filename:f.name});
+  const j=await (await fetch('/api/fonts?'+q,{method:'POST',body:f})).json();
+  if(j.error){alert(j.error);return;}
+  alert('已入库字体：'+j.saved.join('、'));
+  loadFonts();
 }
 
 /* ── 音色包导入 ── */
@@ -701,7 +791,7 @@ async function importVoicePack(input){
   loadState();
 }
 
-renderOverlays();loadState();loadComponents();loadSettings();poll();  /* 载入时同步一次任务状态：刷新不丢日志与时间轴 */
+renderOverlays();loadState();loadComponents();loadSettings();loadFonts();poll();  /* 载入时同步一次任务状态：刷新不丢日志与时间轴 */
 </script>
 </body>
 </html>

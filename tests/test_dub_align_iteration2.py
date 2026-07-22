@@ -70,13 +70,14 @@ class SettingsTests(unittest.TestCase):
         studio_settings.SETTINGS_FILE = self._backup
         shutil.rmtree(self.temp, ignore_errors=True)
 
-    def test_component_root_defaults_then_custom(self):
-        self.assertEqual(studio_settings.component_root(), studio_settings.default_component_root())
-        custom = self.temp / "D盘组件"
-        studio_settings.set_component_root(custom)
-        self.assertEqual(studio_settings.component_root(), custom)
-        self.assertTrue(custom.exists())
-        self.assertEqual(studio_settings.whisper_models_dir(), custom / "whisper.cpp" / "models")
+    def test_data_root_defaults_then_custom(self):
+        self.assertEqual(studio_settings.data_root(), studio_settings.default_data_root())
+        custom = self.temp / "D盘数据"
+        studio_settings.set_data_root(custom)
+        self.assertEqual(studio_settings.data_root(), custom)
+        for sub in ("组件", "音色库", "克隆音频", "字体"):
+            self.assertTrue((custom / sub).is_dir(), sub)
+        self.assertEqual(studio_settings.whisper_models_dir(), custom / "组件" / "whisper.cpp" / "models")
 
 
 class SubtitlePositionTests(unittest.TestCase):

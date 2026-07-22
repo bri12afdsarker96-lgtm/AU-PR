@@ -129,12 +129,27 @@ def _progress(log: LogFn):
     return callback
 
 
+def _gh_mirror_urls(urls: list[str]) -> list[str]:
+    """GitHub 直连在部分网络不可达：为 github.com 链接生成镜像候选（镜像优先）。"""
+    expanded: list[str] = []
+    for url in urls:
+        if "github.com" in url:
+            for prefix in ("https://ghproxy.net/", "https://gh-proxy.com/", "https://mirror.ghproxy.com/", ""):
+                expanded.append(prefix + url)
+        else:
+            expanded.append(url)
+    return expanded
+
+
 def _download_whisper_runtime(log: LogFn) -> None:
     entry = registry_entry("whisper_cli")
+    if studio_settings.whisper_cli_path():
+        log("✅ whisper-cli 已存在，无需重复下载。")
+        return
     target = studio_settings.whisper_runtime_zip(str(entry["filename"]))
-    log(f"开始下载 {entry['filename']}（SHA256 校验，支持断点续传）…")
+    log(f"开始下载 {entry['filename']}（GitHub+国内镜像轮询，SHA256 校验，断点续传）…")
     result = download_verified_file(
-        list(entry["urls"]), target, _progress(log),
+        _gh_mirror_urls(list(entry["urls"])), target, _progress(log),
         int(entry["size_bytes"]), str(entry["sha256"]),
     )
     log(f"  {result.message}")
@@ -149,9 +164,12 @@ def _download_whisper_runtime(log: LogFn) -> None:
 def _download_model(key: str, log: LogFn) -> None:
     entry = registry_entry(key)
     target = studio_settings.whisper_models_dir() / str(entry["filename"])
+    if validate_component_file(target, int(entry["size_bytes"]), str(entry["sha256"])).ok:
+        log(f"✅ 模型 {entry['name']} 已存在且校验通过，无需重复下载。")
+        return
     log(f"开始下载 {entry['filename']}（SHA256 校验，支持断点续传）…")
     result = download_verified_file(
-        list(entry["urls"]), target, _progress(log),
+        _gh_mirror_urls(list(entry["urls"])), target, _progress(log),
         int(entry["size_bytes"]), str(entry["sha256"]),
     )
     log(f"  {result.message}")

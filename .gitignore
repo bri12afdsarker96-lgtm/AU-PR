@@ -46,3 +46,6 @@ vendor_tools/
 build/
 dist/
 *.spec
+
+# 软件运行时数据总目录
+水星配音数据/

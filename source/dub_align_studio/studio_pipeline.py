@@ -28,6 +28,7 @@ from .engines import (
     MockEngine,
     SynthesisOptions,
 )
+from . import settings as studio_settings
 from .engines.voice_ref import VoiceRef
 from .overlays import OverlayText
 from .render_b import DubBResult, RenderConfig, render_b
@@ -128,7 +129,26 @@ def step_dub(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     engine = make_engine(engine_key)
-    return engine.synthesize_full(text, voice, output_dir / MASTER_NAME, options)
+    master = engine.synthesize_full(text, voice, output_dir / MASTER_NAME, options)
+    _archive_clone(master, voice)
+    return master
+
+
+def _archive_clone(master: MasterAudio, voice: VoiceRef | None) -> None:
+    """克隆音频存档：master 副本进 总目录/克隆音频/（时间戳_引擎_音色.wav），可复用。"""
+    import shutil
+    from datetime import datetime
+
+    try:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        label = voice.voice_id if voice else "默认声线"
+        target = studio_settings.clones_dir() / f"{stamp}_{master.engine}_{label}{master.path.suffix}"
+        shutil.copy2(master.path, target)
+        meta = master.metadata_path()
+        if meta.exists():
+            shutil.copy2(meta, target.with_suffix(".json"))
+    except Exception:
+        pass  # 存档失败不阻塞成片流程
 
 
 def step_timing(

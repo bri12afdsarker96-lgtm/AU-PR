@@ -215,7 +215,9 @@ def render_b(
     if has_text:
         srt_path = write_srt(output_path.with_suffix(".srt"), entries)
         if subtitle_style is not None:
-            font = find_cjk_font()
+            from .subtitles import pick_font
+
+            font = pick_font(subtitle_style.font_name)
             if font:
                 burn_filters = drawtext_filters(entries, subtitle_style, font, work_dir, config.width)
                 subtitle_note = f"已烧录字幕（字号 {subtitle_style.font_size_px}px，字体 {font.name}）"

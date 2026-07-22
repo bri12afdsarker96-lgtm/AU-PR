@@ -26,6 +26,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from . import components as toolbox
+from . import fonts as font_library
 from . import settings as studio_settings
 from . import studio_pipeline as pipeline
 from . import voice_library
@@ -35,8 +36,12 @@ from .engines import DotsLocalEngine, FishLocalEngine, MockEngine, SynthesisOpti
 from .overlays import POSITION_PRESETS, overlays_from_dicts
 from .subtitles import SubtitleStyle
 
-STUDIO_HOME = Path.home() / ".dub_align_studio"
+STUDIO_HOME: Path | None = None  # 测试覆盖用；None = 走设置的总目录/音色库
 DEFAULT_PORT = 8760
+
+
+def _vroot() -> Path:
+    return STUDIO_HOME if STUDIO_HOME is not None else studio_settings.voices_library_root()
 def _index_path() -> Path:
     """界面文件：PyInstaller 冻结包内落在 _MEIPASS/dub_align_studio/web。"""
     import sys
@@ -96,12 +101,13 @@ def _run_job(action: str, payload: dict) -> None:
         )
         voice = None
         if payload.get("voice_id"):
-            voice = voice_library.get_voice(STUDIO_HOME, str(payload["voice_id"])).to_ref()
+            voice = voice_library.get_voice(_vroot(), str(payload["voice_id"])).to_ref()
         style = None
         if payload.get("burn_subtitles", True):
             style = SubtitleStyle(
                 font_size_px=int(payload.get("subtitle_size") or 64),
                 position=str(payload.get("subtitle_position") or "底部"),
+                font_name=str(payload.get("subtitle_font") or ""),
             )
         overlays = overlays_from_dicts(payload.get("overlays") or [])
         aspect = str(payload.get("aspect") or pipeline.DEFAULT_ASPECT)
@@ -171,6 +177,32 @@ def _run_job(action: str, payload: dict) -> None:
             toolbox.install_component(key, log)
             with JOB.lock:
                 JOB.ok = True
+        elif action == "font":
+            key = str(payload.get("font_key") or "")
+            font_library.install_font(key, log)
+            with JOB.lock:
+                JOB.ok = True
+        elif action == "envcheck":
+            import shutil as _sh
+
+            root = studio_settings.data_root()
+            log(f"总目录：{root}")
+            for label, path in (("组件", studio_settings.components_root()),
+                                ("音色库", voice_library.voices_root(_vroot())),
+                                ("克隆音频", root / studio_settings.DIR_CLONES),
+                                ("字体", root / studio_settings.DIR_FONTS)):
+                log(f"  {label}：{path}（{'存在' if path.is_dir() else '将在首次使用时创建'}）")
+            ff = bool(_sh.which("ffmpeg") and _sh.which("ffprobe"))
+            log(("✅ " if ff else "⛔ ") + "ffmpeg / ffprobe" + ("" if ff else "：未找到，请放到软件目录旁或加入 PATH"))
+            for c in toolbox.component_statuses():
+                log(("✅ " if c["installed"] else "⛔ ") + f"{c['name']}：{c['detail']}")
+            installed_fonts = font_library.list_fonts()
+            log(f"字体库：{len(installed_fonts)} 款可用" + ("（" + "、".join(f['name'] for f in installed_fonts[:6]) + "…）" if installed_fonts else "（可在下方下载或把 ttf/otf 放入字体目录）"))
+            voices = voice_library.list_voices(_vroot())
+            log(f"音色库：{len(voices)} 个音色" + ("（" + "、".join(v.name for v in voices[:6]) + "）" if voices else "（未登记时使用默认声线）"))
+            log("✅ 环境自检完成：已存在的组件/模型不会重复下载；整个总目录可拷贝到其他电脑直接使用。")
+            with JOB.lock:
+                JOB.ok = True
         elif action == "verify":
             from . import cli
 
@@ -222,11 +254,31 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(_browse(query.get("path") or ""))
             return
         if route == "/api/settings":
-            self._json({"component_root": str(studio_settings.component_root()),
-                        "default_component_root": str(studio_settings.default_component_root())})
+            self._json({"data_root": str(studio_settings.data_root()),
+                        "default_data_root": str(studio_settings.default_data_root()),
+                        "component_root": str(studio_settings.component_root())})
+            return
+        if route == "/api/fonts":
+            self._json({"installed": font_library.list_fonts(),
+                        "pack": font_library.font_statuses(),
+                        "fonts_dir": str(studio_settings.fonts_dir())})
+            return
+        if route.startswith("/fonts/"):
+            name = unquote(route.rsplit("/", 1)[-1])
+            file = studio_settings.fonts_dir() / Path(name).name
+            if file.is_file() and file.suffix.lower() in font_library.FONT_SUFFIXES:
+                body = file.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "font/ttf")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "max-age=3600")
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self._json({"error": "字体不存在"}, 404)
             return
         if route == "/api/voices/export":
-            payload = voice_library.export_voices_zip(STUDIO_HOME)
+            payload = voice_library.export_voices_zip(_vroot())
             self.send_response(200)
             self.send_header("Content-Type", "application/zip")
             self.send_header("Content-Disposition", "attachment; filename=voices.zip")
@@ -280,7 +332,7 @@ class _Handler(BaseHTTPRequestHandler):
                 temp = Path(handle.name)
             try:
                 entry = voice_library.register_voice(
-                    STUDIO_HOME, query.get("name") or "未命名",
+                    _vroot(), query.get("name") or "未命名",
                     temp, transcript=query.get("transcript") or "")
                 self._json({"ok": True, "voice_id": entry.voice_id})
             except Exception as exc:
@@ -292,10 +344,21 @@ class _Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length") or 0)
             try:
                 payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
-                root = studio_settings.set_component_root(str(payload.get("component_root") or ""))
-                self._json({"ok": True, "component_root": str(root)})
+                raw = str(payload.get("data_root") or payload.get("component_root") or "")
+                root = studio_settings.set_data_root(raw)
+                self._json({"ok": True, "data_root": str(root)})
             except Exception as exc:
                 self._json({"error": f"保存失败：{exc}"}, 400)
+            return
+        if route == "/api/fonts":
+            query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+            length = int(self.headers.get("Content-Length") or 0)
+            data = self.rfile.read(length) if 0 < length <= _MAX_UPLOAD else b""
+            try:
+                saved = font_library.save_uploaded_font(query.get("filename") or "字体.ttf", data)
+                self._json({"ok": True, "saved": saved})
+            except Exception as exc:
+                self._json({"error": str(exc)}, 400)
             return
         if route == "/api/script/parse":
             query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
@@ -320,7 +383,7 @@ class _Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length") or 0)
             data = self.rfile.read(length) if 0 < length <= _MAX_UPLOAD else b""
             try:
-                imported = voice_library.import_voices_zip(STUDIO_HOME, data)
+                imported = voice_library.import_voices_zip(_vroot(), data)
                 self._json({"ok": True, "imported": imported})
             except Exception as exc:
                 self._json({"error": str(exc)}, 400)
@@ -335,7 +398,7 @@ class _Handler(BaseHTTPRequestHandler):
             action = str(payload.get("action") or "")
             with JOB.lock:
                 if JOB.running:
-                    self._json({"error": "当前有任务在执行，请等它完成。"}, 409)
+                    self._json({"error": f"当前有任务在执行（{JOB.action}），请等它完成后再试。"}, 409)
                     return
                 JOB.running, JOB.done, JOB.ok = True, False, False
                 JOB.action = action
@@ -348,7 +411,7 @@ class _Handler(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:
         route = urlparse(self.path).path
         if route.startswith("/api/voices/"):
-            voice_library.delete_voice(STUDIO_HOME, unquote(route.rsplit("/", 1)[-1]))
+            voice_library.delete_voice(_vroot(), unquote(route.rsplit("/", 1)[-1]))
             self._json({"ok": True})
             return
         self._json({"error": "not found"}, 404)
@@ -380,14 +443,14 @@ def _browse(path_text: str) -> dict:
 
 def _state_payload() -> dict:
     voices = [{"voice_id": v.voice_id, "name": v.name, "transcript": v.transcript[:40]}
-              for v in voice_library.list_voices(STUDIO_HOME)]
+              for v in voice_library.list_voices(_vroot())]
     return {
         "engines": pipeline.ENGINE_KEYS,
         "aligners": pipeline.ALIGNER_KEYS,
         "aspects": pipeline.ASPECT_KEYS,
         "positions": list(POSITION_PRESETS),
         "voices": voices,
-        "voice_root": str(voice_library.voices_root(STUDIO_HOME)),
+        "voice_root": str(voice_library.voices_root(_vroot())),
     }
 
 

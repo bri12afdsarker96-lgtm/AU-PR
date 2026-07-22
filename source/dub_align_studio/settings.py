@@ -1,9 +1,16 @@
-"""软件设置：持久化到 ~/.dub_align_studio/settings.json。
+"""软件设置：统一数据总目录 + 持久化（~/.dub_align_studio/settings.json）。
 
-当前设置项：
-    component_root：工具箱组件（whisper-cli/ggml 模型等大文件）的保存根目录。
-        默认在软件目录旁的 vendor_tools（打包后即 exe 旁），用户可改到任意盘，
-        避免占用 C 盘空间；修改后下载与探测都走新位置，旧位置文件不自动迁移。
+需求（用户 2026-07-22 第三轮）：所有下载/生成资产收进一个可自定义的总目录，
+整个文件夹拷到另一台电脑、在软件里指回该目录即可直接使用（环境自检识别，
+已存在的组件/模型不再重复下载）。
+
+总目录（data_root，默认 exe/仓库旁「水星配音数据」）固定子结构：
+    组件/whisper.cpp/…      whisper-cli 运行时 + ggml 模型
+    音色库/<voice_id>/…     克隆参考音色（含转写/元数据）
+    克隆音频/…              每次整篇克隆产出的 master 存档
+    字体/…                  字幕/文本框可选字体（可手动放入 ttf/otf/ttc）
+
+settings.json 始终在用户目录（找到总目录之前必须有处可读）。
 """
 
 from __future__ import annotations
@@ -15,12 +22,20 @@ from pathlib import Path
 STUDIO_HOME = Path.home() / ".dub_align_studio"
 SETTINGS_FILE = STUDIO_HOME / "settings.json"
 
+DIR_COMPONENTS = "组件"
+DIR_VOICES = "音色库"
+DIR_CLONES = "克隆音频"
+DIR_FONTS = "字体"
 
-def default_component_root() -> Path:
-    """默认组件根：exe/仓库旁 vendor_tools（与水星轻量安装布局一致）。"""
+
+def _app_dir() -> Path:
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent / "vendor_tools"
-    return Path(__file__).resolve().parents[2] / "vendor_tools"
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[2]
+
+
+def default_data_root() -> Path:
+    return _app_dir() / "水星配音数据"
 
 
 def load_settings() -> dict:
@@ -39,21 +54,68 @@ def save_settings(update: dict) -> dict:
     return settings
 
 
-def component_root() -> Path:
-    """组件保存根目录（用户设置优先，其次默认）。"""
-    value = str(load_settings().get("component_root") or "").strip()
-    return Path(value) if value else default_component_root()
+def data_root() -> Path:
+    """统一数据总目录（用户设置优先；兼容旧 component_root 设置）。"""
+    settings = load_settings()
+    value = str(settings.get("data_root") or "").strip()
+    if value:
+        return Path(value)
+    legacy = str(settings.get("component_root") or "").strip()  # 旧版仅组件可自定义
+    if legacy:
+        return Path(legacy).parent / "水星配音数据" if Path(legacy).name == DIR_COMPONENTS else Path(legacy)
+    return default_data_root()
 
 
-def set_component_root(path: str | Path) -> Path:
+def set_data_root(path: str | Path) -> Path:
     path = Path(str(path)).expanduser()
-    path.mkdir(parents=True, exist_ok=True)  # 提前建目录，验证可写
-    save_settings({"component_root": str(path)})
+    for sub in (DIR_COMPONENTS, DIR_VOICES, DIR_CLONES, DIR_FONTS):
+        (path / sub).mkdir(parents=True, exist_ok=True)  # 建全子结构，顺带验证可写
+    save_settings({"data_root": str(path)})
+    _migrate_legacy_voices(path)
     return path
 
 
+def _migrate_legacy_voices(root: Path) -> None:
+    """旧版音色库（~/.dub_align_studio/音色库）自动并入总目录（仅目标为空时拷贝）。"""
+    import shutil
+
+    legacy = STUDIO_HOME / DIR_VOICES
+    target = root / DIR_VOICES
+    try:
+        if legacy.is_dir() and any(legacy.iterdir()) and not any(target.iterdir()):
+            for voice_dir in legacy.iterdir():
+                if voice_dir.is_dir():
+                    shutil.copytree(voice_dir, target / voice_dir.name, dirs_exist_ok=True)
+    except Exception:
+        pass  # 迁移失败不阻塞启动，音色包导入可兜底
+
+
+# ------------------------------------------------------------------ 子目录
+def components_root() -> Path:
+    return data_root() / DIR_COMPONENTS
+
+
+def voices_library_root() -> Path:
+    """音色库根（voice_library 的 library_root 参数；其内部再套一层「音色库」目录名，
+    故这里返回 data_root 本身，保证磁盘路径为 总目录/音色库/<voice_id>）。"""
+    return data_root()
+
+
+def clones_dir() -> Path:
+    path = data_root() / DIR_CLONES
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def fonts_dir() -> Path:
+    path = data_root() / DIR_FONTS
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+# ------------------------------------------------------------------ whisper 布局
 def whisper_home() -> Path:
-    return component_root() / "whisper.cpp"
+    return components_root() / "whisper.cpp"
 
 
 def whisper_models_dir() -> Path:
@@ -65,15 +127,35 @@ def whisper_runtime_zip(filename: str) -> Path:
 
 
 def whisper_cli_path() -> Path | None:
-    """whisper-cli 可执行文件：自定义根优先，其次 PATH。"""
+    """whisper-cli 可执行文件：总目录优先，其次旧组件目录，最后 PATH。"""
     import shutil
 
-    for candidate in (
-        whisper_home() / "build" / "bin" / "Release" / "whisper-cli.exe",
-        whisper_home() / "whisper-cli.exe",
-        whisper_home() / "build" / "bin" / "whisper-cli",
-    ):
-        if candidate.exists():
-            return candidate
+    roots = [whisper_home()]
+    legacy = str(load_settings().get("component_root") or "").strip()
+    if legacy:
+        roots.append(Path(legacy) / "whisper.cpp")
+    roots.append(_app_dir() / "vendor_tools" / "whisper.cpp")  # 最早期默认位置兜底
+    for root in roots:
+        for candidate in (
+            root / "build" / "bin" / "Release" / "whisper-cli.exe",
+            root / "whisper-cli.exe",
+            root / "build" / "bin" / "whisper-cli",
+        ):
+            if candidate.exists():
+                return candidate
     found = shutil.which("whisper-cli") or shutil.which("whisper-cli.exe")
     return Path(found) if found else None
+
+
+# 旧接口兼容（第二轮曾暴露 component_root 概念，现映射到总目录/组件）
+def component_root() -> Path:
+    return components_root()
+
+
+def default_component_root() -> Path:
+    return default_data_root() / DIR_COMPONENTS
+
+
+def set_component_root(path: str | Path) -> Path:
+    """旧端点兼容：把传入目录视为总目录设置。"""
+    return set_data_root(path) / DIR_COMPONENTS
