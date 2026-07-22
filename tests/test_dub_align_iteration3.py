@@ -75,10 +75,14 @@ class FontLibraryTests(TempRootMixin, unittest.TestCase):
 
     def test_mirror_urls_wrap_github(self):
         urls = fonts.mirror_urls("https://github.com/a/b/releases/x.ttf")
-        self.assertEqual(len(urls), 4)
+        self.assertEqual(len(urls), 7)  # 2026-07 镜像池扩容：6 家镜像 + 直连
         self.assertTrue(urls[0].startswith("https://ghproxy.net/https://github.com/"))
         self.assertEqual(urls[-1], "https://github.com/a/b/releases/x.ttf")
         self.assertEqual(fonts.mirror_urls("https://example.com/f.ttf"), ["https://example.com/f.ttf"])
+        # 仓库内文件（/raw/ 形态）额外生成 jsDelivr CDN 首选
+        raw = fonts.mirror_urls("https://github.com/google/fonts/raw/main/ofl/x/Y.ttf")
+        self.assertEqual(raw[0], "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/x/Y.ttf")
+        self.assertEqual(len(raw), 8)
 
 
 def zipfile_bytes_without_fonts() -> bytes:
@@ -92,7 +96,7 @@ class ComponentMirrorTests(unittest.TestCase):
     def test_component_mirror_urls(self):
         urls = _gh_mirror_urls(["https://github.com/ggml-org/whisper.cpp/releases/a.zip",
                                 "https://huggingface.co/x/y.bin"])
-        self.assertEqual(len(urls), 6)  # github×5（镜像4 + 直连1）+ hf×1
+        self.assertEqual(len(urls), 8)  # github×7（镜像6 + 直连1）+ hf×1
         self.assertIn("https://huggingface.co/x/y.bin", urls)
 
 

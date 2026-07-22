@@ -26,7 +26,7 @@ body{
   font:15.5px/1.75 "PingFang SC","Microsoft YaHei UI","Noto Sans SC",system-ui,sans-serif;
   min-height:100vh;
 }
-.wrap{max-width:1560px;width:94%;margin:0 auto;padding:0 12px}
+.wrap{max-width:1720px;width:95%;margin:0 auto;padding:0 12px}
 ::selection{background:rgba(228,185,99,.25)}
 
 /* ───────── 顶栏 ───────── */
@@ -139,8 +139,8 @@ td.mut{color:var(--muted)} tr:hover td{background:rgba(228,185,99,.035)}
 .badge{font-size:11px;padding:2px 11px;border-radius:99px;border:1px solid var(--line2);color:var(--muted);font-variant-numeric:tabular-nums}
 
 /* ───────── 手机预览（文本框页） ───────── */
-.g3ov{display:grid;grid-template-columns:minmax(280px,360px) minmax(340px,1.15fr) minmax(300px,1fr);gap:16px;align-items:start}
-@media(max-width:1280px){.g3ov{grid-template-columns:minmax(260px,320px) 1fr}.g3ov>*:last-child{grid-column:1/-1}}
+.g3ov{display:grid;grid-template-columns:minmax(320px,1.1fr) minmax(360px,1.1fr) minmax(280px,.8fr);gap:16px;align-items:start}
+@media(max-width:1280px){.g3ov{grid-template-columns:minmax(300px,1fr) 1fr}.g3ov>*:last-child{grid-column:1/-1}}
 .phone{width:260px;max-width:100%;aspect-ratio:9/16;flex:none;margin:0 auto;position:relative;border-radius:22px;overflow:hidden;
   border:1px solid var(--line2);box-shadow:0 20px 50px rgba(0,0,0,.5), inset 0 0 0 1px rgba(255,255,255,.04);
   background:linear-gradient(160deg,#3B3242 0%,#241F2E 34%,#151218 78%)}
@@ -311,7 +311,8 @@ footer b{color:var(--muted);font-weight:600}
       <p style="text-align:center;font-size:10.5px;color:var(--faint);letter-spacing:2px;margin-top:10px" id="pvInfo">实时预览</p>
       <div class="row" style="margin-top:8px">
         <span class="mini" style="flex:none">预览大小</span>
-        <input type="range" id="pvScale" min="180" max="420" step="10" value="260" style="flex:1 1 120px" oninput="syncPv()">
+        <input type="range" id="pvScale" min="40" max="100" step="2" value="70" style="flex:1 1 120px" oninput="syncPv()">
+        <span class="val" id="pvScaleV">70%</span>
       </div>
     </div>
 
@@ -469,7 +470,8 @@ function showPage(p){
   document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('on',x.dataset.p===p));
   document.querySelectorAll('main section').forEach(s=>s.classList.toggle('on',s.id===p));
 }
-$('nav').addEventListener('click',e=>{const b=e.target.closest('button');if(b)showPage(b.dataset.p);});
+$('nav').addEventListener('click',e=>{const b=e.target.closest('button');if(b){showPage(b.dataset.p);syncPv();}});
+window.addEventListener('resize',()=>syncPv());
 if(/^#p[1-4]$/.test(location.hash))showPage(location.hash.slice(1));
 
 /* ── 声波主轨（确定性伪随机；reduced-motion 静帧） ── */
@@ -610,8 +612,12 @@ function syncPv(fromInput){
   $('edSizeV').textContent=$('edSize').value;
   if($('subSizeV'))$('subSizeV').textContent=$('subsize').value;
   const [cw,ch]=pvCanvas();
-  const pvW=+($('pvScale')?.value||260);
   const phone=$('phone');
+  // 预览大小 = 预览卡可用宽度的百分比（40–100%），任意窗口尺寸下滑杆全程有效
+  const pct=+($('pvScale')?.value||70);
+  if($('pvScaleV'))$('pvScaleV').textContent=pct+'%';
+  const avail=Math.max(180,(phone.parentElement?.clientWidth||320)-46);
+  const pvW=Math.round(avail*pct/100);
   phone.style.width=pvW+'px';
   phone.style.aspectRatio=cw+'/'+ch;
   const info=$('pvInfo'); if(info)info.textContent=`实时预览 · ${cw} × ${ch}（${$('aspect')?.value||'9:16 竖屏'}）`;

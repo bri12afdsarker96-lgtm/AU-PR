@@ -23,14 +23,23 @@ LogFn = Callable[[str], None]
 
 FONT_SUFFIXES = {".ttf", ".otf", ".ttc"}
 
-# GitHub 直连在部分网络不可达：每个 URL 自动生成镜像候选（与组件下载同策略）
-_GH_MIRRORS = ["https://ghproxy.net/", "https://gh-proxy.com/", "https://mirror.ghproxy.com/", ""]
+# GitHub 直连在部分网络不可达：每个 URL 自动生成镜像候选（与组件下载同策略，
+# 2026-07 扩充轮换池；仓库内文件另加 jsDelivr CDN 候选，国内可达性最好）
+_GH_MIRRORS = ["https://ghproxy.net/", "https://gh-proxy.com/", "https://ghfast.top/",
+               "https://github.moeyy.xyz/", "https://gh.llkk.cc/", "https://mirror.ghproxy.com/", ""]
+_RAW_PATTERN = __import__("re").compile(r"github\.com/([^/]+)/([^/]+)/raw/([^/]+)/(.+)")
 
 
 def mirror_urls(url: str) -> list[str]:
     if "github.com" not in url:
         return [url]
-    return [prefix + url for prefix in _GH_MIRRORS]
+    urls: list[str] = []
+    raw = _RAW_PATTERN.search(url)
+    if raw:  # 仓库内文件 → jsDelivr CDN 优先（release 资产无此形态）
+        owner, repo, branch, path = raw.groups()
+        urls.append(f"https://cdn.jsdelivr.net/gh/{owner}/{repo}@{branch}/{path}")
+    urls.extend(prefix + url for prefix in _GH_MIRRORS)
+    return urls
 
 
 # 自媒体常用开源字体包（名称 → 下载定义；file 为落地文件名）
@@ -42,29 +51,29 @@ FONT_PACK: list[dict] = [
     {"key": "lxgw_wenkai", "name": "霞鹜文楷", "file": "LXGWWenKai-Regular.ttf",
      "url": "https://github.com/lxgw/LxgwWenKai/releases/download/v1.510/LXGWWenKai-Regular.ttf",
      "note": "温润楷体，旁白/文艺风"},
-    {"key": "lxgw_wenkai_bold", "name": "霞鹜文楷 粗", "file": "LXGWWenKai-Bold.ttf",
-     "url": "https://github.com/lxgw/LxgwWenKai/releases/download/v1.510/LXGWWenKai-Bold.ttf",
-     "note": "楷体加粗，书名/强调"},
+    {"key": "lxgw_wenkai_bold", "name": "霞鹜文楷 中粗", "file": "LXGWWenKai-Medium.ttf",
+     "url": "https://github.com/lxgw/LxgwWenKai/releases/download/v1.510/LXGWWenKai-Medium.ttf",
+     "note": "楷体加粗，书名/强调（v1.510 无 Bold，Medium 为最粗档）"},
     {"key": "zcool_kuaile", "name": "站酷快乐体", "file": "ZCOOLKuaiLe-Regular.ttf",
      "url": "https://github.com/googlefonts/zcool-kuaile/raw/main/fonts/ttf/ZCOOLKuaiLe-Regular.ttf",
      "note": "圆润活泼，搞笑/生活类"},
     {"key": "zcool_xiaowei", "name": "站酷小薇LOGO体", "file": "ZCOOLXiaoWei-Regular.ttf",
-     "url": "https://github.com/googlefonts/zcoolxiaowei/raw/main/fonts/ttf/ZCOOLXiaoWei-Regular.ttf",
+     "url": "https://github.com/google/fonts/raw/main/ofl/zcoolxiaowei/ZCOOLXiaoWei-Regular.ttf",
      "note": "标题LOGO感"},
     {"key": "zcool_qingke", "name": "站酷庆科黄油体", "file": "ZCOOLQingKeHuangYou-Regular.ttf",
-     "url": "https://github.com/googlefonts/zcool-qingke-huangyou/raw/main/fonts/ttf/ZCOOLQingKeHuangYou-Regular.ttf",
+     "url": "https://github.com/google/fonts/raw/main/ofl/zcoolqingkehuangyou/ZCOOLQingKeHuangYou-Regular.ttf",
      "note": "厚实黄油感，综艺花字"},
     {"key": "ma_shan_zheng", "name": "马善政毛笔楷", "file": "MaShanZheng-Regular.ttf",
-     "url": "https://github.com/googlefonts/ma-shan-zheng/raw/main/fonts/ttf/MaShanZheng-Regular.ttf",
+     "url": "https://github.com/google/fonts/raw/main/ofl/mashanzheng/MaShanZheng-Regular.ttf",
      "note": "毛笔手写，国风/武侠"},
     {"key": "long_cang", "name": "龙藏体", "file": "LongCang-Regular.ttf",
-     "url": "https://github.com/googlefonts/long-cang/raw/main/fonts/ttf/LongCang-Regular.ttf",
+     "url": "https://github.com/google/fonts/raw/main/ofl/longcang/LongCang-Regular.ttf",
      "note": "行书手写，情感文案"},
     {"key": "zhi_mang_xing", "name": "指尖芒星体", "file": "ZhiMangXing-Regular.ttf",
-     "url": "https://github.com/googlefonts/zhi-mang-xing/raw/main/fonts/ttf/ZhiMangXing-Regular.ttf",
+     "url": "https://github.com/google/fonts/raw/main/ofl/zhimangxing/ZhiMangXing-Regular.ttf",
      "note": "行草手写"},
     {"key": "liu_jian_mao_cao", "name": "刘建毛草体", "file": "LiuJianMaoCao-Regular.ttf",
-     "url": "https://github.com/googlefonts/liu-jian-mao-cao/raw/main/fonts/ttf/LiuJianMaoCao-Regular.ttf",
+     "url": "https://github.com/google/fonts/raw/main/ofl/liujianmaocao/LiuJianMaoCao-Regular.ttf",
      "note": "草书手写"},
     {"key": "noto_sans_sc", "name": "思源黑体(Noto)", "file": "NotoSansSC-Regular.ttf",
      "url": "https://github.com/notofonts/noto-cjk/raw/main/Sans/SubsetOTF/SC/NotoSansSC-Regular.otf",
@@ -150,8 +159,13 @@ def install_font(key: str, log: LogFn) -> None:
         return
     member_suffix = item.get("zip_member_suffix")
     download_target = root / (Path(str(item["url"])).name if member_suffix else str(item["file"]))
-    log(f"开始下载 {item['name']}（GitHub + 国内镜像轮询）…")
-    result = download_verified_file(mirror_urls(str(item["url"])), download_target)
+    log(f"开始下载 {item['name']}（jsDelivr/GitHub + 国内镜像轮询）…")
+    try:
+        result = download_verified_file(mirror_urls(str(item["url"])), download_target)
+    except Exception as exc:
+        raise RuntimeError(
+            f"所有下载源均失败（{exc}）。手动兜底：浏览器打开 {item['url']} 下载后，"
+            f"把文件改名为 {item['file']} 放入字体目录 {root}，软件即自动识别（点「↻ 刷新」）。") from exc
     log(f"  {result.message}")
     if member_suffix:
         with zipfile.ZipFile(download_target) as bundle:

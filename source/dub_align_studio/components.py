@@ -122,6 +122,13 @@ def _download_status(key: str) -> tuple[bool, str]:
     return False, f"未下载（{root_note}）。"
 
 
+def _manual_download_hint(entry: dict, target: Path, exc: Exception) -> str:
+    """所有源都失败时的手动兜底话术：直连地址 + 存放路径 + 续走口径。"""
+    url = list(entry["urls"])[0]
+    return (f"所有下载源均失败（{exc}）。手动兜底：浏览器打开 {url} 下载，"
+            f"把文件原名放入 {target.parent}，再点一次「下载」即自动校验/续装，不会重新下载。")
+
+
 def _progress(log: LogFn):
     milestones = {25, 50, 75, 100}
 
@@ -138,15 +145,14 @@ def _progress(log: LogFn):
 
 
 def _gh_mirror_urls(urls: list[str]) -> list[str]:
-    """GitHub 直连在部分网络不可达：为 github.com 链接生成镜像候选（镜像优先）。"""
+    """GitHub 直连在部分网络不可达：为 github.com 链接生成镜像候选（镜像优先）。
+
+    与 fonts.mirror_urls 同一套轮换池（2026-07 扩充到 6 家 + 直连），单点镜像失效不影响整体。"""
+    from .fonts import mirror_urls
+
     expanded: list[str] = []
     for url in urls:
-        if "github.com" in url:
-            for prefix in ("https://ghproxy.net/", "https://gh-proxy.com/",
-                           "https://ghfast.top/", "https://mirror.ghproxy.com/", ""):
-                expanded.append(prefix + url)
-        else:
-            expanded.append(url)
+        expanded.extend(mirror_urls(url))
     return expanded
 
 
@@ -157,10 +163,13 @@ def _download_whisper_runtime(log: LogFn) -> None:
         return
     target = studio_settings.whisper_runtime_zip(str(entry["filename"]))
     log(f"开始下载 {entry['filename']}（GitHub+国内镜像轮询，SHA256 校验，断点续传）…")
-    result = download_verified_file(
-        _gh_mirror_urls(list(entry["urls"])), target, _progress(log),
-        int(entry["size_bytes"]), str(entry["sha256"]),
-    )
+    try:
+        result = download_verified_file(
+            _gh_mirror_urls(list(entry["urls"])), target, _progress(log),
+            int(entry["size_bytes"]), str(entry["sha256"]),
+        )
+    except Exception as exc:
+        raise RuntimeError(_manual_download_hint(entry, target, exc)) from exc
     log(f"  {result.message}")
     log("解压运行时…")
     with zipfile.ZipFile(target) as bundle:
@@ -177,10 +186,13 @@ def _download_model(key: str, log: LogFn) -> None:
         log(f"✅ 模型 {entry['name']} 已存在且校验通过，无需重复下载。")
         return
     log(f"开始下载 {entry['filename']}（SHA256 校验，支持断点续传）…")
-    result = download_verified_file(
-        _gh_mirror_urls(list(entry["urls"])), target, _progress(log),
-        int(entry["size_bytes"]), str(entry["sha256"]),
-    )
+    try:
+        result = download_verified_file(
+            _gh_mirror_urls(list(entry["urls"])), target, _progress(log),
+            int(entry["size_bytes"]), str(entry["sha256"]),
+        )
+    except Exception as exc:
+        raise RuntimeError(_manual_download_hint(entry, target, exc)) from exc
     log(f"  {result.message}")
     validation = validate_component_file(target, int(entry["size_bytes"]), str(entry["sha256"]))
     if not validation.ok:
