@@ -8,7 +8,7 @@ from dub_align_studio import components
 class ComponentCatalogTests(unittest.TestCase):
     def test_catalog_covers_all_kinds(self):
         kinds = {c["kind"] for c in components.COMPONENTS}
-        self.assertEqual(kinds, {"download", "pip", "manual"})
+        self.assertEqual(kinds, {"download", "pip", "install"})  # fish 已从「指引」升级为一键安装
         keys = [c["key"] for c in components.COMPONENTS]
         self.assertEqual(len(keys), len(set(keys)))
         for item in components.COMPONENTS:
@@ -35,10 +35,11 @@ class InstallGuardTests(unittest.TestCase):
         with self.assertRaises(KeyError):
             components.install_component("不存在", lambda _m: None)
 
-    def test_manual_component_raises_with_guide(self):
-        with self.assertRaises(RuntimeError) as ctx:
-            components.install_component("fish_speech", lambda _m: None)
-        self.assertIn("fish-speech", str(ctx.exception))
+    def test_fish_mirror_urls_cover_source(self):
+        urls = components._gh_mirror_urls(components.FISH_SOURCE_URLS)
+        self.assertTrue(any(u.startswith("https://ghproxy.net/") for u in urls))
+        self.assertTrue(any(u.startswith("https://ghfast.top/") for u in urls))
+        self.assertIn(components.FISH_SOURCE_URLS[0], urls)  # 原始直连保底
 
     def test_pip_installed_detection(self):
         self.assertTrue(components._pip_installed("json"))  # 标准库恒可导入

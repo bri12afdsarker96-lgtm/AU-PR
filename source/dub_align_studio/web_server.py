@@ -58,9 +58,13 @@ _INDEX = _index_path()
 _MAX_UPLOAD = 200 * 1024 * 1024  # 参考音频上限 200MB，足够富余
 
 
-# ------------------------------------------------------------------ 任务状态
+# ------------------------------------------------------------------ 任务状态（多槽并发）
+# 槽位规则：主流程（配音/量时长/渲染/剪映/自检…）共用 main 槽保持互斥；
+# 每个组件/字体下载各占独立槽 → 并发下载互不阻塞，也不再挡住主流程与自检。
 @dataclass
 class JobState:
+    slot: str = "main"
+    label: str = ""
     lock: threading.Lock = field(default_factory=threading.Lock)
     running: bool = False
     done: bool = False
@@ -76,7 +80,8 @@ class JobState:
                 {"index": t.index, "text": t.text, "duration": t.duration}
                 for t in (self.timings or [])
             ]
-            return {"running": self.running, "done": self.done, "ok": self.ok,
+            return {"id": self.slot, "label": self.label,
+                    "running": self.running, "done": self.done, "ok": self.ok,
                     "action": self.action, "log": list(self.log), "timings": timings}
 
     def append(self, message: str) -> None:
@@ -84,10 +89,50 @@ class JobState:
             self.log.append(message)
 
 
-JOB = JobState()
+JOB = JobState()          # main 槽（保持旧口径：/api/job 即它）
+TASKS: dict[str, JobState] = {"main": JOB}
+TASKS_LOCK = threading.Lock()
 
 
-def _run_job(action: str, payload: dict) -> None:
+def _slot_for(action: str, payload: dict) -> tuple[str, str]:
+    """action → (槽位, 展示名)。组件/字体/fish 服务各自独立槽，其余共用 main。"""
+    if action == "component":
+        key = str(payload.get("component_key") or "")
+        item = next((c for c in toolbox.COMPONENTS if c["key"] == key), None)
+        return f"component:{key}", str(item["name"]) if item else key
+    if action == "font":
+        key = str(payload.get("font_key") or "")
+        pack = next((f for f in font_library.FONT_PACK if f["key"] == key), None)
+        return f"font:{key}", ("字体·" + str(pack["name"])) if pack else key
+    if action in {"fish_server", "fish_server_stop"}:
+        return "fish_server", "fish-speech 服务"
+    return "main", action
+
+
+def _start_task(action: str, payload: dict) -> tuple[JobState | None, str]:
+    """占槽并启动后台任务；槽位忙时返回 (None, 提示)。"""
+    slot, label = _slot_for(action, payload)
+    with TASKS_LOCK:
+        current = TASKS.get(slot)
+        if current is not None:
+            with current.lock:
+                if current.running:
+                    return None, f"「{current.label or current.action}」正在执行，请稍候（其他下载/操作可并行）。"
+        if slot == "main":
+            job = JOB
+            with job.lock:
+                job.running, job.done, job.ok = True, False, False
+                job.action, job.label = action, label
+                job.log = [f"══ {action} 开始 ══"]
+        else:
+            job = JobState(slot=slot, label=label, running=True, action=action,
+                           log=[f"══ {label} 开始 ══"])
+            TASKS[slot] = job
+    threading.Thread(target=_run_job, args=(job, action, payload), daemon=True).start()
+    return job, ""
+
+
+def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 —— 沿用旧函数体的 JOB 名
     log = JOB.append
     try:
         text = str(payload.get("text") or "")
@@ -177,6 +222,14 @@ def _run_job(action: str, payload: dict) -> None:
             toolbox.install_component(key, log)
             with JOB.lock:
                 JOB.ok = True
+        elif action == "fish_server":
+            toolbox.start_fish_server(log)
+            with JOB.lock:
+                JOB.ok = True
+        elif action == "fish_server_stop":
+            toolbox.stop_fish_server(log)
+            with JOB.lock:
+                JOB.ok = True
         elif action == "font":
             key = str(payload.get("font_key") or "")
             font_library.install_font(key, log)
@@ -248,6 +301,27 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if route == "/api/job":
             self._json(JOB.snapshot())
+            return
+        if route == "/api/jobs":
+            with TASKS_LOCK:
+                jobs = [t.snapshot() for t in TASKS.values()]
+            self._json({"jobs": jobs})
+            return
+        if route == "/api/audio":
+            query = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+            self._serve_media(Path(str(query.get("path") or "")))
+            return
+        if route == "/api/clones":
+            self._json({"clones": _clones_payload()})
+            return
+        if route.startswith("/api/voices/") and route.endswith("/audio"):
+            voice_id = unquote(route[len("/api/voices/"):-len("/audio")])
+            try:
+                entry = voice_library.get_voice(_vroot(), voice_id)
+            except KeyError as exc:
+                self._json({"error": str(exc)}, 404)
+                return
+            self._serve_media(entry.reference_wav, skip_root_check=True)
             return
         if route == "/api/browse":
             query = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
@@ -396,25 +470,154 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json({"error": "JSON 无效"}, 400)
                 return
             action = str(payload.get("action") or "")
-            with JOB.lock:
-                if JOB.running:
-                    self._json({"error": f"当前有任务在执行（{JOB.action}），请等它完成后再试。"}, 409)
-                    return
-                JOB.running, JOB.done, JOB.ok = True, False, False
-                JOB.action = action
-                JOB.log = [f"══ {action} 开始 ══"]
-            threading.Thread(target=_run_job, args=(action, payload), daemon=True).start()
-            self._json({"ok": True})
+            for key in ("output_dir", "shots_dir"):
+                _allow_media_root(str(payload.get(key) or ""))
+            job, busy = _start_task(action, payload)
+            if job is None:
+                self._json({"error": busy}, 409)
+                return
+            self._json({"ok": True, "slot": job.slot})
+            return
+        if route == "/api/open_folder":
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+                target = Path(str(payload.get("path") or "")).expanduser()
+                if not target.is_dir():
+                    raise FileNotFoundError(f"目录不存在：{target}")
+                _open_folder(target)
+                self._json({"ok": True})
+            except Exception as exc:
+                self._json({"error": str(exc)}, 400)
             return
         self._json({"error": "not found"}, 404)
 
+    def _serve_media(self, file: Path, skip_root_check: bool = False) -> None:
+        """带 Range 的媒体文件服务（试听/预览）。仅放行媒体后缀 + 白名单根目录。"""
+        try:
+            file = file.expanduser().resolve()
+        except OSError:
+            self._json({"error": "路径非法"}, 400)
+            return
+        if file.suffix.lower() not in _MEDIA_SUFFIXES:
+            self._json({"error": f"不支持的媒体类型：{file.suffix}"}, 403)
+            return
+        if not skip_root_check and not _media_allowed(file):
+            self._json({"error": "该路径不在数据总目录/输出目录内，拒绝访问。"}, 403)
+            return
+        if not file.is_file():
+            self._json({"error": f"文件不存在：{file}"}, 404)
+            return
+        size = file.stat().st_size
+        ctype = _MEDIA_SUFFIXES[file.suffix.lower()]
+        start, end = 0, size - 1
+        header = self.headers.get("Range")
+        if header and header.startswith("bytes="):
+            piece = header[6:].split(",")[0].strip()
+            try:
+                left, _, right = piece.partition("-")
+                start = int(left) if left else max(0, size - int(right))
+                end = min(int(right), size - 1) if (left and right) else end
+            except ValueError:
+                start, end = 0, size - 1
+        if start > end or start >= size:
+            self.send_response(416)
+            self.send_header("Content-Range", f"bytes */{size}")
+            self.end_headers()
+            return
+        partial = header is not None and (start, end) != (0, size - 1)
+        self.send_response(206 if partial else 200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Accept-Ranges", "bytes")
+        if partial:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        length = end - start + 1
+        self.send_header("Content-Length", str(length))
+        self.end_headers()
+        with file.open("rb") as handle:
+            handle.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = handle.read(min(1024 * 256, remaining))
+                if not chunk:
+                    break
+                try:
+                    self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionError):
+                    return
+                remaining -= len(chunk)
+
     def do_DELETE(self) -> None:
         route = urlparse(self.path).path
+        if route.startswith("/api/clones/"):
+            name = Path(unquote(route.rsplit("/", 1)[-1])).name  # 只允许文件名，防目录穿越
+            target = studio_settings.clones_dir() / name
+            target.unlink(missing_ok=True)
+            target.with_suffix(".json").unlink(missing_ok=True)
+            self._json({"ok": True})
+            return
         if route.startswith("/api/voices/"):
             voice_library.delete_voice(_vroot(), unquote(route.rsplit("/", 1)[-1]))
             self._json({"ok": True})
             return
         self._json({"error": "not found"}, 404)
+
+
+# ------------------------------------------------------------------ 媒体白名单与克隆存档
+_MEDIA_SUFFIXES = {
+    ".wav": "audio/wav", ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".aac": "audio/aac",
+    ".flac": "audio/flac", ".ogg": "audio/ogg",
+    ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime",
+}
+_EXTRA_MEDIA_ROOTS: set[str] = set()
+
+
+def _allow_media_root(path_text: str) -> None:
+    path_text = path_text.strip()
+    if path_text:
+        try:
+            _EXTRA_MEDIA_ROOTS.add(str(Path(path_text).expanduser().resolve()))
+        except OSError:
+            pass
+
+
+def _media_allowed(file: Path) -> bool:
+    roots = set(_EXTRA_MEDIA_ROOTS)
+    try:
+        roots.add(str(studio_settings.data_root().resolve()))
+    except OSError:
+        pass
+    if STUDIO_HOME is not None:
+        roots.add(str(STUDIO_HOME.resolve()))
+    text = str(file)
+    return any(text == root or text.startswith(root.rstrip("\\/") + sep)
+               for root in roots for sep in ("\\", "/"))
+
+
+def _clones_payload() -> list[dict]:
+    """克隆音频存档清单（新→旧）：文件名即 时间戳_引擎_音色。"""
+    items = []
+    root = studio_settings.clones_dir()
+    for file in root.iterdir():
+        if file.suffix.lower() in _MEDIA_SUFFIXES and file.is_file():
+            stat = file.stat()
+            items.append({"file": file.name, "path": str(file),
+                          "size_mb": round(stat.st_size / (1024 * 1024), 2),
+                          "mtime": stat.st_mtime})
+    return sorted(items, key=lambda x: x["mtime"], reverse=True)
+
+
+def _open_folder(target: Path) -> None:
+    import os
+    import subprocess
+    import sys as _sys
+
+    if os.name == "nt":
+        os.startfile(str(target))  # type: ignore[attr-defined]
+    elif _sys.platform == "darwin":
+        subprocess.Popen(["open", str(target)])
+    else:
+        subprocess.Popen(["xdg-open", str(target)])
 
 
 def _browse(path_text: str) -> dict:

@@ -4,16 +4,20 @@
     - 下载类（download）：whisper-cli 运行时 + ggml 模型，复用水星
       model_registry（URL/size/SHA256）与 component_download（多源+断点续传+校验）；
     - 安装类（pip）：dots.tts / pyCapCut，调本机 pip 安装，输出逐行进日志；
-    - 指引类（manual）：fish-speech（需按官方文档部署本地 server，无法一键）。
+    - 安装类（install）：fish-speech（源码镜像下载 → pip 装依赖 → 拉模型 →
+      工具箱一键启动/停止本地 server，分阶段可断点续装）。
 
-install_component 在后台任务里执行（web_server JOB），log 回调逐行汇报进度。
+install_component 在后台任务槽里执行（web_server 多任务并发），log 回调逐行汇报进度。
 """
 
 from __future__ import annotations
 
 import importlib.util
+import os
+import shutil
 import subprocess
 import sys
+import threading
 import zipfile
 from pathlib import Path
 from typing import Callable
@@ -39,11 +43,15 @@ COMPONENTS: list[dict] = [
      "purpose": "整篇声音克隆（2B/48kHz，需 NVIDIA GPU ≥6GB 显存）"},
     {"key": "pycapcut", "name": "pyCapCut 草稿组件", "kind": "pip", "package": "pycapcut",
      "purpose": "本机直接生成真实剪映草稿（缺失时交接包照常导出）"},
-    {"key": "fish_speech", "name": "fish-speech 引擎", "kind": "manual",
-     "purpose": "整篇声音克隆备选（本地 HTTP 服务）",
-     "guide": "需按官方文档部署：git clone https://github.com/fishaudio/fish-speech，"
-              "启动本地 server（默认 127.0.0.1:8080）后本软件自动识别。"},
+    {"key": "fish_speech", "name": "fish-speech 引擎", "kind": "install",
+     "purpose": "整篇声音克隆备选（一键装源码+依赖+模型，装好后点「启动服务」）"},
 ]
+
+# fish-speech 一键安装的固定口径
+FISH_SOURCE_URLS = ["https://github.com/fishaudio/fish-speech/archive/refs/heads/main.zip"]
+FISH_MODEL_REPO = "fishaudio/fish-speech-1.5"
+FISH_SERVER_ADDR = "127.0.0.1:8080"
+_HF_MIRROR = "https://hf-mirror.com"  # HF 直连不可达时的国内镜像（可用 HF_ENDPOINT 覆盖）
 
 
 def _pip_installed(package: str) -> bool:
@@ -70,12 +78,11 @@ def component_statuses() -> list[dict]:
             installed = _pip_installed(str(item["package"]))
             entry["installed"] = installed
             entry["detail"] = "已安装。" if installed else f"未安装（点击安装：pip install {item['package']}）。"
-        else:
-            from .engines import FishLocalEngine
-
-            probe = FishLocalEngine().probe()
-            entry["installed"] = probe.available
-            entry["detail"] = probe.detail
+        else:  # fish_speech（install）
+            stage, detail = fish_stage()
+            entry["installed"] = stage == "online"
+            entry["fish_stage"] = stage
+            entry["detail"] = detail
         result.append(entry)
     return result
 
@@ -85,8 +92,9 @@ def install_component(key: str, log: LogFn) -> None:
     item = next((c for c in COMPONENTS if c["key"] == key), None)
     if item is None:
         raise KeyError(f"未知组件：{key}")
-    if item["kind"] == "manual":
-        raise RuntimeError(str(item.get("guide") or "该组件需手动部署。"))
+    if item["kind"] == "install":
+        _install_fish_speech(log)
+        return
     if item["kind"] == "pip":
         _pip_install(str(item["package"]), log)
         return
@@ -134,7 +142,8 @@ def _gh_mirror_urls(urls: list[str]) -> list[str]:
     expanded: list[str] = []
     for url in urls:
         if "github.com" in url:
-            for prefix in ("https://ghproxy.net/", "https://gh-proxy.com/", "https://mirror.ghproxy.com/", ""):
+            for prefix in ("https://ghproxy.net/", "https://gh-proxy.com/",
+                           "https://ghfast.top/", "https://mirror.ghproxy.com/", ""):
                 expanded.append(prefix + url)
         else:
             expanded.append(url)
@@ -181,8 +190,18 @@ def _download_model(key: str, log: LogFn) -> None:
 
 def _pip_install(package: str, log: LogFn) -> None:
     log(f"pip install {package} …（使用当前 Python 环境）")
+    _stream_command([sys.executable, "-m", "pip", "install", package], log,
+                    error=f"pip 安装失败。请检查网络或手动执行：pip install {package}")
+    if not _pip_installed(package):
+        raise RuntimeError(f"安装完成但导入检测未通过，请重启软件后再试（pip install {package}）。")
+    log(f"✅ {package} 安装完成。")
+
+
+def _stream_command(cmd: list[str], log: LogFn, error: str, cwd: Path | None = None,
+                    env: dict | None = None) -> None:
+    """子进程输出逐行进日志；非零退出码抛用户可读错误。"""
     process = subprocess.Popen(
-        [sys.executable, "-m", "pip", "install", package],
+        cmd, cwd=str(cwd) if cwd else None, env=env,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace",
     )
@@ -193,7 +212,176 @@ def _pip_install(package: str, log: LogFn) -> None:
             log("  " + line[-160:])
     code = process.wait()
     if code != 0:
-        raise RuntimeError(f"pip 安装失败（退出码 {code}）。请检查网络或手动执行：pip install {package}")
-    if not _pip_installed(package):
-        raise RuntimeError(f"安装完成但导入检测未通过，请重启软件后再试（pip install {package}）。")
-    log(f"✅ {package} 安装完成。")
+        raise RuntimeError(f"{error}（退出码 {code}）")
+
+
+# ------------------------------------------------------------------ fish-speech 一键安装 + 服务管理
+def fish_source_dir() -> Path:
+    return studio_settings.components_root() / "fish-speech"
+
+
+def fish_checkpoints_dir() -> Path:
+    return fish_source_dir() / "checkpoints" / FISH_MODEL_REPO.rsplit("/", 1)[-1]
+
+
+def _fish_source_ready() -> bool:
+    return (fish_source_dir() / "pyproject.toml").exists()
+
+
+def _fish_deps_ready() -> bool:
+    return _pip_installed("fish_speech")
+
+
+def _fish_model_ready() -> bool:
+    ckpt = fish_checkpoints_dir()
+    return ckpt.is_dir() and any(p.suffix in {".pth", ".safetensors"} for p in ckpt.iterdir())
+
+
+def fish_stage() -> tuple[str, str]:
+    """fish-speech 安装阶段：online / startable / model / deps / source / none + 用户可读说明。"""
+    from .engines import FishLocalEngine
+
+    probe = FishLocalEngine().probe()
+    if probe.available:
+        return "online", probe.detail
+    if _fish_source_ready() and _fish_deps_ready() and _fish_model_ready():
+        return "startable", "已安装（源码+依赖+模型），点「启动服务」即可使用。"
+    if _fish_source_ready() and _fish_deps_ready():
+        return "model", "源码与依赖已装，缺模型 —— 点「安装」续装（断点续装，不重复下载）。"
+    if _fish_source_ready():
+        return "deps", "源码已就位，缺 Python 依赖 —— 点「安装」续装。"
+    return "none", "未安装。点「安装」自动完成：源码（GitHub+镜像）→ pip 依赖 → 模型（HF 镜像）。"
+
+
+def _install_fish_speech(log: LogFn) -> None:
+    """分阶段一键安装：已完成的阶段自动跳过，失败从断点续装。"""
+    src = fish_source_dir()
+    # ① 源码
+    if _fish_source_ready():
+        log(f"✅ 源码已存在：{src}（跳过下载）")
+    else:
+        log("① 下载 fish-speech 源码（GitHub + 国内镜像轮询）…")
+        bundle = studio_settings.components_root() / "fish-speech-main.zip"
+        result = download_verified_file(_gh_mirror_urls(FISH_SOURCE_URLS), bundle, _progress(log))
+        log(f"  {result.message}")
+        log("  解压源码…")
+        temp = studio_settings.components_root() / "_fish_unzip"
+        shutil.rmtree(temp, ignore_errors=True)
+        with zipfile.ZipFile(bundle) as pack:
+            pack.extractall(temp)
+        inner = next((p for p in temp.iterdir() if p.is_dir() and (p / "pyproject.toml").exists()), None)
+        if inner is None:
+            raise RuntimeError("源码包结构不对（未找到 pyproject.toml），请重试或换网络。")
+        shutil.rmtree(src, ignore_errors=True)
+        shutil.move(str(inner), str(src))
+        shutil.rmtree(temp, ignore_errors=True)
+        bundle.unlink(missing_ok=True)
+        log(f"✅ 源码就位：{src}")
+    # ② Python 依赖
+    if _fish_deps_ready():
+        log("✅ Python 依赖已安装（跳过）。")
+    else:
+        log("② 安装 Python 依赖（pip install -e，体量较大请耐心）…")
+        _stream_command([sys.executable, "-m", "pip", "install", "-e", str(src)], log,
+                        error="fish-speech 依赖安装失败。可手动执行：pip install -e " + str(src))
+        log("✅ 依赖安装完成。GPU 加速需自行安装 CUDA 版 torch（pytorch.org 选择对应命令）。")
+    # ③ 模型
+    if _fish_model_ready():
+        log("✅ 模型已存在（跳过下载）。")
+    else:
+        log(f"③ 下载模型 {FISH_MODEL_REPO}（HF 镜像 {os.environ.get('HF_ENDPOINT', _HF_MIRROR)}）…")
+        env = dict(os.environ)
+        env.setdefault("HF_ENDPOINT", _HF_MIRROR)
+        env.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+        script = (
+            "from huggingface_hub import snapshot_download;"
+            f"snapshot_download(repo_id={FISH_MODEL_REPO!r}, local_dir={str(fish_checkpoints_dir())!r})"
+        )
+        try:
+            _stream_command([sys.executable, "-c", script], log, env=env,
+                            error="模型下载失败")
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"{exc} —— 可手动下载：huggingface-cli download {FISH_MODEL_REPO} "
+                f"--local-dir \"{fish_checkpoints_dir()}\"（国内可先 set HF_ENDPOINT={_HF_MIRROR}），"
+                "完成后回到工具箱点「启动服务」。") from exc
+        if not _fish_model_ready():
+            raise RuntimeError("模型下载完成但未找到权重文件，请重试或手动核对 checkpoints 目录。")
+        log("✅ 模型就绪。")
+    log("✅ fish-speech 安装完成 —— 点「启动服务」后即可在配音引擎里选用。")
+
+
+_FISH_PROC: subprocess.Popen | None = None
+_FISH_LOCK = threading.Lock()
+
+
+def fish_server_running() -> bool:
+    with _FISH_LOCK:
+        return _FISH_PROC is not None and _FISH_PROC.poll() is None
+
+
+def start_fish_server(log: LogFn, wait_seconds: float = 90.0) -> None:
+    """启动本地 fish-speech server（127.0.0.1:8080），探活成功即返回，进程留在后台。"""
+    global _FISH_PROC
+    from .engines import FishLocalEngine
+
+    if FishLocalEngine().probe().available:
+        log("✅ fish-speech 服务已在线，无需再次启动。")
+        return
+    stage, detail = fish_stage()
+    if stage in {"none", "source", "deps", "model"}:
+        raise RuntimeError(f"还不能启动：{detail}")
+    src = fish_source_dir()
+    cmd = [sys.executable, "-m", "tools.api_server", "--listen", FISH_SERVER_ADDR]
+    ckpt = fish_checkpoints_dir()
+    decoder = next((p for p in sorted(ckpt.glob("firefly*generator*.pth"))), None) if ckpt.is_dir() else None
+    if ckpt.is_dir():
+        cmd += ["--llama-checkpoint-path", str(ckpt)]
+    if decoder is not None:
+        cmd += ["--decoder-checkpoint-path", str(decoder), "--decoder-config-name", "firefly_gan_vq"]
+    log("启动命令：" + " ".join(cmd))
+    with _FISH_LOCK:
+        _FISH_PROC = subprocess.Popen(
+            cmd, cwd=str(src), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace",
+        )
+        proc = _FISH_PROC
+    tail: list[str] = []
+
+    def _pump() -> None:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            line = line.rstrip()
+            if line:
+                tail.append(line[-160:])
+                del tail[:-30]
+                log("  " + line[-160:])
+
+    threading.Thread(target=_pump, daemon=True).start()
+    import time
+
+    deadline = time.time() + wait_seconds
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            raise RuntimeError("fish-speech 服务启动即退出（见上方日志）。常见原因：模型缺失、显存不足、torch 未装好。")
+        if FishLocalEngine().probe().available:
+            log(f"✅ fish-speech 服务在线：http://{FISH_SERVER_ADDR}（关软件前可在工具箱停止）")
+            return
+        time.sleep(2)
+    log("⚠ 服务仍在加载中（大模型首次加载较慢）；就绪后「探测组件」会显示在线。")
+
+
+def stop_fish_server(log: LogFn) -> None:
+    global _FISH_PROC
+    with _FISH_LOCK:
+        proc = _FISH_PROC
+        _FISH_PROC = None
+    if proc is None or proc.poll() is not None:
+        log("fish-speech 服务本就未由本软件托管运行。")
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+    log("✅ fish-speech 服务已停止。")

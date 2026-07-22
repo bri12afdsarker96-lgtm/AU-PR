@@ -92,7 +92,7 @@ class ComponentMirrorTests(unittest.TestCase):
     def test_component_mirror_urls(self):
         urls = _gh_mirror_urls(["https://github.com/ggml-org/whisper.cpp/releases/a.zip",
                                 "https://huggingface.co/x/y.bin"])
-        self.assertEqual(len(urls), 5)  # github×4 + hf×1
+        self.assertEqual(len(urls), 6)  # github×5（镜像4 + 直连1）+ hf×1
         self.assertIn("https://huggingface.co/x/y.bin", urls)
 
 

@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>水星配音对齐工作室</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23E4B963'/%3E%3Cpath d='M16 6 26 16 16 26 6 16Z' fill='%23221A07'/%3E%3C/svg%3E">
 <style>
 :root{
   --bg:#100E0B; --bg2:#161310; --panel:#1B1812; --panel2:#211D15; --field:#262117;
@@ -90,7 +91,9 @@ section{display:none}section.on{display:block}
 .card h2::after{content:"";height:1px;flex:1;background:linear-gradient(90deg,var(--line2),transparent)}
 .f{display:block;font-size:12.5px;color:var(--muted);letter-spacing:1.5px;margin-bottom:6px}
 .sp{margin-bottom:14px}
-.row{display:flex;gap:10px;align-items:center}.row>*{min-width:0}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.row>*{min-width:0}
+.row>input[type=text]{flex:1 1 180px}
+.row>select{flex:1 1 140px;width:auto}
 textarea,input[type=text],input[type=number],select{width:100%;background:var(--field);color:var(--text);
   border:1px solid var(--line);border-radius:var(--rs);padding:11px 14px;font:inherit;outline:none;transition:.15s}
 textarea:focus,input:focus,select:focus{border-color:var(--gold-deep);box-shadow:0 0 0 3px rgba(228,185,99,.09)}
@@ -136,9 +139,9 @@ td.mut{color:var(--muted)} tr:hover td{background:rgba(228,185,99,.035)}
 .badge{font-size:11px;padding:2px 11px;border-radius:99px;border:1px solid var(--line2);color:var(--muted);font-variant-numeric:tabular-nums}
 
 /* ───────── 手机预览（文本框页） ───────── */
-.g3ov{display:grid;grid-template-columns:minmax(200px,300px) minmax(320px,1fr) minmax(320px,1fr);gap:16px;align-items:start}
-@media(max-width:1180px){.g3ov{grid-template-columns:minmax(200px,280px) 1fr}.g3ov>.card:last-child{grid-column:1/-1}}
-.phone{width:260px;aspect-ratio:9/16;flex:none;margin:0 auto;position:relative;border-radius:22px;overflow:hidden;
+.g3ov{display:grid;grid-template-columns:minmax(280px,360px) minmax(340px,1.15fr) minmax(300px,1fr);gap:16px;align-items:start}
+@media(max-width:1280px){.g3ov{grid-template-columns:minmax(260px,320px) 1fr}.g3ov>*:last-child{grid-column:1/-1}}
+.phone{width:260px;max-width:100%;aspect-ratio:9/16;flex:none;margin:0 auto;position:relative;border-radius:22px;overflow:hidden;
   border:1px solid var(--line2);box-shadow:0 20px 50px rgba(0,0,0,.5), inset 0 0 0 1px rgba(255,255,255,.04);
   background:linear-gradient(160deg,#3B3242 0%,#241F2E 34%,#151218 78%)}
 .phone::before{content:"";position:absolute;inset:0;
@@ -227,6 +230,12 @@ footer b{color:var(--muted);font-weight:600}
       <span>画面策略：<b>裁剪 / 放慢 / 定格</b></span>
       <span>Σ 行时长 = <b>master 总长</b></span>
     </div>
+    <div class="row" id="mediaRow" style="margin-top:12px;display:none">
+      <span class="mini" style="flex:none;color:var(--gold)">🎧 master 试听</span>
+      <audio id="masterAudio" controls preload="none" style="flex:1 1 260px;min-width:220px;height:36px"></audio>
+      <a class="btn" id="filmBtn" target="_blank" style="display:none;text-decoration:none">🎬 预览成片</a>
+      <button class="btn" onclick="openFolder()">📂 打开输出目录</button>
+    </div>
   </div>
 
   <div class="grid g2">
@@ -293,7 +302,8 @@ footer b{color:var(--muted);font-weight:600}
   </div>
 
   <div class="g3ov">
-    <div>
+    <div class="card">
+      <h2>实时预览</h2>
       <div class="phone" id="phone">
         <div class="scan" style="top:33%"></div><div class="scan" style="top:66%"></div>
         <div class="hud"><i></i><i></i><i></i></div>
@@ -301,7 +311,7 @@ footer b{color:var(--muted);font-weight:600}
       <p style="text-align:center;font-size:10.5px;color:var(--faint);letter-spacing:2px;margin-top:10px" id="pvInfo">实时预览</p>
       <div class="row" style="margin-top:8px">
         <span class="mini" style="flex:none">预览大小</span>
-        <input type="range" id="pvScale" min="180" max="460" step="10" value="260" oninput="syncPv()">
+        <input type="range" id="pvScale" min="180" max="420" step="10" value="260" style="flex:1 1 120px" oninput="syncPv()">
       </div>
     </div>
 
@@ -383,6 +393,12 @@ footer b{color:var(--muted);font-weight:600}
       </div>
       <div class="vlist" id="vList"></div>
     </div>
+    <div class="card" style="grid-column:1/-1">
+      <h2>克隆音频存档 <span class="badge" id="clCount">0</span>
+        <button class="btn" style="margin-left:auto;padding:7px 14px" onclick="loadClones()">↻ 刷新</button></h2>
+      <p class="hint" id="clHint">每次「① 配音」成功后，master 自动存档到 总目录/克隆音频（时间戳_引擎_音色）；可试听、可删除，文件可直接复用。</p>
+      <div class="vlist" id="clList"><p class="empty">读取中…</p></div>
+    </div>
   </div>
 </section>
 
@@ -396,12 +412,14 @@ footer b{color:var(--muted);font-weight:600}
     <div class="card">
       <h2>组件工具箱 <button class="btn" style="margin-left:auto;padding:7px 14px" onclick="loadComponents()">↻ 刷新</button></h2>
       <div class="sp"><span class="f">数据总目录（组件/模型/音色库/克隆音频/字体 全部存放于此；整个文件夹可拷到其他电脑直接使用）</span>
-        <div class="row"><input type="text" id="compRoot">
-          <button class="btn" onclick="pickDir('compRoot')">📁 选择</button>
-          <button class="btn line" onclick="saveCompRoot()">保存</button>
-          <button class="btn gold" onclick="run('envcheck','checklog')">🩺 环境自检</button></div></div>
-      <p class="hint">缺什么点击即可下载/安装（多源 + SHA256 校验 + 断点续传）；进度在右侧日志滚动。</p>
+        <div class="row" style="margin-bottom:8px"><input type="text" id="compRoot">
+          <button class="btn" onclick="pickDir('compRoot')">📁 选择</button></div>
+        <div class="row">
+          <button class="btn line" onclick="saveCompRoot()">💾 保存总目录</button>
+          <button class="btn gold" style="flex:1" onclick="run('envcheck','checklog')">🩺 环境自检</button></div></div>
+      <p class="hint">缺什么点击即可下载/安装（多源 + SHA256 校验 + 断点续传）；<b style="color:var(--gold)">多个下载可同时进行</b>，互不阻塞，进度在下方与各行实时显示。</p>
       <div id="compList"><p class="empty">读取中…</p></div>
+      <div class="console" id="dlog" style="height:150px;margin-top:14px"><span class="dim">—— 下载/安装日志 · 多任务并行 ——</span></div>
     </div>
 
     <div class="card">
@@ -440,7 +458,7 @@ footer b{color:var(--muted);font-weight:600}
 
 <script>
 const $=id=>document.getElementById(id);
-let overlays=[], logTarget='mainlog', polling=null, POSITIONS=[];
+let overlays=[], logTarget='mainlog', POSITIONS=[];
 const ASPECT_CANVAS={'9:16 竖屏':[1080,1920],'16:9 横屏':[1920,1080],'1:1 方形':[1080,1080],'4:3':[1440,1080],'3:4':[1080,1440]};
 const SUB_POS_RATIO={'顶部':0.06,'中上':0.30,'中部':0.48,'中下':0.68,'底部':0.885};
 const ENGINE_LABEL={dots_local:'dots.tts（本地 · 48kHz）',fish_local:'fish-speech（本地服务）',mock:'mock（测试）'};
@@ -507,9 +525,11 @@ async function loadState(){
   if(!s.voices.length)list.innerHTML='<p class="empty">还没有音色 — 在左侧登记</p>';
   s.voices.forEach((v,k)=>{
     const el=document.createElement('div');el.className='vcard';
-    el.innerHTML=`<div class="vwave"></div><div><b>${esc(v.name)}</b>
+    el.innerHTML=`<div class="vwave"></div><div style="min-width:0"><b>${esc(v.name)}</b>
       <small>${v.transcript?'「'+esc(v.transcript)+'」':'（未填转写 · 纯音色克隆）'}</small></div>
-      <span class="x" onclick="delVoice('${encodeURIComponent(v.voice_id)}')">✕</span>`;
+      <button class="btn" style="margin-left:auto;padding:7px 13px;flex:none" title="试听参考音频"
+        onclick="playUrl('/api/voices/${encodeURIComponent(v.voice_id)}/audio',this)">▶ 试听</button>
+      <span class="x" style="flex:none" onclick="delVoice('${encodeURIComponent(v.voice_id)}')">✕</span>`;
     list.appendChild(el);
     const wv=el.querySelector('.vwave');let ss=13+k*7;const r=()=>{ss=(ss*16807)%2147483647;return ss/2147483647};
     for(let i=0;i<14;i++){const b=document.createElement('i');b.style.height=(22*(.25+.75*r())).toFixed(0)+'px';wv.appendChild(b);}
@@ -520,17 +540,23 @@ function fill(id,pairs){const el=$(id);if(!el)return;el.innerHTML='';pairs.forEa
 
 /* ── 组件工具箱（点击即下载/安装） ── */
 async function loadComponents(){
-  $('compList').innerHTML='<p class="empty">读取中…</p>';
   try{
     const s=await (await fetch('/api/components')).json();
     const box=$('compList');box.innerHTML='';
     s.components.forEach(c=>{
-      const el=document.createElement('div');el.className='check';
+      const el=document.createElement('div');el.className='check';el.dataset.key=c.key;
       let action='';
-      if(c.installed){
+      if(c.key==='fish_speech'){
+        if(c.installed){
+          action=`<span class="pill ok">服务在线</span>
+            <button class="btn" style="padding:8px 13px" onclick="runFish('fish_server_stop')">⏹ 停止</button>`;
+        }else if(c.fish_stage==='startable'){
+          action=`<button class="btn gold" style="padding:8px 15px" onclick="runFish('fish_server')">▶ 启动服务</button>`;
+        }else{
+          action=`<button class="btn line" style="padding:8px 16px" onclick="installComponent('${c.key}')">安装</button>`;
+        }
+      }else if(c.installed){
         action='<span class="pill ok">已就绪</span>';
-      }else if(c.kind==='manual'){
-        action=`<button class="btn" style="padding:8px 14px" onclick="showGuide('${c.key}')">部署指引</button>`;
       }else{
         const label=c.kind==='pip'?'安装':'下载';
         action=`<button class="btn line" style="padding:8px 16px" onclick="installComponent('${c.key}')">${label}</button>`;
@@ -538,27 +564,21 @@ async function loadComponents(){
       el.innerHTML=`<span class="dot ${c.installed?'ok':'no'}"></span>
         <b>${esc(c.name)}</b>
         <span title="${esc(c.detail)}">${esc(c.purpose)}</span>
-        <span style="margin-left:auto;flex:none">${action}</span>`;
+        <span class="tstat" style="margin-left:auto;flex:none;font-size:12px;color:var(--gold)"></span>
+        <span class="tact" style="flex:none">${action}</span>`;
       box.appendChild(el);});
     window._comps=s.components;
+    updateTaskUi(window._tasks||[]);
   }catch(e){$('compList').innerHTML='<p class="empty">读取失败，请点「↻ 刷新」。</p>';}
 }
-async function installComponent(key){
-  logTarget='checklog';
+async function postRun(payload){
   const j=await (await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({action:'component',component_key:key})})).json();
-  if(j.error){paint(['❌ '+j.error]);return;}
-  if(polling)clearInterval(polling);
-  polling=setInterval(async()=>{await poll();
-    const s=await (await fetch('/api/job')).json();
-    if(!s.running&&s.done){loadComponents();}
-  },700);poll();
+    body:JSON.stringify(payload)})).json();
+  if(j.error){alert(j.error);return false;}
+  return true;
 }
-function showGuide(key){
-  const c=(window._comps||[]).find(x=>x.key===key);
-  logTarget='checklog';
-  paint(['══ '+ (c?c.name:key) +' 部署指引 ══', c?(c.guide||c.detail):'']);
-}
+async function installComponent(key){ if(await postRun({action:'component',component_key:key}))pollAll(); }
+async function runFish(action){ if(await postRun({action}))pollAll(); }
 
 /* ── 手机实时预览：已添加的 + 正在编辑的（虚线框） ── */
 const POS_RATIO={'顶部':6,'中上':30,'中部':47,'中下':66,'底部':84};
@@ -654,7 +674,7 @@ async function saveVoice(){
 }
 async function delVoice(id){if(confirm('删除该音色？')){await fetch('/api/voices/'+id,{method:'DELETE'});loadState();}}
 
-/* ── 任务 ── */
+/* ── 任务（多槽并发：main 主流程互斥，组件/字体/fish 服务各自独立并行） ── */
 async function run(action,target){
   logTarget=target||'mainlog';
   const payload={action,text:$('text').value,engine:$('engine').value,aligner:$('aligner').value,
@@ -663,18 +683,118 @@ async function run(action,target){
     burn_subtitles:$('burn').checked,subtitle_size:+$('subsize').value||64,
     subtitle_position:$('subPos').value||'底部',subtitle_font:$('subFont')?.value||'',
     export_capcut:$('capcut').checked,aspect:$('aspect').value,overlays};
-  const j=await (await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})).json();
-  if(j.error){paint(['❌ '+j.error]);return;}
-  if(polling)clearInterval(polling);
-  polling=setInterval(poll,650);poll();
+  if(await postRun(payload))pollAll();
 }
-async function poll(){
-  const s=await (await fetch('/api/job')).json();
-  paint(s.log);
-  if(s.timings&&s.timings.length)renderLane(s.timings);
-  if(!s.running&&s.done){clearInterval(polling);polling=null;}
+const _prevRun={};
+async function pollAll(){
+  let s;try{s=await (await fetch('/api/jobs')).json();}catch(e){return;}
+  const main=s.jobs.find(j=>j.id==='main');
+  if(main&&main.log&&main.log.length&&(main.running||main.done)){
+    paint(main.log);
+    if(main.timings&&main.timings.length)renderLane(main.timings);
+    if(_prevRun.main&&!main.running&&main.done)onMainDone(main);
+    _prevRun.main=main.running;
+  }
+  const tasks=s.jobs.filter(j=>j.id!=='main');
+  window._tasks=tasks;
+  renderDlog(tasks);updateTaskUi(tasks);
+  let comps=false,fonts=false;
+  tasks.forEach(j=>{
+    if(_prevRun[j.id]&&!j.running){ if(j.id.startsWith('font:'))fonts=true; else comps=true; }
+    _prevRun[j.id]=j.running;
+  });
+  if(comps)loadComponents();
+  if(fonts){loadFonts();loadComponents();}
+}
+function onMainDone(main){
+  if(!main.ok)return;
+  const out=$('outdir').value.trim();
+  if(['dub','run_all','render','timing'].includes(main.action)&&out){
+    const sep=out.includes('\\')?'\\':'/';
+    $('mediaRow').style.display='flex';
+    const url='/api/audio?path='+encodeURIComponent(out+sep+'master.wav');
+    if($('masterAudio').dataset.src!==url){$('masterAudio').src=url;$('masterAudio').dataset.src=url;}
+    if(['render','run_all'].includes(main.action)){
+      $('filmBtn').href='/api/audio?path='+encodeURIComponent(out+sep+'成片.mp4');
+      $('filmBtn').style.display='';
+    }
+  }
+  if(['dub','run_all'].includes(main.action))loadClones();
+}
+function renderDlog(tasks){
+  const el=$('dlog');if(!el)return;
+  const active=tasks.filter(t=>t.running), done=tasks.filter(t=>!t.running&&t.done).slice(-3);
+  if(!active.length&&!done.length){return;}
+  const block=t=>{
+    const tail=(t.log||[]).slice(t.running?-5:-2).join('\n');
+    return `── ${t.label||t.id} ${t.running?'⏳':(t.ok?'✅':'❌')} ──\n${tail}`;
+  };
+  el.textContent=active.concat(done).map(block).join('\n');
+  el.scrollTop=el.scrollHeight;
+}
+function updateTaskUi(tasks){
+  document.querySelectorAll('#compList .check, #fontList .check').forEach(row=>{
+    const key=row.dataset.key;if(!key)return;
+    const inFonts=row.parentElement&&row.parentElement.id==='fontList';
+    const t=tasks.find(x=>x.id===(inFonts?'font:':'component:')+key);
+    const stat=row.querySelector('.tstat'), act=row.querySelector('.tact');
+    if(!stat)return;
+    if(t&&t.running){
+      const last=(t.log||[]).slice(-1)[0]||'';
+      const m=last.match(/下载进度 \d+%[^）]*）?/);
+      stat.textContent='⏳ '+(m?m[0]:'进行中…');
+      if(act)act.querySelectorAll('button').forEach(b=>b.disabled=true);
+    }else if(t&&t.done&&!t.ok){
+      stat.textContent='❌ 失败（详见下方日志）';stat.style.color='var(--bad)';
+      if(act)act.querySelectorAll('button').forEach(b=>b.disabled=false);
+    }else{
+      stat.textContent='';stat.style.color='var(--gold)';
+      if(act)act.querySelectorAll('button').forEach(b=>b.disabled=false);
+    }
+  });
 }
 function paint(lines){const el=$(logTarget);el.textContent=lines.join('\n');el.scrollTop=el.scrollHeight;}
+setInterval(pollAll,800);
+
+/* ── 试听（音色参考 / 克隆存档 / master） ── */
+let _player=null,_playingBtn=null;
+function playUrl(url,btn){
+  if(_playingBtn===btn&&_player&&!_player.paused){_player.pause();btn.textContent='▶ 试听';_playingBtn=null;return;}
+  if(_player)_player.pause();
+  if(_playingBtn)_playingBtn.textContent='▶ 试听';
+  _player=new Audio(url);_playingBtn=btn;btn.textContent='⏸ 暂停';
+  _player.onended=()=>{if(_playingBtn===btn){btn.textContent='▶ 试听';_playingBtn=null;}};
+  _player.play().catch(e=>{btn.textContent='▶ 试听';_playingBtn=null;alert('播放失败：'+e.message);});
+}
+async function loadClones(){
+  const box=$('clList');if(!box)return;
+  try{
+    const s=await (await fetch('/api/clones')).json();
+    $('clCount').textContent=s.clones.length;
+    box.innerHTML='';
+    if(!s.clones.length){box.innerHTML='<p class="empty">还没有克隆存档 — 执行「① 配音」后自动出现</p>';return;}
+    s.clones.forEach(c=>{
+      const el=document.createElement('div');el.className='vcard';
+      const when=new Date(c.mtime*1000).toLocaleString('zh-CN',{hour12:false});
+      el.innerHTML=`<div style="min-width:0"><b>${esc(c.file)}</b>
+          <small>${when} · ${c.size_mb} MB</small></div>
+        <button class="btn" style="margin-left:auto;padding:7px 13px;flex:none"
+          onclick="playUrl('/api/audio?path=${encodeURIComponent(c.path)}',this)">▶ 试听</button>
+        <span class="x" style="flex:none" onclick="delClone('${encodeURIComponent(c.file)}')">✕</span>`;
+      box.appendChild(el);});
+  }catch(e){box.innerHTML='<p class="empty">读取失败，请点「↻ 刷新」。</p>';}
+}
+async function delClone(file){
+  if(!confirm('删除该克隆存档？'))return;
+  await fetch('/api/clones/'+file,{method:'DELETE'});loadClones();
+}
+async function openFolder(){
+  const out=$('outdir').value.trim();
+  if(!out){alert('请先填写输出目录');return;}
+  const j=await (await fetch('/api/open_folder',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({path:out})})).json();
+  if(j.error)alert(j.error);
+}
 
 /* ── 目录选择浮层 ── */
 let dirTarget=null, dirCurrent='';
@@ -740,11 +860,13 @@ async function loadFonts(){
     const box=$('fontList');box.innerHTML='';
     const installedFiles=new Set(s.installed.map(f=>f.file));
     s.pack.forEach(f=>{
-      const el=document.createElement('div');el.className='check';
+      const el=document.createElement('div');el.className='check';el.dataset.key=f.key;
       const action=f.installed?'<span class="pill ok">已就绪</span>'
         :`<button class="btn line" style="padding:8px 16px" onclick="installFont('${f.key}')">下载</button>`;
       el.innerHTML=`<span class="dot ${f.installed?'ok':'no'}"></span><b>${esc(f.name)}</b>
-        <span>${esc(f.note)}</span><span style="margin-left:auto;flex:none">${action}</span>`;
+        <span>${esc(f.note)}</span>
+        <span class="tstat" style="margin-left:auto;flex:none;font-size:12px;color:var(--gold)"></span>
+        <span class="tact" style="flex:none">${action}</span>`;
       box.appendChild(el);});
     const extras=s.installed.filter(f=>!s.pack.some(pk=>pk.file===f.file));
     extras.forEach(f=>{
@@ -761,17 +883,7 @@ async function loadFonts(){
     }
   }catch(e){}
 }
-async function installFont(key){
-  logTarget='checklog';
-  const j=await (await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({action:'font',font_key:key})})).json();
-  if(j.error){paint(['❌ '+j.error]);return;}
-  if(polling)clearInterval(polling);
-  polling=setInterval(async()=>{await poll();
-    const st=await (await fetch('/api/job')).json();
-    if(!st.running&&st.done){loadFonts();}
-  },700);poll();
-}
+async function installFont(key){ if(await postRun({action:'font',font_key:key}))pollAll(); }
 async function uploadFont(input){
   const f=input.files[0]; input.value=''; if(!f)return;
   const q=new URLSearchParams({filename:f.name});
@@ -791,7 +903,7 @@ async function importVoicePack(input){
   loadState();
 }
 
-renderOverlays();loadState();loadComponents();loadSettings();loadFonts();poll();  /* 载入时同步一次任务状态：刷新不丢日志与时间轴 */
+renderOverlays();loadState();loadComponents();loadSettings();loadFonts();loadClones();pollAll();  /* 载入时同步任务状态：刷新不丢日志/时间轴/下载进度 */
 </script>
 </body>
 </html>
