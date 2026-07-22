@@ -202,7 +202,7 @@ footer b{color:var(--muted);font-weight:600}
   <div class="bar">
     <div class="mark" aria-hidden="true"></div>
     <div class="brand"><b>水星配音对齐工作室</b><i>MERCURY&nbsp;DUB&nbsp;ALIGN</i></div>
-    <div class="flags"><span class="flag">整篇克隆</span><span class="flag">逐行对齐</span><span class="flag">本地离线</span></div>
+    <div class="flags"><span class="flag" id="verFlag" title="版本 · 打包时间 · 提交号">v—</span><span class="flag">整篇克隆</span><span class="flag">逐行对齐</span><span class="flag">本地离线</span></div>
   </div>
   <nav id="nav">
     <button data-p="p1" class="on">一键成片</button>
@@ -454,7 +454,7 @@ footer b{color:var(--muted);font-weight:600}
   </div>
 </div>
 
-<footer><b>水星配音对齐工作室</b> · 整篇克隆 → 逐行对齐 → 一键成片 · 非商用 · 本地离线运行</footer>
+<footer><b>水星配音对齐工作室</b> <span id="verFoot"></span> · 整篇克隆 → 逐行对齐 → 一键成片 · 非商用 · 本地离线运行</footer>
 </main>
 
 <script>
@@ -512,6 +512,8 @@ const esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&qu
 async function loadState(){
   const s=await (await fetch('/api/state')).json();
   POSITIONS=s.positions;
+  if(s.version){$('verFlag').textContent=s.version.split(' · ')[0];$('verFlag').title=s.version;
+    $('verFoot').textContent='· '+s.version+' ';document.title='水星配音对齐工作室 '+s.version.split(' · ')[0];}
   fill('engine',s.engines.map(k=>[k,ENGINE_LABEL[k]||k]));
   $('engine').value=s.engines.includes('dots_local')?'dots_local':s.engines[0];
   fill('aligner',s.aligners.map(k=>[k,k==='whisper'?'whisper（推荐）':k]));

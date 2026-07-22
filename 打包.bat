@@ -38,6 +38,12 @@ if errorlevel 1 (
   python -m pip install pyinstaller
   if errorlevel 1 ( echo [错误] PyInstaller 安装失败，请检查网络。 & pause & exit /b 1 )
 )
+rem [3] 版本构建戳：打包时间 + git 提交号，写入 _build_info.py（界面右上角/页脚/启动横幅展示）
+set "GITHASH=未知提交"
+for /f %%i in ('git rev-parse --short HEAD 2^>nul') do set "GITHASH=%%i"
+> "source\dub_align_studio\_build_info.py" echo BUILD_STAMP = "%date% %time:~0,5% · %GITHASH%"
+echo [版本] 本次构建戳：%date% %time:~0,5% · %GITHASH%
+
 set "PYTHONPATH=source"
 python -m PyInstaller --noconfirm --clean --onedir --name "水星配音对齐工作室" ^
   --paths source ^
@@ -49,8 +55,11 @@ if errorlevel 1 (
   echo        其他报错请把上方整段发给开发。
   pause & exit /b 1
 )
+python -c "import sys;sys.path.insert(0,'source');from dub_align_studio.version import full_version;print(full_version())" > "dist\水星配音对齐工作室\版本.txt"
+set /p BUILTVER=<"dist\水星配音对齐工作室\版本.txt"
 echo.
-echo [完成] 打包产物：dist\水星配音对齐工作室\
+echo [完成] 打包产物：dist\水星配音对齐工作室\   版本：%BUILTVER%
+echo    （版本号也在软件界面右上角与 dist 里的 版本.txt，可核对跑的是哪一版）
 echo    1. 把 ffmpeg.exe / ffprobe.exe 放进该目录（exe 旁边）
 echo    2. 双击 exe 启动；数据总目录建议设在 dist 之外（如 D:\水星配音数据），
 echo       否则下次打包前会被自动搬到仓库根目录保护起来。

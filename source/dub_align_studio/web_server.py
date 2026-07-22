@@ -645,9 +645,12 @@ def _browse(path_text: str) -> dict:
 
 
 def _state_payload() -> dict:
+    from .version import full_version
+
     voices = [{"voice_id": v.voice_id, "name": v.name, "transcript": v.transcript[:40]}
               for v in voice_library.list_voices(_vroot())]
     return {
+        "version": full_version(),
         "engines": pipeline.ENGINE_KEYS,
         "aligners": pipeline.ALIGNER_KEYS,
         "aspects": pipeline.ASPECT_KEYS,
@@ -669,8 +672,10 @@ def serve(port: int = DEFAULT_PORT, open_browser: bool = True) -> ThreadingHTTPS
             last_error = exc
     if server is None:
         raise OSError(f"端口 {port}~{port + 19} 均被占用：{last_error}")
+    from .version import full_version
+
     url = f"http://127.0.0.1:{port}/"
-    print(f"水星配音对齐工作室已启动：{url}（Ctrl+C 退出）")
+    print(f"水星配音对齐工作室 {full_version()} 已启动：{url}（Ctrl+C 退出）")
     if open_browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()
     return server

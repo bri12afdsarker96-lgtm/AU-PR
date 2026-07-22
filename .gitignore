@@ -49,3 +49,4 @@ dist/
 
 # 软件运行时数据总目录
 水星配音数据/
+source/dub_align_studio/_build_info.py

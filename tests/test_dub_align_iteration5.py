@@ -120,6 +120,23 @@ class WhisperCliLayoutTests(unittest.TestCase):
         self.assertEqual(studio_settings.whisper_cli_path(), exe)
 
 
+class VersionTests(unittest.TestCase):
+    def test_full_version_shape(self):
+        from dub_align_studio import version
+
+        text = version.full_version()
+        self.assertTrue(text.startswith(f"v{version.APP_VERSION}"), text)
+        # 源码直跑（无 _build_info）时明确标注，与打包产物可区分
+        if not version.build_stamp():
+            self.assertIn("源码运行", text)
+
+    def test_state_endpoint_exposes_version(self):
+        from dub_align_studio.web_server import _state_payload
+
+        payload = _state_payload()
+        self.assertTrue(str(payload.get("version", "")).startswith("v"), payload.get("version"))
+
+
 class UiPreviewContractTests(unittest.TestCase):
     def test_preview_slider_is_percent_based(self):
         html = (Path(fonts.__file__).parent / "web" / "index.html").read_text(encoding="utf-8")
@@ -127,6 +144,11 @@ class UiPreviewContractTests(unittest.TestCase):
         self.assertIn("pvScaleV", html)
         self.assertIn("clientWidth", html)  # 预览宽度按预览卡实际宽度换算
         self.assertIn("max-width:1720px", html)
+
+    def test_version_badge_wired(self):
+        html = (Path(fonts.__file__).parent / "web" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('id="verFlag"', html)
+        self.assertIn('id="verFoot"', html)
 
 
 if __name__ == "__main__":
