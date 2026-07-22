@@ -19,6 +19,7 @@ from integrated_workbench.edit_compose import aspect_canvas
 from integrated_workbench.semantic_match import parse_script
 
 from .aligners import WhisperAligner
+from .audio_mix import AudioMix
 from .capcut_draft import CapcutPackage, export_capcut_package
 from .engines import (
     DotsLocalEngine,
@@ -187,11 +188,12 @@ def step_render(
     subtitle_style: SubtitleStyle | None = None,
     config: RenderConfig | None = None,
     overlays: list[OverlayText] | None = None,
+    audio_mix: "AudioMix | None" = None,
 ) -> DubBResult:
-    """③ B 渲染成片（逐行裁/变速 + 整轨叠加 + 帧收口；可选烧字幕 + 文本框）。"""
+    """③ B 渲染成片（逐行裁/变速 + 整轨叠加 + 帧收口；可选烧字幕 + 文本框 + BGM/音效混流）。"""
     return render_b(
         Path(master_wav), timings, [Path(v) for v in videos],
-        Path(output_dir) / FILM_NAME, config, subtitle_style, overlays,
+        Path(output_dir) / FILM_NAME, config, subtitle_style, overlays, audio_mix,
     )
 
 
@@ -239,6 +241,7 @@ def run_all(
     export_capcut: bool = False,
     config: RenderConfig | None = None,
     overlays: list[OverlayText] | None = None,
+    audio_mix: AudioMix | None = None,
 ) -> StudioRun:
     """一键全流程：①配音 → ②量时长 → ③渲染 →（可选）④剪映导出。"""
     lines = parse_script(text)
@@ -250,7 +253,8 @@ def run_all(
     config = config or make_render_config(DEFAULT_ASPECT)
     master = step_dub(text, engine_key, output_dir, voice, options)
     timings, notes = step_timing(text, master.path, aligner_key, output_dir)
-    result = step_render(master.path, timings, videos, output_dir, subtitle_style, config, overlays)
+    result = step_render(master.path, timings, videos, output_dir, subtitle_style, config,
+                         overlays, audio_mix)
     capcut = (step_capcut(timings, result, master.path, output_dir, subtitle_style,
                           canvas=(config.width, config.height))
               if export_capcut else None)

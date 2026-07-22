@@ -20,6 +20,7 @@ from pathlib import Path
 from integrated_workbench.edit_compose import match_video_to_audio
 from integrated_workbench.proc import run_silent
 
+from .audio_mix import AudioMix, build_audio_filtergraph, build_audio_inputs
 from .frames import quantize_to_frames
 from .overlays import OverlayText, overlay_filters
 from .subtitles import (
@@ -157,11 +158,13 @@ def render_b(
     config: RenderConfig | None = None,
     subtitle_style: SubtitleStyle | None = None,
     overlays: list[OverlayText] | None = None,
+    audio_mix: AudioMix | None = None,
 ) -> DubBResult:
     """整条 master 叠加 + 逐行画面收口渲染，返回带断言结果的 DubBResult。
 
     subtitle_style 给定时烧录字幕（字号等自定义；字体缺失自动降级为只出 SRT）。
     overlays 为用户自定义文本框（书名/旁白/引导语等），绘制在字幕之上。
+    audio_mix 给定 BGM/音效/总音量时混流（BGM 循环到片尾，音效定点，各自可调音量）。
     有台词的行始终导出 .srt（剪映可直接导入）。
     """
     config = config or RenderConfig()
@@ -235,7 +238,7 @@ def render_b(
         else:
             subtitle_note = (subtitle_note + "；" if subtitle_note else "") + "字体缺失，文本框未叠加"
 
-    _overlay_master(config, silent_full, master_wav, output_path, burn_filters)
+    _overlay_master(config, silent_full, master_wav, output_path, burn_filters, audio_mix)
 
     total_frames = count_video_frames(config, output_path)
     video_seconds = total_frames / config.fps
@@ -290,23 +293,56 @@ def _overlay_master(
     master_wav: Path,
     output: Path,
     burn_filters: list[str] | None = None,
+    audio_mix: AudioMix | None = None,
 ) -> None:
-    """叠加整轨配音；给定字幕滤镜时同步烧录（此步才重编码，否则视频流直拷）。"""
+    """叠加整轨配音；给定字幕滤镜时同步烧录（此步才重编码，否则视频流直拷）。
+
+    audio_mix 非空且非平凡时走 filter_complex 混流（master+BGM循环+音效，各自音量）；
+    视频侧的字幕/文本框烧录与之并存（视频链也进 filter_complex 以免与音频链冲突）。"""
     command = [config.ffmpeg, "-y", "-i", str(silent_video), "-i", str(master_wav)]
-    if burn_filters:
+    mix = audio_mix if (audio_mix is not None and not audio_mix.is_trivial()) else None
+
+    if mix is None:
+        # 原路径：单轨 master 直接映射
+        if burn_filters:
+            command += [
+                "-filter:v", ",".join(burn_filters),
+                "-c:v", "libx264", "-preset", config.preset, "-crf", str(config.crf),
+                "-pix_fmt", "yuv420p", "-fps_mode", "cfr", "-r", str(config.fps),
+            ]
+        else:
+            command += ["-c:v", "copy"]
         command += [
-            "-filter:v", ",".join(burn_filters),
-            "-c:v", "libx264", "-preset", config.preset, "-crf", str(config.crf),
-            "-pix_fmt", "yuv420p", "-fps_mode", "cfr", "-r", str(config.fps),
+            "-map", "0:v:0", "-map", "1:a:0",
+            "-c:a", "aac", "-b:a", config.audio_bitrate,
+            "-movflags", "+faststart", str(output),
         ]
+        _run(command, "叠加整轨配音" + ("+烧录字幕" if burn_filters else ""))
+        return
+
+    # 混流路径：master 之后追加 BGM/音效输入，音频走 filter_complex
+    for extra in build_audio_inputs(mix):
+        command += extra
+    audio_graph, aout = build_audio_filtergraph(mix, master_input=1)
+    if burn_filters:
+        video_graph = "[0:v]" + ",".join(burn_filters) + "[vout]"
+        command += ["-filter_complex", audio_graph + ";" + video_graph,
+                    "-map", "[vout]",
+                    "-c:v", "libx264", "-preset", config.preset, "-crf", str(config.crf),
+                    "-pix_fmt", "yuv420p", "-fps_mode", "cfr", "-r", str(config.fps)]
     else:
-        command += ["-c:v", "copy"]
+        command += ["-filter_complex", audio_graph, "-map", "0:v:0", "-c:v", "copy"]
     command += [
-        "-map", "0:v:0", "-map", "1:a:0",
+        "-map", aout,
         "-c:a", "aac", "-b:a", config.audio_bitrate,
         "-movflags", "+faststart", str(output),
     ]
-    _run(command, "叠加整轨配音" + ("+烧录字幕" if burn_filters else ""))
+    bits = ["配音"]
+    if mix.bgm is not None:
+        bits.append("BGM")
+    if mix.sfx:
+        bits.append(f"{len(mix.sfx)}个音效")
+    _run(command, "混流(" + "+".join(bits) + ")" + ("+烧录字幕" if burn_filters else ""))
 
 
 # ------------------------------------------------------------------ 子进程

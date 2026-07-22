@@ -23,7 +23,7 @@ import webbrowser
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from . import components as toolbox
 from . import fonts as font_library
@@ -158,6 +158,9 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
         aspect = str(payload.get("aspect") or pipeline.DEFAULT_ASPECT)
         config = pipeline.make_render_config(aspect)
         canvas = (config.width, config.height)
+        from .audio_mix import mix_from_payload
+
+        audio_mix = mix_from_payload(payload.get("audio") or {}, _resolve_asset)
 
         if action == "run_all":
             run = pipeline.run_all(
@@ -165,7 +168,7 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                 Path(str(payload.get("shots_dir") or "")), output_dir,
                 voice=voice, options=options, subtitle_style=style,
                 export_capcut=bool(payload.get("export_capcut")), overlays=overlays,
-                config=config,
+                config=config, audio_mix=audio_mix,
             )
             for note in run.notes:
                 log(f"⚠ {note}")
@@ -196,7 +199,8 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             timings = JOB.timings or pipeline.load_timings(output_dir)
             videos = pipeline.list_shot_videos(Path(str(payload.get("shots_dir") or "")))[: len(timings)]
             result = pipeline.step_render(output_dir / pipeline.MASTER_NAME, timings, videos,
-                                          output_dir, style, config=config, overlays=overlays)
+                                          output_dir, style, config=config, overlays=overlays,
+                                          audio_mix=audio_mix)
             log(f"字幕/文本框：{result.subtitle_note or '未启用'}")
             log(("✅ 成片完成：" if result.ok else "❌ 收口断言未通过：") + str(result.output_path))
             with JOB.lock:
@@ -330,6 +334,18 @@ class _Handler(BaseHTTPRequestHandler):
         if route == "/api/clones":
             self._json({"clones": _clones_payload()})
             return
+        if route == "/api/assets":
+            self._json({"assets": _assets_payload(),
+                        "assets_dir": str(studio_settings.audio_assets_dir())})
+            return
+        if route == "/api/asset":
+            query = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+            self._serve_media(studio_settings.audio_assets_dir() / Path(query.get("file") or "").name,
+                              skip_root_check=True)
+            return
+        if route == "/api/config":
+            self._json({"presets": _load_config_presets()})
+            return
         if route.startswith("/api/voices/") and route.endswith("/audio"):
             voice_id = unquote(route[len("/api/voices/"):-len("/audio")])
             try:
@@ -458,6 +474,42 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._json({"error": str(exc)}, 400)
             return
+        if route == "/api/assets":
+            query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+            length = int(self.headers.get("Content-Length") or 0)
+            if length <= 0 or length > _MAX_UPLOAD:
+                self._json({"error": f"文件大小非法：{length}"}, 400)
+                return
+            name = Path(query.get("filename") or "素材.mp3").name
+            if Path(name).suffix.lower() not in _MEDIA_SUFFIXES:
+                self._json({"error": f"不支持的音频格式：{Path(name).suffix}"}, 400)
+                return
+            target = studio_settings.audio_assets_dir() / name
+            try:
+                with target.open("wb") as handle:
+                    remaining = length
+                    while remaining > 0:
+                        chunk = self.rfile.read(min(1024 * 1024, remaining))
+                        if not chunk:
+                            break
+                        handle.write(chunk)
+                        remaining -= len(chunk)
+                self._json({"ok": True, "file": target.name})
+            except Exception as exc:
+                self._json({"error": str(exc)}, 400)
+            return
+        if route == "/api/config":
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+                name = str(payload.get("name") or "").strip()
+                if not name:
+                    raise ValueError("配置名不能为空。")
+                _save_config_preset(name, payload.get("config") or {})
+                self._json({"ok": True, "presets": _load_config_presets()})
+            except Exception as exc:
+                self._json({"error": str(exc)}, 400)
+            return
         if route == "/api/script/parse":
             query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
             length = int(self.headers.get("Content-Length") or 0)
@@ -580,6 +632,16 @@ class _Handler(BaseHTTPRequestHandler):
             target.with_suffix(".json").unlink(missing_ok=True)
             self._json({"ok": True})
             return
+        if route.startswith("/api/assets/"):
+            name = Path(unquote(route.rsplit("/", 1)[-1])).name
+            (studio_settings.audio_assets_dir() / name).unlink(missing_ok=True)
+            self._json({"ok": True})
+            return
+        if route.startswith("/api/config/"):
+            name = unquote(route.rsplit("/", 1)[-1])
+            _delete_config_preset(name)
+            self._json({"ok": True, "presets": _load_config_presets()})
+            return
         if route.startswith("/api/voices/"):
             voice_library.delete_voice(_vroot(), unquote(route.rsplit("/", 1)[-1]))
             self._json({"ok": True})
@@ -616,6 +678,54 @@ def _media_allowed(file: Path) -> bool:
     text = str(file)
     return any(text == root or text.startswith(root.rstrip("\\/") + sep)
                for root in roots for sep in ("\\", "/"))
+
+
+def _config_presets_file() -> Path:
+    """作品参数预设：存进总目录，跟数据一起可迁移（统一作品参数设定）。"""
+    return studio_settings.data_root() / "作品参数预设.json"
+
+
+def _load_config_presets() -> dict:
+    try:
+        data = json.loads(_config_presets_file().read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_config_preset(name: str, config: dict) -> None:
+    presets = _load_config_presets()
+    presets[name] = config
+    _config_presets_file().write_text(json.dumps(presets, ensure_ascii=False, indent=2),
+                                      encoding="utf-8")
+
+
+def _delete_config_preset(name: str) -> None:
+    presets = _load_config_presets()
+    if name in presets:
+        del presets[name]
+        _config_presets_file().write_text(json.dumps(presets, ensure_ascii=False, indent=2),
+                                          encoding="utf-8")
+
+
+def _resolve_asset(filename: str) -> Path | None:
+    """把 BGM/音效文件名映射到配乐音效目录下的真实路径（只认文件名，防穿越）。"""
+    if not filename:
+        return None
+    target = studio_settings.audio_assets_dir() / Path(filename).name
+    return target if target.is_file() else None
+
+
+def _assets_payload() -> list[dict]:
+    """配乐音效素材清单（BGM 与音效共用一个素材库，前端自行分派用途）。"""
+    items = []
+    root = studio_settings.audio_assets_dir()
+    for file in sorted(root.iterdir(), key=lambda p: p.name.lower()):
+        if file.suffix.lower() in _MEDIA_SUFFIXES and file.is_file():
+            items.append({"file": file.name,
+                          "url": "/api/asset?file=" + quote(file.name),
+                          "size_mb": round(file.stat().st_size / (1024 * 1024), 2)})
+    return items
 
 
 def _clones_payload() -> list[dict]:

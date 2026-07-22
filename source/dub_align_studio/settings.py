@@ -26,6 +26,7 @@ DIR_COMPONENTS = "组件"
 DIR_VOICES = "音色库"
 DIR_CLONES = "克隆音频"
 DIR_FONTS = "字体"
+DIR_AUDIO = "配乐音效"   # BGM 与音效素材（可手动放入 mp3/wav），第五轮
 
 
 def _app_dir() -> Path:
@@ -68,7 +69,7 @@ def data_root() -> Path:
 
 def set_data_root(path: str | Path) -> Path:
     path = Path(str(path)).expanduser()
-    for sub in (DIR_COMPONENTS, DIR_VOICES, DIR_CLONES, DIR_FONTS):
+    for sub in (DIR_COMPONENTS, DIR_VOICES, DIR_CLONES, DIR_FONTS, DIR_AUDIO):
         (path / sub).mkdir(parents=True, exist_ok=True)  # 建全子结构，顺带验证可写
     save_settings({"data_root": str(path)})
     _migrate_legacy_voices(path)
@@ -109,6 +110,13 @@ def clones_dir() -> Path:
 
 def fonts_dir() -> Path:
     path = data_root() / DIR_FONTS
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def audio_assets_dir() -> Path:
+    """BGM/音效素材目录（可手动放入 mp3/wav/m4a…）。"""
+    path = data_root() / DIR_AUDIO
     path.mkdir(parents=True, exist_ok=True)
     return path
 
