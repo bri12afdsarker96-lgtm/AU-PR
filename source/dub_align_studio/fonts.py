@@ -42,49 +42,66 @@ def mirror_urls(url: str) -> list[str]:
     return urls
 
 
-# 自媒体常用开源字体包（名称 → 下载定义；file 为落地文件名）
+# 自媒体常用开源字体包（名称 → 下载定义；file 为落地文件名，category 供界面分组）
+# 纪律：每个 url 均逐一核实真实存在（GitHub 仓库树/发布资产），宁缺毋滥、不放死链。
 FONT_PACK: list[dict] = [
-    {"key": "smiley_sans", "name": "得意黑", "file": "SmileySans-Oblique.ttf",
+    # —— 黑体 / 标题（自媒体标题主力）——
+    {"key": "smiley_sans", "name": "得意黑", "file": "SmileySans-Oblique.ttf", "category": "黑体标题",
      "url": "https://github.com/atelier-anchor/smiley-sans/releases/download/v2.0.1/smiley-sans-v2.0.1.zip",
      "zip_member_suffix": "SmileySans-Oblique.ttf",
      "note": "自媒体标题最常用的斜体黑，开源可商用"},
-    {"key": "lxgw_wenkai", "name": "霞鹜文楷", "file": "LXGWWenKai-Regular.ttf",
-     "url": "https://github.com/lxgw/LxgwWenKai/releases/download/v1.510/LXGWWenKai-Regular.ttf",
-     "note": "温润楷体，旁白/文艺风"},
-    {"key": "lxgw_wenkai_bold", "name": "霞鹜文楷 中粗", "file": "LXGWWenKai-Medium.ttf",
-     "url": "https://github.com/lxgw/LxgwWenKai/releases/download/v1.510/LXGWWenKai-Medium.ttf",
-     "note": "楷体加粗，书名/强调（v1.510 无 Bold，Medium 为最粗档）"},
-    {"key": "zcool_kuaile", "name": "站酷快乐体", "file": "ZCOOLKuaiLe-Regular.ttf",
-     "url": "https://github.com/googlefonts/zcool-kuaile/raw/main/fonts/ttf/ZCOOLKuaiLe-Regular.ttf",
-     "note": "圆润活泼，搞笑/生活类"},
-    {"key": "zcool_xiaowei", "name": "站酷小薇LOGO体", "file": "ZCOOLXiaoWei-Regular.ttf",
-     "url": "https://github.com/google/fonts/raw/main/ofl/zcoolxiaowei/ZCOOLXiaoWei-Regular.ttf",
-     "note": "标题LOGO感"},
-    {"key": "zcool_qingke", "name": "站酷庆科黄油体", "file": "ZCOOLQingKeHuangYou-Regular.ttf",
-     "url": "https://github.com/google/fonts/raw/main/ofl/zcoolqingkehuangyou/ZCOOLQingKeHuangYou-Regular.ttf",
-     "note": "厚实黄油感，综艺花字"},
-    {"key": "ma_shan_zheng", "name": "马善政毛笔楷", "file": "MaShanZheng-Regular.ttf",
-     "url": "https://github.com/google/fonts/raw/main/ofl/mashanzheng/MaShanZheng-Regular.ttf",
-     "note": "毛笔手写，国风/武侠"},
-    {"key": "long_cang", "name": "龙藏体", "file": "LongCang-Regular.ttf",
-     "url": "https://github.com/google/fonts/raw/main/ofl/longcang/LongCang-Regular.ttf",
-     "note": "行书手写，情感文案"},
-    {"key": "zhi_mang_xing", "name": "指尖芒星体", "file": "ZhiMangXing-Regular.ttf",
-     "url": "https://github.com/google/fonts/raw/main/ofl/zhimangxing/ZhiMangXing-Regular.ttf",
-     "note": "行草手写"},
-    {"key": "liu_jian_mao_cao", "name": "刘建毛草体", "file": "LiuJianMaoCao-Regular.ttf",
-     "url": "https://github.com/google/fonts/raw/main/ofl/liujianmaocao/LiuJianMaoCao-Regular.ttf",
-     "note": "草书手写"},
-    {"key": "noto_sans_sc", "name": "思源黑体(Noto)", "file": "NotoSansSC-Regular.ttf",
+    {"key": "noto_sans_sc", "name": "思源黑体", "file": "NotoSansSC-Regular.ttf", "category": "黑体标题",
      "url": "https://github.com/notofonts/noto-cjk/raw/main/Sans/SubsetOTF/SC/NotoSansSC-Regular.otf",
      "note": "标准黑体，正文字幕百搭"},
-    {"key": "noto_sans_sc_bold", "name": "思源黑体 粗(Noto)", "file": "NotoSansSC-Bold.otf",
+    {"key": "noto_sans_sc_bold", "name": "思源黑体 粗", "file": "NotoSansSC-Bold.otf", "category": "黑体标题",
      "url": "https://github.com/notofonts/noto-cjk/raw/main/Sans/SubsetOTF/SC/NotoSansSC-Bold.otf",
      "note": "黑体加粗，主字幕/标题"},
-    {"key": "noto_serif_sc", "name": "思源宋体(Noto)", "file": "NotoSerifSC-Regular.otf",
+    {"key": "zcool_xiaowei", "name": "站酷小薇LOGO体", "file": "ZCOOLXiaoWei-Regular.ttf", "category": "黑体标题",
+     "url": "https://github.com/google/fonts/raw/main/ofl/zcoolxiaowei/ZCOOLXiaoWei-Regular.ttf",
+     "note": "标题LOGO感"},
+    {"key": "zcool_qingke", "name": "站酷庆科黄油体", "file": "ZCOOLQingKeHuangYou-Regular.ttf", "category": "黑体标题",
+     "url": "https://github.com/google/fonts/raw/main/ofl/zcoolqingkehuangyou/ZCOOLQingKeHuangYou-Regular.ttf",
+     "note": "厚实黄油感，综艺花字"},
+    # —— 楷体 / 宋体（旁白 / 文艺 / 知识）——
+    {"key": "lxgw_wenkai", "name": "霞鹜文楷", "file": "LXGWWenKai-Regular.ttf", "category": "楷宋文艺",
+     "url": "https://github.com/lxgw/LxgwWenKai/releases/download/v1.510/LXGWWenKai-Regular.ttf",
+     "note": "温润楷体，旁白/文艺风（GitHub 万星口碑）"},
+    {"key": "lxgw_wenkai_bold", "name": "霞鹜文楷 中粗", "file": "LXGWWenKai-Medium.ttf", "category": "楷宋文艺",
+     "url": "https://github.com/lxgw/LxgwWenKai/releases/download/v1.510/LXGWWenKai-Medium.ttf",
+     "note": "楷体加粗，书名/强调"},
+    {"key": "lxgw_wenkai_light", "name": "霞鹜文楷 细", "file": "LXGWWenKai-Light.ttf", "category": "楷宋文艺",
+     "url": "https://github.com/lxgw/LxgwWenKai/raw/main/fonts/TTF/LXGWWenKai-Light.ttf",
+     "note": "纤细楷体，清淡文案/长句旁白"},
+    {"key": "noto_serif_sc", "name": "思源宋体", "file": "NotoSerifSC-Regular.otf", "category": "楷宋文艺",
      "url": "https://github.com/notofonts/noto-cjk/raw/main/Serif/SubsetOTF/SC/NotoSerifSC-Regular.otf",
      "note": "宋体，知识/文化类"},
+    {"key": "cactus_serif", "name": "仙人掌明体", "file": "CactusClassicalSerif-Regular.ttf", "category": "楷宋文艺",
+     "url": "https://github.com/google/fonts/raw/main/ofl/cactusclassicalserif/CactusClassicalSerif-Regular.ttf",
+     "note": "古典明朝体，古风/文艺标题"},
+    # —— 圆体 / 可爱（生活 / 萌系）——
+    {"key": "zcool_kuaile", "name": "站酷快乐体", "file": "ZCOOLKuaiLe-Regular.ttf", "category": "圆体可爱",
+     "url": "https://github.com/googlefonts/zcool-kuaile/raw/main/fonts/ttf/ZCOOLKuaiLe-Regular.ttf",
+     "note": "圆润活泼，搞笑/生活类"},
+    {"key": "huninn", "name": "粉圆体 Huninn", "file": "Huninn-Regular.ttf", "category": "圆体可爱",
+     "url": "https://github.com/google/fonts/raw/main/ofl/huninn/Huninn-Regular.ttf",
+     "note": "圆润可爱，萌系/母婴/vlog"},
+    # —— 手写 / 书法（情感 / 国风）——
+    {"key": "ma_shan_zheng", "name": "马善政毛笔楷", "file": "MaShanZheng-Regular.ttf", "category": "手写书法",
+     "url": "https://github.com/google/fonts/raw/main/ofl/mashanzheng/MaShanZheng-Regular.ttf",
+     "note": "毛笔手写，国风/武侠"},
+    {"key": "long_cang", "name": "龙藏体", "file": "LongCang-Regular.ttf", "category": "手写书法",
+     "url": "https://github.com/google/fonts/raw/main/ofl/longcang/LongCang-Regular.ttf",
+     "note": "行书手写，情感文案"},
+    {"key": "zhi_mang_xing", "name": "指尖芒星体", "file": "ZhiMangXing-Regular.ttf", "category": "手写书法",
+     "url": "https://github.com/google/fonts/raw/main/ofl/zhimangxing/ZhiMangXing-Regular.ttf",
+     "note": "行草手写"},
+    {"key": "liu_jian_mao_cao", "name": "刘建毛草体", "file": "LiuJianMaoCao-Regular.ttf", "category": "手写书法",
+     "url": "https://github.com/google/fonts/raw/main/ofl/liujianmaocao/LiuJianMaoCao-Regular.ttf",
+     "note": "草书手写"},
 ]
+
+# 文件名 → 分类（供已安装字体在界面按类归组；未知来源归「其他」）
+FILE_CATEGORY = {item["file"]: item["category"] for item in FONT_PACK}
 
 DEFAULT_FONT_LABEL = "默认（系统字体）"
 
@@ -97,7 +114,8 @@ def list_fonts() -> list[dict]:
         if file.suffix.lower() in FONT_SUFFIXES and file.is_file() and file.stat().st_size > 0:
             seen[file.stem] = file
     pack_names = {item["file"]: item["name"] for item in FONT_PACK}
-    return [{"name": pack_names.get(path.name, stem), "file": path.name, "path": str(path)}
+    return [{"name": pack_names.get(path.name, stem), "file": path.name, "path": str(path),
+             "category": FILE_CATEGORY.get(path.name, "其他/自备")}
             for stem, path in seen.items()]
 
 
@@ -141,7 +159,8 @@ def save_uploaded_font(filename: str, payload: bytes) -> list[str]:
 def font_statuses() -> list[dict]:
     installed = {item["file"] for item in list_fonts()}
     return [{"key": item["key"], "name": item["name"], "file": item["file"],
-             "note": item["note"], "installed": item["file"] in installed}
+             "note": item["note"], "category": item.get("category", "其他"),
+             "installed": item["file"] in installed}
             for item in FONT_PACK]
 
 

@@ -80,9 +80,13 @@ class JobState:
                 {"index": t.index, "text": t.text, "duration": t.duration}
                 for t in (self.timings or [])
             ]
+            try_audio = ""
+            if isinstance(self.result, dict):
+                try_audio = str(self.result.get("try_audio") or "")
             return {"id": self.slot, "label": self.label,
                     "running": self.running, "done": self.done, "ok": self.ok,
-                    "action": self.action, "log": list(self.log), "timings": timings}
+                    "action": self.action, "log": list(self.log), "timings": timings,
+                    "try_audio": try_audio}
 
     def append(self, message: str) -> None:
         with self.lock:
@@ -226,6 +230,27 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             toolbox.install_component(key, log)
             with JOB.lock:
                 JOB.ok = True
+        elif action == "voice_try":
+            # 音色试听：用该音色的引擎+参数合成一句示例，产物落克隆音频目录，前端播放
+            sample = str(payload.get("text") or "水星配音对齐，整篇克隆，逐行对齐，一句一画面。")
+            engine_key = str(payload.get("engine") or "mock")
+            opts = SynthesisOptions(
+                num_steps=int(float(payload.get("num_steps") or 10)),
+                guidance_scale=float(payload.get("guidance_scale") or 1.2),
+                speed=float(payload.get("speed") or 1.0),
+                max_pause_seconds=float(payload.get("max_pause_seconds") or 0.0),
+                seed=int(float(payload.get("seed") or 42)),
+            )
+            from datetime import datetime as _dt
+
+            stamp = _dt.now().strftime("%H%M%S")
+            out = studio_settings.clones_dir() / f"试听_{engine_key}_{stamp}.wav"
+            log(f"用引擎 {engine_key} 合成试听句（{len(sample)} 字）…")
+            master = pipeline.make_engine(engine_key).synthesize_full(sample, voice, out, opts)
+            with JOB.lock:
+                JOB.ok = True
+                JOB.result = {"try_audio": str(master.path)}
+            log(f"✅ 试听已生成：{master.path.name}（{master.seconds:.2f}s）")
         elif action == "fish_server":
             toolbox.start_fish_server(log)
             with JOB.lock:
@@ -445,9 +470,16 @@ class _Handler(BaseHTTPRequestHandler):
                     remaining -= len(chunk)
                 temp = Path(handle.name)
             try:
+                params = {}
+                for key in ("num_steps", "guidance_scale", "speed", "max_pause_seconds", "seed"):
+                    if key in query:
+                        params[key] = query[key]
                 entry = voice_library.register_voice(
                     _vroot(), query.get("name") or "未命名",
-                    temp, transcript=query.get("transcript") or "")
+                    temp, transcript=query.get("transcript") or "",
+                    note=query.get("note") or "",
+                    engine=query.get("engine") or voice_library.DEFAULT_ENGINE,
+                    params=params or None)
                 self._json({"ok": True, "voice_id": entry.voice_id})
             except Exception as exc:
                 self._json({"error": str(exc)}, 400)
@@ -781,7 +813,8 @@ def _browse(path_text: str) -> dict:
 def _state_payload() -> dict:
     from .version import full_version
 
-    voices = [{"voice_id": v.voice_id, "name": v.name, "transcript": v.transcript[:40]}
+    voices = [{"voice_id": v.voice_id, "name": v.name, "transcript": v.transcript[:40],
+               "engine": v.engine, "params": v.params}
               for v in voice_library.list_voices(_vroot())]
     return {
         "version": full_version(),

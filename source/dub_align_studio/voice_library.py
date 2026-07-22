@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -27,6 +27,29 @@ TRANSCRIPT_NAME = "转写.txt"
 META_NAME = "音色.json"
 
 
+# 音色设计默认参数（对照 dots.tts / fish-speech 设置面板；随音色一起存档，可迁移）
+DEFAULT_PARAMS: dict = {
+    "num_steps": 10,
+    "guidance_scale": 1.2,
+    "speed": 1.0,
+    "max_pause_seconds": 0.0,
+    "seed": 42,
+}
+DEFAULT_ENGINE = "dots_local"
+
+
+def merge_params(raw: dict | None) -> dict:
+    """把外部参数并入默认（只保留已知键，类型收敛），缺项用默认补齐。"""
+    params = dict(DEFAULT_PARAMS)
+    for key in DEFAULT_PARAMS:
+        if raw and key in raw and raw[key] is not None:
+            try:
+                params[key] = int(raw[key]) if key in ("num_steps", "seed") else float(raw[key])
+            except (TypeError, ValueError):
+                pass
+    return params
+
+
 @dataclass(frozen=True)
 class VoiceEntry:
     voice_id: str
@@ -35,6 +58,8 @@ class VoiceEntry:
     transcript: str
     note: str
     created: str
+    engine: str = DEFAULT_ENGINE           # 该音色设计所用引擎/模型
+    params: dict = field(default_factory=lambda: dict(DEFAULT_PARAMS))  # 可调合成参数
 
     def to_ref(self) -> VoiceRef:
         return VoiceRef(
@@ -55,8 +80,10 @@ def register_voice(
     reference_wav: Path,
     transcript: str = "",
     note: str = "",
+    engine: str = DEFAULT_ENGINE,
+    params: dict | None = None,
 ) -> VoiceEntry:
-    """登记音色：拷入参考音频、落转写与元数据，返回条目。"""
+    """登记/设计音色：拷入参考音频、落转写、引擎与可调参数、元数据，返回条目。"""
     reference_wav = Path(reference_wav)
     if not reference_wav.exists():
         raise FileNotFoundError(f"参考音频不存在：{reference_wav}")
@@ -74,8 +101,11 @@ def register_voice(
     if transcript.strip():
         (voice_dir / TRANSCRIPT_NAME).write_text(transcript.strip(), encoding="utf-8")
     created = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    merged = merge_params(params)
     (voice_dir / META_NAME).write_text(
-        json.dumps({"name": name.strip(), "created": created, "note": note}, ensure_ascii=False, indent=2),
+        json.dumps({"name": name.strip(), "created": created, "note": note,
+                    "engine": engine or DEFAULT_ENGINE, "params": merged},
+                   ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     return VoiceEntry(
@@ -85,6 +115,8 @@ def register_voice(
         transcript=transcript.strip(),
         note=note,
         created=created,
+        engine=engine or DEFAULT_ENGINE,
+        params=merged,
     )
 
 
@@ -137,6 +169,8 @@ def _load_entry(voice_dir: Path) -> VoiceEntry | None:
         transcript=transcript,
         note=str(meta.get("note") or ""),
         created=str(meta.get("created") or ""),
+        engine=str(meta.get("engine") or DEFAULT_ENGINE),
+        params=merge_params(meta.get("params")),
     )
 
 
@@ -176,7 +210,8 @@ def import_voices_zip(library_root: Path, payload: bytes) -> list[str]:
                 if entry is None:
                     continue
                 saved = register_voice(library_root, entry.name, entry.reference_wav,
-                                       transcript=entry.transcript, note=entry.note)
+                                       transcript=entry.transcript, note=entry.note,
+                                       engine=entry.engine, params=entry.params)
                 imported.append(saved.voice_id)
     if not imported:
         raise ValueError("音色包里没有可导入的音色（缺参考音频）。")

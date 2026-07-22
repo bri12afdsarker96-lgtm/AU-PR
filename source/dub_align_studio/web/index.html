@@ -208,6 +208,7 @@ footer b{color:var(--muted);font-weight:600}
     <button data-p="p1" class="on">一键成片</button>
     <button data-p="p2">文本框</button>
     <button data-p="p3">音色库</button>
+    <button data-p="p5">字体库</button>
     <button data-p="p4">工具箱自检</button>
   </nav>
 </div></header>
@@ -427,14 +428,32 @@ footer b{color:var(--muted);font-weight:600}
   </div>
   <div class="grid g2e">
     <div class="card">
-      <h2>登记新音色</h2>
-      <p class="mini" style="margin:-6px 0 10px;line-height:1.7">💡 不选音色时使用<b style="color:var(--gold)">默认声线（引擎自带）</b>，开箱即可出声；
-        登记任意 5–30 秒干净人声即可克隆专属声线。音色永久保存在本机，可打包迁移。</p>
-      <div class="sp"><span class="f">音色名称</span><input type="text" id="vName" placeholder="晚棠 / 青梧 / 主播甲 …"></div>
-      <div class="sp"><span class="f">参考音频</span><input type="file" id="vFile" accept="audio/*"></div>
-      <div class="sp"><span class="f">参考音频转写（可空）</span>
-        <textarea id="vTrans" style="min-height:84px" placeholder="参考音频里说的那句话的逐字文本"></textarea></div>
-      <button class="btn gold" onclick="saveVoice()">💾 保存为音色</button>
+      <h2>设计新音色</h2>
+      <p class="mini" style="margin:-6px 0 10px;line-height:1.7">💡 一个音色 = <b style="color:var(--gold)">参考音频 + 引擎/模型 + 一套合成参数</b>。
+        登记 5–30 秒干净人声，选好引擎并调参，保存后即为专属声线；参数随音色存档、可打包迁移。不选音色时用默认声线。</p>
+      <div class="grid g2e sp">
+        <div><span class="f">音色名称</span><input type="text" id="vName" placeholder="晚棠 / 青梧 / 主播甲 …"></div>
+        <div><span class="f">引擎 / 模型</span><select id="vEngine"></select></div>
+      </div>
+      <div class="sp"><span class="f">参考音频（5–30 秒干净人声）</span><input type="file" id="vFile" accept="audio/*"></div>
+      <div class="sp"><span class="f">参考音频转写（可空，填了克隆更像）</span>
+        <textarea id="vTrans" style="min-height:64px" placeholder="参考音频里说的那句话的逐字文本"></textarea></div>
+      <div style="border-top:1px solid var(--line);padding-top:12px;margin-top:4px">
+        <span class="f" style="color:var(--gold)">🎛 合成参数（对照 dots.tts / fish-speech 设置面板）</span>
+        <div class="grid g2e" style="gap:12px">
+          <div><span class="f">扩散步数 num_steps <span class="val" id="pStepV">10</span><span class="mini" style="color:var(--faint)"> 越大越稳越慢</span></span>
+            <input type="range" id="pSteps" min="4" max="32" step="1" value="10" oninput="pStepV.textContent=this.value"></div>
+          <div><span class="f">引导强度 guidance <span class="val" id="pGuideV">1.2</span><span class="mini" style="color:var(--faint)"> 越大越贴参考</span></span>
+            <input type="range" id="pGuide" min="0.5" max="3" step="0.1" value="1.2" oninput="pGuideV.textContent=(+this.value).toFixed(1)"></div>
+          <div><span class="f">语速 speed <span class="val" id="pSpeedV">1.0</span></span>
+            <input type="range" id="pSpeed" min="0.6" max="1.6" step="0.05" value="1" oninput="pSpeedV.textContent=(+this.value).toFixed(2)"></div>
+          <div><span class="f">随机种子 seed（固定可复现）</span><input type="number" id="pSeed" value="42" style="width:100%"></div>
+        </div>
+      </div>
+      <div class="row" style="margin-top:14px">
+        <button class="btn gold" onclick="saveVoice()">💾 保存为音色</button>
+        <span class="mini" style="color:var(--faint)">保存后可在下方卡片「🎧 合成试听」用真实引擎听效果</span>
+      </div>
     </div>
     <div class="card">
       <h2>已登记音色 <span class="badge" id="vCount">0</span></h2>
@@ -489,14 +508,22 @@ footer b{color:var(--muted);font-weight:600}
       </div>
       <div class="console" id="checklog" style="height:262px"><span class="dim">—— 就绪 ——</span></div>
     </div>
-    <div class="card" style="margin-top:16px;grid-column:1/-1">
-      <h2>字体库 <span class="badge" id="fontCount">0</span>
-        <button class="btn" style="margin-left:auto;padding:7px 14px" onclick="fontUp.click()">📥 上传字体(ttf/otf/zip)</button>
-        <input type="file" id="fontUp" accept=".ttf,.otf,.ttc,.zip" style="display:none" onchange="uploadFont(this)">
-        <button class="btn" style="padding:7px 14px" onclick="loadFonts()">↻ 刷新</button></h2>
-      <p class="hint" id="fontDirHint">自媒体常用开源字体一键下载；也可把 ttf/otf/ttc 直接放进字体目录。字幕与文本框的字体在「文本框」页选择。</p>
-      <div id="fontList"><p class="empty">读取中…</p></div>
-    </div>
+  </div>
+</section>
+
+<!-- ════ 字体库（独立入口） ════ -->
+<section id="p5">
+  <div class="thesis">
+    <h1>字体，<em>决定第一眼</em>。</h1>
+    <p>按用途分类的自媒体常用开源字体，点击即下载；也可上传自备 ttf/otf/ttc。字幕与文本框的字体在「文本框」页选择。</p>
+  </div>
+  <div class="card">
+    <h2>字体库 <span class="badge" id="fontCount">0</span>
+      <button class="btn" style="margin-left:auto;padding:7px 14px" onclick="fontUp.click()">📥 上传字体(ttf/otf/zip)</button>
+      <input type="file" id="fontUp" accept=".ttf,.otf,.ttc,.zip" style="display:none" onchange="uploadFont(this)">
+      <button class="btn" style="padding:7px 14px" onclick="loadFonts()">↻ 刷新</button></h2>
+    <p class="hint" id="fontDirHint">全部下载源逐一核实真实存在（GitHub 高口碑开源字体，可商用/免费）；缺哪个点哪个。</p>
+    <div id="fontList"><p class="empty">读取中…</p></div>
   </div>
 </section>
 
@@ -530,7 +557,7 @@ function showPage(p){
 }
 $('nav').addEventListener('click',e=>{const b=e.target.closest('button');if(b){showPage(b.dataset.p);syncPv();}});
 window.addEventListener('resize',()=>syncPv());
-if(/^#p[1-4]$/.test(location.hash))showPage(location.hash.slice(1));
+if(/^#p[1-5]$/.test(location.hash))showPage(location.hash.slice(1));
 
 /* ── 声波主轨（确定性伪随机；reduced-motion 静帧） ── */
 const cv=$('wave'),cx=cv.getContext('2d');
@@ -582,6 +609,10 @@ async function loadState(){
   fill('aspect',s.aspects.map(k=>[k,k]));
   fill('edPos',s.positions.map(k=>[k,k]));
   fill('voice',[['','默认声线（引擎自带）']].concat(s.voices.map(v=>[v.voice_id,v.voice_id+'｜'+v.name])));
+  window._voices=s.voices;
+  fill('vEngine',s.engines.map(k=>[k,ENGINE_LABEL[k]||k]));
+  $('vEngine').value=s.engines.includes('dots_local')?'dots_local':s.engines[0];
+  $('voice').onchange=applyVoiceDefaults;
   fill('subPos', Object.keys(SUB_POS_RATIO).map(k=>[k,k])); $('subPos').value='底部';
   fill('xlsxCol', 'ABCDEFGH'.split('').map(c=>[c,c+' 列'])); $('xlsxCol').value='B';
   $('aspect').addEventListener('change',()=>syncPv());
@@ -591,10 +622,16 @@ async function loadState(){
   if(!s.voices.length)list.innerHTML='<p class="empty">还没有音色 — 在左侧登记</p>';
   s.voices.forEach((v,k)=>{
     const el=document.createElement('div');el.className='vcard';
-    el.innerHTML=`<div class="vwave"></div><div style="min-width:0"><b>${esc(v.name)}</b>
-      <small>${v.transcript?'「'+esc(v.transcript)+'」':'（未填转写 · 纯音色克隆）'}</small></div>
-      <button class="btn" style="margin-left:auto;padding:7px 13px;flex:none" title="试听参考音频"
-        onclick="playUrl('/api/voices/${encodeURIComponent(v.voice_id)}/audio',this)">▶ 试听</button>
+    const eng=(ENGINE_LABEL[v.engine]||v.engine||'').split('（')[0];
+    const pp=v.params||{};
+    const meta=`${eng} · 步${pp.num_steps??'-'} · 引导${pp.guidance_scale??'-'} · 速${pp.speed??'-'}`;
+    el.innerHTML=`<div class="vwave"></div><div style="min-width:0;flex:1 1 120px"><b>${esc(v.name)}</b>
+      <small>${v.transcript?'「'+esc(v.transcript)+'」':'（未填转写 · 纯音色克隆）'}</small>
+      <small style="color:var(--gold)">${esc(meta)}</small></div>
+      <button class="btn" style="padding:7px 11px;flex:none" title="试听参考音频"
+        onclick="playUrl('/api/voices/${encodeURIComponent(v.voice_id)}/audio',this)">▶ 原声</button>
+      <button class="btn line" style="padding:7px 11px;flex:none" title="用该音色引擎+参数合成一句试听"
+        onclick="tryVoice('${encodeURIComponent(v.voice_id)}','${esc(v.engine||'')}',this)">🎧 合成试听</button>
       <span class="x" style="flex:none" onclick="delVoice('${encodeURIComponent(v.voice_id)}')">✕</span>`;
     list.appendChild(el);
     const wv=el.querySelector('.vwave');let ss=13+k*7;const r=()=>{ss=(ss*16807)%2147483647;return ss/2147483647};
@@ -752,13 +789,42 @@ async function saveVoice(){
   const f=$('vFile').files[0];const name=$('vName').value.trim();
   if(!name){alert('请填写音色名称');return;}
   if(!f){alert('请选择参考音频');return;}
-  const q=new URLSearchParams({name,transcript:$('vTrans').value.trim(),filename:f.name});
+  const q=new URLSearchParams({name,transcript:$('vTrans').value.trim(),filename:f.name,
+    engine:$('vEngine').value,
+    num_steps:$('pSteps').value,guidance_scale:$('pGuide').value,speed:$('pSpeed').value,seed:$('pSeed').value});
   const j=await (await fetch('/api/voices?'+q,{method:'POST',body:f})).json();
   if(j.error){alert(j.error);return;}
   $('vName').value='';$('vTrans').value='';$('vFile').value='';
+  alert('已保存音色「'+name+'」。可在下方「🎧 合成试听」用引擎试听效果。');
   loadState();
 }
 async function delVoice(id){if(confirm('删除该音色？')){await fetch('/api/voices/'+id,{method:'DELETE'});loadState();}}
+// 用音色的引擎+参数合成一句试听（真实引擎；mock 无 GPU 也能走通）
+async function tryVoice(id,engine,btn){
+  const vid=decodeURIComponent(id);
+  const v=(window._voices||[]).find(x=>x.voice_id===vid)||{};const p=v.params||{};
+  btn.disabled=true;const orig=btn.textContent;btn.textContent='合成中…';
+  const ok=await postRun({action:'voice_try',voice_id:vid,engine:engine||'mock',
+    num_steps:p.num_steps,guidance_scale:p.guidance_scale,speed:p.speed,seed:p.seed,max_pause_seconds:p.max_pause_seconds});
+  if(!ok){btn.disabled=false;btn.textContent=orig;return;}
+  const t=setInterval(async()=>{
+    const s=await (await fetch('/api/job')).json();
+    if(s.done){clearInterval(t);btn.disabled=false;btn.textContent=orig;
+      if(s.try_audio)playUrl('/api/audio?path='+encodeURIComponent(s.try_audio),btn);
+      else alert((s.log||[]).slice(-1)[0]||'试听失败（真实引擎需先在工具箱装好/启动）');
+    }
+  },500);
+}
+// 选中音色时，把它的引擎与参数带入成片默认（音色即预设）
+function applyVoiceDefaults(){
+  const v=(window._voices||[]).find(x=>x.voice_id===$('voice').value);
+  if(!v)return;
+  if(v.engine&&[...$('engine').options].some(o=>o.value===v.engine))$('engine').value=v.engine;
+  const p=v.params||{};
+  if(p.speed!=null){$('speed').value=p.speed;$('sv').textContent=(+p.speed).toFixed(2);}
+  if(p.seed!=null)$('seed').value=p.seed;
+  if(p.max_pause_seconds!=null){$('pause').value=p.max_pause_seconds;$('pv').textContent=(+p.max_pause_seconds).toFixed(2);}
+}
 
 /* ── 任务（多槽并发：main 主流程互斥，组件/字体/fish 服务各自独立并行） ── */
 async function run(action,target){
@@ -955,35 +1021,56 @@ async function saveCompRoot(){
 }
 
 /* ── 字体库 ── */
+function fillGrouped(id,groups){
+  const el=$(id);if(!el)return;const keep=el.value;el.innerHTML='';
+  const o0=document.createElement('option');o0.value='';o0.textContent='默认（系统字体）';el.appendChild(o0);
+  groups.forEach(([cat,items])=>{
+    if(!items.length)return;
+    const g=document.createElement('optgroup');g.label=cat;
+    items.forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;g.appendChild(o);});
+    el.appendChild(g);
+  });
+  el.value=[...el.options].some(o=>o.value===keep)?keep:'';
+}
 async function loadFonts(){
   try{
     const s=await (await fetch('/api/fonts')).json();
     $('fontCount').textContent=s.installed.length;
-    $('fontDirHint').textContent='字体目录：'+s.fonts_dir+' —— 可直接放入 ttf/otf/ttc；字幕与文本框字体在「文本框」页选择。';
+    $('fontDirHint').textContent='字体目录：'+s.fonts_dir+'（可直接放入 ttf/otf/ttc）。全部下载源已逐一核实真实存在。';
     const box=$('fontList');box.innerHTML='';
-    const installedFiles=new Set(s.installed.map(f=>f.file));
-    s.pack.forEach(f=>{
-      const el=document.createElement('div');el.className='check';el.dataset.key=f.key;
-      const action=f.installed?'<span class="pill ok">已就绪</span>'
-        :`<button class="btn line" style="padding:8px 16px" onclick="installFont('${f.key}')">下载</button>`;
-      el.innerHTML=`<span class="dot ${f.installed?'ok':'no'}"></span><b>${esc(f.name)}</b>
-        <span>${esc(f.note)}</span>
-        <span class="tstat" style="margin-left:auto;flex:none;font-size:12px;color:var(--gold)"></span>
-        <span class="tact" style="flex:none">${action}</span>`;
-      box.appendChild(el);});
+    // 按分类分组渲染字体包
+    const cats=[];
+    s.pack.forEach(f=>{const c=f.category||'其他';if(!cats.includes(c))cats.push(c);});
+    cats.forEach(cat=>{
+      const head=document.createElement('div');head.style.cssText='color:var(--gold);font-size:12px;letter-spacing:2px;margin:14px 0 4px;font-weight:700';
+      head.textContent='◆ '+cat;box.appendChild(head);
+      s.pack.filter(f=>(f.category||'其他')===cat).forEach(f=>{
+        const el=document.createElement('div');el.className='check';el.dataset.key=f.key;
+        const action=f.installed?'<span class="pill ok">已就绪</span>'
+          :`<button class="btn line" style="padding:8px 16px" onclick="installFont('${f.key}')">下载</button>`;
+        el.innerHTML=`<span class="dot ${f.installed?'ok':'no'}"></span><b>${esc(f.name)}</b>
+          <span>${esc(f.note)}</span>
+          <span class="tstat" style="margin-left:auto;flex:none;font-size:12px;color:var(--gold)"></span>
+          <span class="tact" style="flex:none">${action}</span>`;
+        box.appendChild(el);});
+    });
     const extras=s.installed.filter(f=>!s.pack.some(pk=>pk.file===f.file));
-    extras.forEach(f=>{
-      const el=document.createElement('div');el.className='check';
-      el.innerHTML=`<span class="dot ok"></span><b>${esc(f.name)}</b>
-        <span class="mut">用户放入 · ${esc(f.file)}</span><span class="pill ok" style="margin-left:auto">已就绪</span>`;
-      box.appendChild(el);});
-    // 填充字幕/文本框字体下拉（按文件名传值，渲染端 resolve）
-    const pairs=[['','默认（系统字体）']].concat(s.installed.map(f=>[f.file,f.name]));
-    for(const id of ['subFont','edFont']){
-      const el=$(id); if(!el)continue;
-      const keep=el.value; fill(id,pairs);
-      el.value=[...el.options].some(o=>o.value===keep)?keep:'';
+    if(extras.length){
+      const head=document.createElement('div');head.style.cssText='color:var(--gold);font-size:12px;letter-spacing:2px;margin:14px 0 4px;font-weight:700';
+      head.textContent='◆ 其他/自备';box.appendChild(head);
+      extras.forEach(f=>{
+        const el=document.createElement('div');el.className='check';
+        el.innerHTML=`<span class="dot ok"></span><b>${esc(f.name)}</b>
+          <span class="mut">用户放入 · ${esc(f.file)}</span><span class="pill ok" style="margin-left:auto">已就绪</span>`;
+        box.appendChild(el);});
     }
+    // 字幕/文本框字体下拉：按分类 optgroup 归组（解决下拉过长）
+    const byCat={};
+    s.installed.forEach(f=>{const c=f.category||'其他/自备';(byCat[c]=byCat[c]||[]).push([f.file,f.name]);});
+    const order=['黑体标题','楷宋文艺','圆体可爱','手写书法','其他/自备'];
+    const groups=order.filter(c=>byCat[c]).map(c=>[c,byCat[c]]).concat(
+      Object.keys(byCat).filter(c=>!order.includes(c)).map(c=>[c,byCat[c]]));
+    fillGrouped('subFont',groups);fillGrouped('edFont',groups);
   }catch(e){}
 }
 async function installFont(key){ if(rootUnsaved())return; if(await postRun({action:'font',font_key:key}))pollAll(); }
