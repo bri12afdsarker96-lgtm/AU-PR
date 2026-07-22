@@ -252,6 +252,13 @@ class MediaEndpointTests(unittest.TestCase):
             urllib.request.urlopen(self.base + "/api/voices/" + urllib.parse.quote("不存在") + "/audio")
         self.assertEqual(ctx.exception.code, 404)
 
+    def test_settings_expose_landing_paths(self):
+        data = json.loads(urllib.request.urlopen(self.base + "/api/settings").read())
+        paths = data.get("paths") or {}
+        for key in ("组件", "whisper 模型", "字体", "克隆音频", "音色库"):
+            self.assertIn(key, paths)
+            self.assertTrue(paths[key].startswith(data["data_root"]), (key, paths[key]))
+
     def test_open_folder_rejects_missing_dir(self):
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             _post_json(self.base, "/api/open_folder", {"path": str(self.temp / "不存在")})

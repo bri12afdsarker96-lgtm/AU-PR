@@ -238,8 +238,12 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
         elif action == "envcheck":
             import shutil as _sh
 
+            from .version import full_version
+
+            log(f"版本：{full_version()}")
             root = studio_settings.data_root()
             log(f"总目录：{root}")
+            log(f"设置文件：{studio_settings.SETTINGS_FILE}")
             for label, path in (("组件", studio_settings.components_root()),
                                 ("音色库", voice_library.voices_root(_vroot())),
                                 ("克隆音频", root / studio_settings.DIR_CLONES),
@@ -249,6 +253,18 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             log(("✅ " if ff else "⛔ ") + "ffmpeg / ffprobe" + ("" if ff else "：未找到，请放到软件目录旁或加入 PATH"))
             for c in toolbox.component_statuses():
                 log(("✅ " if c["installed"] else "⛔ ") + f"{c['name']}：{c['detail']}")
+            # whisper-cli 缺失时的自动诊断：列出 whisper.cpp 目录真实内容，一图定位
+            if not studio_settings.whisper_cli_path():
+                home = studio_settings.whisper_home()
+                if home.is_dir():
+                    log(f"🔎 whisper 目录诊断（{home}）：")
+                    for child in sorted(home.iterdir())[:12]:
+                        log(f"    {child.name}{'/' if child.is_dir() else ''}")
+                        if child.is_dir():
+                            for sub in sorted(child.iterdir())[:8]:
+                                log(f"        {sub.name}")
+                else:
+                    log(f"🔎 whisper 目录尚不存在：{home}（点组件行「下载」自动创建）")
             installed_fonts = font_library.list_fonts()
             log(f"字体库：{len(installed_fonts)} 款可用" + ("（" + "、".join(f['name'] for f in installed_fonts[:6]) + "…）" if installed_fonts else "（可在下方下载或把 ttf/otf 放入字体目录）"))
             voices = voice_library.list_voices(_vroot())
@@ -328,9 +344,17 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(_browse(query.get("path") or ""))
             return
         if route == "/api/settings":
-            self._json({"data_root": str(studio_settings.data_root()),
+            root = studio_settings.data_root()
+            self._json({"data_root": str(root),
                         "default_data_root": str(studio_settings.default_data_root()),
-                        "component_root": str(studio_settings.component_root())})
+                        "component_root": str(studio_settings.component_root()),
+                        "paths": {  # 各类下载/资产的实际落地目录（界面明示，杜绝「下到哪了」的疑问）
+                            "组件": str(studio_settings.components_root()),
+                            "whisper 模型": str(studio_settings.whisper_models_dir()),
+                            "字体": str(root / studio_settings.DIR_FONTS),
+                            "克隆音频": str(root / studio_settings.DIR_CLONES),
+                            "音色库": str(root / studio_settings.DIR_VOICES),
+                        }})
             return
         if route == "/api/fonts":
             self._json({"installed": font_library.list_fonts(),

@@ -149,6 +149,9 @@ class UiPreviewContractTests(unittest.TestCase):
         html = (Path(fonts.__file__).parent / "web" / "index.html").read_text(encoding="utf-8")
         self.assertIn('id="verFlag"', html)
         self.assertIn('id="verFoot"', html)
+        self.assertIn('id="verInfo"', html)   # 工具箱自检页版本行
+        self.assertIn('id="pathHint"', html)  # 下载落地目录明示
+        self.assertIn("rootUnsaved", html)    # 总目录改而未保存的下载拦截
 
 
 if __name__ == "__main__":

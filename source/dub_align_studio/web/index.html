@@ -412,12 +412,17 @@ footer b{color:var(--muted);font-weight:600}
   <div class="grid g2e">
     <div class="card">
       <h2>组件工具箱 <button class="btn" style="margin-left:auto;padding:7px 14px" onclick="loadComponents()">↻ 刷新</button></h2>
+      <div class="check" style="border-bottom:1px solid var(--line);margin-bottom:12px;padding-top:0">
+        <span class="dot ok"></span><b>版本</b>
+        <span id="verInfo" style="font-variant-numeric:tabular-nums">读取中…</span>
+      </div>
       <div class="sp"><span class="f">数据总目录（组件/模型/音色库/克隆音频/字体 全部存放于此；整个文件夹可拷到其他电脑直接使用）</span>
         <div class="row" style="margin-bottom:8px"><input type="text" id="compRoot">
           <button class="btn" onclick="pickDir('compRoot')">📁 选择</button></div>
         <div class="row">
           <button class="btn line" onclick="saveCompRoot()">💾 保存总目录</button>
-          <button class="btn gold" style="flex:1" onclick="run('envcheck','checklog')">🩺 环境自检</button></div></div>
+          <button class="btn gold" style="flex:1" onclick="run('envcheck','checklog')">🩺 环境自检</button></div>
+        <p class="hint" id="pathHint" style="margin-top:8px;line-height:1.9"></p></div>
       <p class="hint">缺什么点击即可下载/安装（多源 + SHA256 校验 + 断点续传）；<b style="color:var(--gold)">多个下载可同时进行</b>，互不阻塞，进度在下方与各行实时显示。</p>
       <div id="compList"><p class="empty">读取中…</p></div>
       <div class="console" id="dlog" style="height:150px;margin-top:14px"><span class="dim">—— 下载/安装日志 · 多任务并行 ——</span></div>
@@ -513,7 +518,8 @@ async function loadState(){
   const s=await (await fetch('/api/state')).json();
   POSITIONS=s.positions;
   if(s.version){$('verFlag').textContent=s.version.split(' · ')[0];$('verFlag').title=s.version;
-    $('verFoot').textContent='· '+s.version+' ';document.title='水星配音对齐工作室 '+s.version.split(' · ')[0];}
+    $('verFoot').textContent='· '+s.version+' ';document.title='水星配音对齐工作室 '+s.version.split(' · ')[0];
+    const vi=$('verInfo');if(vi)vi.textContent=s.version;}
   fill('engine',s.engines.map(k=>[k,ENGINE_LABEL[k]||k]));
   $('engine').value=s.engines.includes('dots_local')?'dots_local':s.engines[0];
   fill('aligner',s.aligners.map(k=>[k,k==='whisper'?'whisper（推荐）':k]));
@@ -581,7 +587,7 @@ async function postRun(payload){
   if(j.error){alert(j.error);return false;}
   return true;
 }
-async function installComponent(key){ if(await postRun({action:'component',component_key:key}))pollAll(); }
+async function installComponent(key){ if(rootUnsaved())return; if(await postRun({action:'component',component_key:key}))pollAll(); }
 async function runFish(action){ if(await postRun({action}))pollAll(); }
 
 /* ── 手机实时预览：已添加的 + 正在编辑的（虚线框） ── */
@@ -847,8 +853,25 @@ async function importScript(input,kind){
 }
 
 /* ── 设置：数据总目录 ── */
+let _savedRoot='';
 async function loadSettings(){
-  try{const s=await (await fetch('/api/settings')).json();$('compRoot').value=s.data_root||'';}catch(e){}
+  try{
+    const s=await (await fetch('/api/settings')).json();
+    _savedRoot=s.data_root||'';
+    $('compRoot').value=_savedRoot;
+    if(s.paths){
+      $('pathHint').innerHTML='下载/存档实际落地：<br>'+Object.entries(s.paths)
+        .map(([k,v])=>`　${k} → ${esc(v)}`).join('<br>');
+    }
+  }catch(e){}
+}
+function rootUnsaved(){
+  const now=$('compRoot').value.trim();
+  if(now&&_savedRoot&&now!==_savedRoot){
+    alert('数据总目录已修改但还没点「💾 保存总目录」，下载仍会落到旧目录：\n'+_savedRoot+'\n\n请先点保存，再开始下载。');
+    return true;
+  }
+  return false;
 }
 async function saveCompRoot(){
   const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -856,7 +879,7 @@ async function saveCompRoot(){
   const j=await r.json();
   if(j.error){alert(j.error);return;}
   alert('已保存数据总目录：'+j.data_root+'\n（已下载的文件不会自动搬移；把旧文件夹整体移入新目录后点「环境自检」即可识别）');
-  loadComponents();loadFonts();loadState();
+  loadSettings();loadComponents();loadFonts();loadState();loadClones();
 }
 
 /* ── 字体库 ── */
@@ -891,7 +914,7 @@ async function loadFonts(){
     }
   }catch(e){}
 }
-async function installFont(key){ if(await postRun({action:'font',font_key:key}))pollAll(); }
+async function installFont(key){ if(rootUnsaved())return; if(await postRun({action:'font',font_key:key}))pollAll(); }
 async function uploadFont(input){
   const f=input.files[0]; input.value=''; if(!f)return;
   const q=new URLSearchParams({filename:f.name});
