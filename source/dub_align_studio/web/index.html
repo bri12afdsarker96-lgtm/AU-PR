@@ -233,7 +233,15 @@ footer b{color:var(--muted);font-weight:600}
     <div class="card">
       <h2>文案与配置</h2>
       <div class="sp"><span class="f">待合成文案 · 一行一句（每句 ≥ 5 秒）</span>
-        <textarea id="text" placeholder="第一句台词……&#10;第二句台词……&#10;第三句台词……"></textarea></div>
+        <div class="row" style="margin-bottom:8px">
+          <button class="btn" onclick="xlsxFile.click()">📊 导入表格(xlsx)</button>
+          <span class="mini" style="flex:none">列</span>
+          <select id="xlsxCol" style="width:76px;flex:none"></select>
+          <button class="btn" onclick="txtFile.click()">📄 导入TXT</button>
+          <input type="file" id="xlsxFile" accept=".xlsx" style="display:none" onchange="importScript(this,'xlsx')">
+          <input type="file" id="txtFile" accept=".txt" style="display:none" onchange="importScript(this,'txt')">
+        </div>
+        <textarea id="text" placeholder="第一句台词……&#10;第二句台词……&#10;第三句台词……&#10;也可点上方按钮从 xlsx（默认 B 列）或 TXT 导入"></textarea></div>
       <div class="grid g2e sp">
         <div><span class="f">配音引擎</span><select id="engine"></select></div>
         <div><span class="f">音色</span>
@@ -486,7 +494,7 @@ async function loadState(){
   });
   syncPv();
 }
-function fill(id,pairs){const el=$(id);el.innerHTML='';pairs.forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;el.appendChild(o);});}
+function fill(id,pairs){const el=$(id);if(!el)return;el.innerHTML='';pairs.forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;el.appendChild(o);});}
 
 /* ── 组件工具箱（点击即下载/安装） ── */
 async function loadComponents(){
