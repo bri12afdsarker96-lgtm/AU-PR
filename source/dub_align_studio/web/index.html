@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>水星配音对齐工作室</title>
+<style>
+:root{
+  --bg:#100E0B; --bg2:#161310; --panel:#1B1812; --panel2:#211D15; --field:#262117;
+  --line:#2E2921; --line2:#3C352A;
+  --gold:#E4B963; --gold-hi:#F5D68F; --gold-deep:#8F7439; --ink:#221A07;
+  --text:#EFEAE0; --muted:#9A917F; --faint:#6E675A;
+  --ok:#6FBF8F; --bad:#E0685F; --info:#8FA3E8;
+  --ok-bg:#15251C; --bad-bg:#2B1715;
+  --r:16px; --rs:11px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{color-scheme:dark}
+body{
+  background:
+    radial-gradient(1100px 480px at 78% -8%, rgba(228,185,99,.06), transparent 62%),
+    radial-gradient(700px 420px at -5% 30%, rgba(228,185,99,.03), transparent 55%),
+    var(--bg);
+  color:var(--text);
+  font:14px/1.7 "PingFang SC","Microsoft YaHei UI","Noto Sans SC",system-ui,sans-serif;
+  min-height:100vh;
+}
+.wrap{max-width:1140px;margin:0 auto;padding:0 26px}
+::selection{background:rgba(228,185,99,.25)}
+
+/* ───────── 顶栏 ───────── */
+header{border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20;
+  background:color-mix(in srgb,var(--bg) 86%,transparent);backdrop-filter:blur(16px)}
+.bar{display:flex;align-items:center;gap:15px;padding:17px 0 15px}
+.mark{width:38px;height:38px;border-radius:11px;flex:none;position:relative;
+  background:linear-gradient(140deg,var(--gold-hi),var(--gold) 55%,var(--gold-deep));
+  box-shadow:0 6px 24px rgba(228,185,99,.28), inset 0 1px 0 rgba(255,255,255,.35)}
+.mark::before{content:"";position:absolute;inset:0;display:block;margin:auto;width:14px;height:14px;
+  background:var(--ink);clip-path:polygon(50% 0,100% 50%,50% 100%,0 50%)}
+.brand{line-height:1.25}
+.brand b{font-size:17.5px;letter-spacing:1px;font-weight:700}
+.brand i{display:block;font-style:normal;font-size:10px;color:var(--faint);letter-spacing:4.5px;margin-top:2px}
+.flags{margin-left:auto;display:flex;gap:8px}
+.flag{font-size:11px;color:var(--gold);letter-spacing:1.5px;padding:5px 13px;border-radius:99px;
+  border:1px solid rgba(228,185,99,.32);background:rgba(228,185,99,.06)}
+
+nav{display:flex;gap:4px;padding-bottom:13px}
+nav button{appearance:none;border:0;background:transparent;color:var(--muted);cursor:pointer;
+  font:600 13px/1 inherit;letter-spacing:2px;padding:10px 19px;border-radius:99px;transition:.16s}
+nav button:hover{color:var(--text);background:var(--panel)}
+nav button.on{color:var(--ink);background:linear-gradient(135deg,var(--gold-hi),var(--gold));
+  box-shadow:0 4px 16px rgba(228,185,99,.22)}
+nav button:focus-visible,.btn:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+
+/* ───────── 论点条：对齐时间轴 ───────── */
+.thesis{padding:26px 0 6px}
+.thesis h1{font-size:21px;font-weight:700;letter-spacing:.5px;text-wrap:balance}
+.thesis h1 em{font-style:normal;color:var(--gold)}
+.thesis p{color:var(--muted);font-size:12.5px;margin-top:4px;letter-spacing:.5px}
+.rig{margin:18px 0 22px;background:linear-gradient(180deg,var(--panel2),var(--panel));
+  border:1px solid var(--line);border-radius:var(--r);padding:18px 20px 14px;
+  box-shadow:0 14px 40px rgba(0,0,0,.35)}
+.rig .lab{display:flex;justify-content:space-between;font-size:10.5px;color:var(--faint);letter-spacing:2px;margin-bottom:8px}
+.rig .lab b{color:var(--gold);font-weight:600}
+canvas#wave{width:100%;height:64px;display:block;border-radius:8px}
+.lane{display:flex;gap:5px;margin-top:10px;min-height:44px}
+.lane .hintline{color:var(--faint);font-size:11px;letter-spacing:1.5px;align-self:center;margin:0 auto}
+.seg{position:relative;height:44px;border-radius:9px;cursor:default;flex-grow:1;overflow:hidden;
+  background:linear-gradient(180deg,#2A2318,#221D13);border:1px solid var(--line2);transition:.18s}
+.seg:hover{border-color:var(--gold);transform:translateY(-2px);box-shadow:0 8px 20px rgba(0,0,0,.4)}
+.seg small{position:absolute;left:10px;top:6px;font-size:10px;color:var(--faint);letter-spacing:1px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:90%}
+.seg b{position:absolute;left:10px;bottom:6px;font-size:11.5px;color:var(--gold);font-weight:600;
+  font-variant-numeric:tabular-nums}
+.seg::after{content:"";position:absolute;right:0;top:0;bottom:0;width:1px;background:rgba(228,185,99,.25)}
+.rig .foot{display:flex;gap:18px;margin-top:11px;font-size:11px;color:var(--faint);letter-spacing:1px;flex-wrap:wrap}
+.rig .foot span b{color:var(--muted);font-weight:600}
+
+/* ───────── 通用 ───────── */
+main{padding-bottom:56px}
+section{display:none}section.on{display:block}
+.grid{display:grid;gap:16px}
+.g2{grid-template-columns:4fr 3fr}
+.g2e{grid-template-columns:1fr 1fr}
+@media(max-width:920px){.g2,.g2e,.g3ov{grid-template-columns:1fr!important}}
+.card{background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--line);
+  border-radius:var(--r);padding:21px 23px;box-shadow:0 12px 34px rgba(0,0,0,.28)}
+.card h2{font-size:12px;color:var(--gold);letter-spacing:3px;font-weight:700;
+  display:flex;align-items:center;gap:10px;margin-bottom:16px}
+.card h2::after{content:"";height:1px;flex:1;background:linear-gradient(90deg,var(--line2),transparent)}
+.f{display:block;font-size:11px;color:var(--muted);letter-spacing:1.5px;margin-bottom:6px}
+.sp{margin-bottom:14px}
+.row{display:flex;gap:10px;align-items:center}.row>*{min-width:0}
+textarea,input[type=text],input[type=number],select{width:100%;background:var(--field);color:var(--text);
+  border:1px solid var(--line);border-radius:var(--rs);padding:10px 13px;font:inherit;outline:none;transition:.15s}
+textarea:focus,input:focus,select:focus{border-color:var(--gold-deep);box-shadow:0 0 0 3px rgba(228,185,99,.09)}
+textarea{resize:vertical;min-height:118px;line-height:1.9}
+select{appearance:none;padding-right:34px;
+  background-image:linear-gradient(45deg,transparent 50%,var(--gold) 50%),linear-gradient(135deg,var(--gold) 50%,transparent 50%);
+  background-position:calc(100% - 19px) 55%,calc(100% - 14px) 55%;background-size:5px 5px;background-repeat:no-repeat}
+input[type=range]{accent-color:var(--gold);width:100%}
+input[type=checkbox]{accent-color:var(--gold);width:15px;height:15px}
+input[type=file]{color:var(--muted);font-size:12px}
+input[type=file]::file-selector-button{appearance:none;cursor:pointer;border:1px solid var(--line2);
+  border-radius:8px;background:var(--field);color:var(--gold);font:600 12px/1 inherit;
+  padding:9px 15px;margin-right:12px;letter-spacing:1px}
+.mini{font-size:12px;color:var(--muted)}
+.val{min-width:46px;text-align:center;flex:none;font-size:12px;color:var(--gold);
+  font-variant-numeric:tabular-nums;background:var(--field);border:1px solid var(--line);border-radius:8px;padding:4px 7px}
+
+.btn{appearance:none;cursor:pointer;border:1px solid var(--line2);border-radius:var(--rs);
+  background:var(--field);color:var(--text);font:600 12.5px/1 inherit;letter-spacing:1.5px;
+  padding:12px 19px;transition:.16s;white-space:nowrap}
+.btn:hover{border-color:var(--gold-deep);color:var(--gold)}
+.btn:active{transform:translateY(1px)}
+.btn.gold{background:linear-gradient(135deg,var(--gold-hi),var(--gold) 60%,#D9A94E);color:var(--ink);
+  border-color:transparent;font-weight:800;box-shadow:0 8px 26px rgba(228,185,99,.25),inset 0 1px 0 rgba(255,255,255,.4)}
+.btn.gold:hover{filter:brightness(1.05);color:var(--ink)}
+.btn.big{width:100%;padding:16px;font-size:15px;letter-spacing:8px;border-radius:13px}
+.btn.line{background:transparent;border-color:rgba(228,185,99,.38);color:var(--gold)}
+.steps{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}
+
+.console{margin-top:14px;background:#0B0906;border:1px solid var(--line);border-radius:var(--rs);
+  padding:15px 17px;height:238px;overflow:auto;white-space:pre-wrap;word-break:break-all;
+  font:12px/1.9 ui-monospace,Consolas,"Cascadia Mono",monospace;color:#CEC8B8}
+.console .dim{color:var(--faint)}
+.console::-webkit-scrollbar{width:9px}.console::-webkit-scrollbar-thumb{background:var(--line2);border-radius:9px}
+
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{color:var(--gold);text-align:left;font-weight:600;letter-spacing:1.5px;font-size:11px;padding:8px 10px;border-bottom:1px solid var(--line2)}
+td{padding:10px;border-bottom:1px solid var(--line)}
+td.mut{color:var(--muted)} tr:hover td{background:rgba(228,185,99,.035)}
+.x{color:var(--bad);cursor:pointer;font-weight:700;padding:2px 9px;border-radius:7px}
+.x:hover{background:var(--bad-bg)}
+.empty{color:var(--faint);text-align:center;padding:26px 0;font-size:12px}
+.badge{font-size:11px;padding:2px 11px;border-radius:99px;border:1px solid var(--line2);color:var(--muted);font-variant-numeric:tabular-nums}
+
+/* ───────── 手机预览（文本框页） ───────── */
+.g3ov{display:grid;grid-template-columns:250px 1fr 1fr;gap:16px;align-items:start}
+.phone{width:250px;aspect-ratio:9/16;flex:none;margin:0 auto;position:relative;border-radius:22px;overflow:hidden;
+  border:1px solid var(--line2);box-shadow:0 20px 50px rgba(0,0,0,.5), inset 0 0 0 1px rgba(255,255,255,.04);
+  background:linear-gradient(160deg,#3B3242 0%,#241F2E 34%,#151218 78%)}
+.phone::before{content:"";position:absolute;inset:0;
+  background:radial-gradient(240px 150px at 60% 30%, rgba(228,185,99,.16), transparent 60%)}
+.phone .scan{position:absolute;left:0;right:0;height:1px;background:rgba(255,255,255,.05)}
+.ov{position:absolute;left:50%;transform:translateX(-50%);text-align:center;width:88%;
+  font-weight:800;line-height:1.35;text-shadow:0 0 2px #000,0 0 2px #000,2px 2px 0 #000,-2px 2px 0 #000,2px -2px 0 #000,-2px -2px 0 #000;
+  transition:.2s;pointer-events:none;word-break:break-all}
+.ov.boxed{background:rgba(0,0,0,.55);padding:.35em .5em;border-radius:.18em;text-shadow:none}
+.ov.ghost{opacity:.94;outline:1px dashed rgba(228,185,99,.6);outline-offset:3px}
+.phone .hud{position:absolute;right:9px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:11px;opacity:.5}
+.phone .hud i{width:22px;height:22px;border-radius:50%;background:rgba(255,255,255,.14);display:block}
+.sw{width:27px;height:27px;border-radius:9px;border:1px solid var(--line2);cursor:pointer;flex:none;transition:.15s}
+.sw:hover{transform:scale(1.14)}
+.sw.on{outline:2px solid var(--gold);outline-offset:1px}
+
+/* ───────── 音色卡 ───────── */
+.vlist{display:flex;flex-direction:column;gap:10px}
+.vcard{border:1px solid var(--line);border-radius:var(--rs);padding:14px 16px;background:var(--panel2);
+  display:flex;align-items:center;gap:13px;transition:.16s}
+.vcard:hover{border-color:var(--gold-deep)}
+.vwave{display:flex;align-items:center;gap:2px;height:26px;flex:none}
+.vwave i{width:3px;border-radius:2px;background:var(--gold);opacity:.75}
+.vcard b{font-size:13.5px;display:block}
+.vcard small{color:var(--faint);font-size:11px;display:block;margin-top:1px;letter-spacing:.5px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:250px}
+.vcard .x{margin-left:auto}
+
+/* ───────── 自检 ───────── */
+.check{display:flex;align-items:center;gap:13px;padding:13px 4px;border-bottom:1px solid var(--line)}
+.check:last-child{border-bottom:0}
+.dot{width:9px;height:9px;border-radius:50%;flex:none}
+.dot.ok{background:var(--ok);box-shadow:0 0 10px rgba(111,191,143,.5)}
+.dot.no{background:var(--bad);box-shadow:0 0 10px rgba(224,104,95,.4)}
+.check b{font-size:13px;min-width:130px;font-weight:600}
+.check span{color:var(--muted);font-size:12px;overflow:hidden;text-overflow:ellipsis}
+.pill{margin-left:auto;flex:none;font-size:10.5px;letter-spacing:1.5px;padding:3px 11px;border-radius:99px}
+.pill.ok{color:var(--ok);background:var(--ok-bg);border:1px solid rgba(111,191,143,.3)}
+.pill.no{color:var(--bad);background:var(--bad-bg);border:1px solid rgba(224,104,95,.3)}
+
+footer{border-top:1px solid var(--line);margin-top:20px;padding:22px 0 30px;
+  text-align:center;font-size:11px;color:var(--faint);letter-spacing:2px}
+footer b{color:var(--muted);font-weight:600}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+
+<header><div class="wrap">
+  <div class="bar">
+    <div class="mark" aria-hidden="true"></div>
+    <div class="brand"><b>水星配音对齐工作室</b><i>MERCURY&nbsp;DUB&nbsp;ALIGN</i></div>
+    <div class="flags"><span class="flag">整篇克隆</span><span class="flag">逐行对齐</span><span class="flag">本地离线</span></div>
+  </div>
+  <nav id="nav">
+    <button data-p="p1" class="on">一键成片</button>
+    <button data-p="p2">文本框</button>
+    <button data-p="p3">音色库</button>
+    <button data-p="p4">工具箱自检</button>
+  </nav>
+</div></header>
+
+<main class="wrap">
+
+<!-- ════ 一键成片 ════ -->
+<section id="p1" class="on">
+  <div class="thesis">
+    <h1>音频<em>整条不切</em>，画面<em>按行对齐</em>。</h1>
+    <p>整篇克隆出连贯配音 → 逐行量出真实时长 → 每句画面裁剪 / 变速对齐 → 一句一画面，帧级收口。</p>
+  </div>
+
+  <div class="rig">
+    <div class="lab"><b>MASTER.WAV · 连贯配音主轨</b><span id="rigTotal">—</span></div>
+    <canvas id="wave" height="64"></canvas>
+    <div class="lane" id="lane"><span class="hintline">运行「② 量时长」或「生成成片」后，这里显示每行的真实时长</span></div>
+    <div class="foot">
+      <span>行边界由 whisper 量出 · <b>只量不切</b></span>
+      <span>画面策略：<b>裁剪 / 放慢 / 定格</b></span>
+      <span>Σ 行时长 = <b>master 总长</b></span>
+    </div>
+  </div>
+
+  <div class="grid g2">
+    <div class="card">
+      <h2>文案与配置</h2>
+      <div class="sp"><span class="f">待合成文案 · 一行一句（每句 ≥ 5 秒）</span>
+        <textarea id="text" placeholder="第一句台词……&#10;第二句台词……&#10;第三句台词……"></textarea></div>
+      <div class="grid g2e sp">
+        <div><span class="f">配音引擎</span><select id="engine"></select></div>
+        <div><span class="f">音色</span>
+          <div class="row"><select id="voice"></select><button class="btn" onclick="loadState()" title="刷新">↻</button></div></div>
+      </div>
+      <div class="grid g2e sp">
+        <div><span class="f">计时尺子</span><select id="aligner"></select></div>
+        <div><span class="f">画面比例</span><select id="aspect"></select></div>
+      </div>
+      <div class="sp"><span class="f">分镜目录</span><input type="text" id="shots" placeholder="D:\素材\分镜（1.mp4、2.mp4 …）"></div>
+      <div class="sp"><span class="f">输出目录</span><input type="text" id="outdir" placeholder="D:\输出\第01集"></div>
+      <div class="grid g2e sp">
+        <div><span class="f">停顿上限（秒）· 0 = 不压缩</span>
+          <div class="row"><input type="range" id="pause" min="0" max="1.5" step="0.05" value="0.2" oninput="pv.textContent=(+this.value).toFixed(2)"><span class="val" id="pv">0.20</span></div></div>
+        <div><span class="f">语速 · 1.0 = 原速</span>
+          <div class="row"><input type="range" id="speed" min="0.5" max="2" step="0.05" value="1" oninput="sv.textContent=(+this.value).toFixed(2)"><span class="val" id="sv">1.00</span></div></div>
+      </div>
+      <div class="row" style="gap:22px;flex-wrap:wrap">
+        <label class="row mini" style="gap:7px"><input type="checkbox" id="burn" checked>烧录字幕</label>
+        <span class="row mini" style="gap:7px">字号(px)<input type="number" id="subsize" value="64" style="width:82px"></span>
+        <span class="row mini" style="gap:7px">Seed <input type="number" id="seed" value="42" style="width:88px"></span>
+        <label class="row mini" style="gap:7px"><input type="checkbox" id="capcut">完成后导出剪映草稿</label>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>执行</h2>
+      <button class="btn gold big" onclick="run('run_all')">▶&nbsp;&nbsp;生 成 成 片</button>
+      <div class="steps">
+        <button class="btn line" onclick="run('dub')">① 配音</button>
+        <button class="btn line" onclick="run('timing')">② 量时长</button>
+        <button class="btn line" onclick="run('render')">③ 渲染</button>
+        <button class="btn line" onclick="run('capcut')">④ 剪映</button>
+      </div>
+      <div class="console" id="mainlog"><span class="dim">—— 就绪 · 运行日志将在这里滚动 ——</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ════ 文本框 ════ -->
+<section id="p2">
+  <div class="thesis">
+    <h1>画面上的每一行字，<em>所见即成片</em>。</h1>
+    <p>顶部书名 · 中部旁白 · 底部引导语 —— 位置、字号、颜色、背景框实时预览，渲染时逐帧烧入（画在字幕上层）。</p>
+  </div>
+
+  <div class="g3ov">
+    <div>
+      <div class="phone" id="phone">
+        <div class="scan" style="top:33%"></div><div class="scan" style="top:66%"></div>
+        <div class="hud"><i></i><i></i><i></i></div>
+      </div>
+      <p style="text-align:center;font-size:10.5px;color:var(--faint);letter-spacing:2px;margin-top:10px">实时预览 · 1080 × 1920</p>
+    </div>
+
+    <div class="card">
+      <h2>编辑文本框</h2>
+      <div class="sp"><span class="f">文本内容</span>
+        <input type="text" id="edText" placeholder="下载知乎搜书名《…》看后续" oninput="syncPv()"></div>
+      <div class="grid g2e sp">
+        <div><span class="f">位置</span><select id="edPos" onchange="syncPv()"></select></div>
+        <div><span class="f">字号 <span class="val" id="edSizeV" style="padding:2px 8px">72</span></span>
+          <input type="range" id="edSize" min="32" max="160" step="4" value="72" oninput="syncPv()"></div>
+      </div>
+      <div class="sp"><span class="f">颜色</span>
+        <div class="row" id="swatches">
+          <div class="sw on" data-c="#FFFFFF" style="background:#FFFFFF"></div>
+          <div class="sw" data-c="#FFE14D" style="background:#FFE14D"></div>
+          <div class="sw" data-c="#E4B963" style="background:#E4B963"></div>
+          <div class="sw" data-c="#FF5A4D" style="background:#FF5A4D"></div>
+          <div class="sw" data-c="#111111" style="background:#111"></div>
+          <input type="text" id="edColor" value="#FFFFFF" style="width:104px;flex:none" oninput="syncPv(true)">
+        </div></div>
+      <div class="row sp" style="gap:20px;flex-wrap:wrap">
+        <label class="row mini" style="gap:7px"><input type="checkbox" id="edBox" onchange="syncPv()">半透明背景框</label>
+        <span class="row mini" style="gap:7px">描边 <input type="number" id="edBorder" value="3" style="width:64px"></span>
+      </div>
+      <div class="grid g2e sp">
+        <div><span class="f">开始（秒）</span><input type="number" id="edStart" value="0" step="0.5"></div>
+        <div><span class="f">结束（秒 · 0 = 片尾）</span><input type="number" id="edEnd" value="0" step="0.5"></div>
+      </div>
+      <button class="btn gold" onclick="addOverlay()">＋ 添加到列表</button>
+    </div>
+
+    <div class="card">
+      <h2>已添加 <span class="badge" id="ovN">0</span></h2>
+      <table><thead><tr><th>文本</th><th>位置</th><th>字号</th><th>颜色</th><th>时间窗</th><th></th></tr></thead>
+        <tbody id="ovList"></tbody></table>
+      <p style="font-size:11px;color:var(--faint);margin-top:12px;letter-spacing:.5px">渲染「③ / 生成成片」时全部烧入。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ════ 音色库 ════ -->
+<section id="p3">
+  <div class="thesis">
+    <h1>一段参考音频，<em>就是一个声音</em>。</h1>
+    <p>5–30 秒干净人声 + 逐字转写（可空，填了克隆相似度更高）；dots.tts 与 fish-speech 共用同一音色库。</p>
+  </div>
+  <div class="grid g2e">
+    <div class="card">
+      <h2>登记新音色</h2>
+      <div class="sp"><span class="f">音色名称</span><input type="text" id="vName" placeholder="晚棠 / 青梧 / 主播甲 …"></div>
+      <div class="sp"><span class="f">参考音频</span><input type="file" id="vFile" accept="audio/*"></div>
+      <div class="sp"><span class="f">参考音频转写（可空）</span>
+        <textarea id="vTrans" style="min-height:84px" placeholder="参考音频里说的那句话的逐字文本"></textarea></div>
+      <button class="btn gold" onclick="saveVoice()">💾 保存为音色</button>
+    </div>
+    <div class="card">
+      <h2>已登记音色 <span class="badge" id="vCount">0</span></h2>
+      <p class="mini" id="vRootHint" style="margin:-8px 0 12px;font-size:11px;color:var(--faint)"></p>
+      <div class="vlist" id="vList"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ════ 自检 ════ -->
+<section id="p4">
+  <div class="thesis">
+    <h1>缺什么，<em>一眼看清</em>。</h1>
+    <p>真组件未就绪时给出补齐指引；端到端渲染自检不依赖 GPU。</p>
+  </div>
+  <div class="grid g2e">
+    <div class="card">
+      <h2>组件工具箱 <button class="btn" style="margin-left:auto;padding:7px 14px" onclick="loadComponents()">↻ 刷新</button></h2>
+      <p class="hint">缺什么点击即可下载/安装（多源 + SHA256 校验 + 断点续传）；进度在右侧日志滚动。</p>
+      <div id="compList"><p class="empty">读取中…</p></div>
+    </div>
+    <div class="card">
+      <h2>链路自检</h2>
+      <div class="row" style="margin-bottom:12px">
+        <button class="btn line" onclick="run('probe','checklog')">探测组件（详细）</button>
+        <button class="btn line" onclick="run('verify','checklog')">端到端渲染自检</button>
+      </div>
+      <div class="console" id="checklog" style="height:262px"><span class="dim">—— 就绪 ——</span></div>
+    </div>
+  </div>
+</section>
+
+<footer><b>水星配音对齐工作室</b> · 整篇克隆 → 逐行对齐 → 一键成片 · 非商用 · 本地离线运行</footer>
+</main>
+
+<script>
+const $=id=>document.getElementById(id);
+let overlays=[], logTarget='mainlog', polling=null, POSITIONS=[];
+const ENGINE_LABEL={dots_local:'dots.tts（本地 · 48kHz）',fish_local:'fish-speech（本地服务）',mock:'mock（测试）'};
+const still=matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/* ── 页签（支持 #p2 hash 直达） ── */
+function showPage(p){
+  document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('on',x.dataset.p===p));
+  document.querySelectorAll('main section').forEach(s=>s.classList.toggle('on',s.id===p));
+}
+$('nav').addEventListener('click',e=>{const b=e.target.closest('button');if(b)showPage(b.dataset.p);});
+if(/^#p[1-4]$/.test(location.hash))showPage(location.hash.slice(1));
+
+/* ── 声波主轨（确定性伪随机；reduced-motion 静帧） ── */
+const cv=$('wave'),cx=cv.getContext('2d');
+let seed=7;const rnd=()=>{seed=(seed*16807)%2147483647;return seed/2147483647};
+const bars=[];for(let i=0;i<160;i++)bars.push(.18+.82*Math.pow(rnd(),1.6));
+function draw(t){
+  const w=cv.width=cv.clientWidth*devicePixelRatio,h=cv.height=64*devicePixelRatio;
+  cx.clearRect(0,0,w,h);const bw=w/bars.length;
+  for(let i=0;i<bars.length;i++){
+    const pulse=still?1:(1+.16*Math.sin(t/650+i*.35));
+    const bh=bars[i]*h*.86*pulse;
+    const g=cx.createLinearGradient(0,(h-bh)/2,0,(h+bh)/2);
+    g.addColorStop(0,'rgba(245,214,143,.95)');g.addColorStop(1,'rgba(143,116,57,.55)');
+    cx.fillStyle=g;cx.beginPath();cx.roundRect(i*bw+bw*.22,(h-bh)/2,bw*.56,bh,bw*.28);cx.fill();
+  }
+  if(!still)requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+
+/* ── 时间轴行块：显示真实计时 ── */
+function renderLane(timings){
+  const lane=$('lane');lane.innerHTML='';
+  if(!timings||!timings.length){
+    lane.innerHTML='<span class="hintline">运行「② 量时长」或「生成成片」后，这里显示每行的真实时长</span>';
+    $('rigTotal').textContent='—';return;
+  }
+  let total=0;
+  timings.forEach(t=>{total+=t.duration;
+    const el=document.createElement('div');el.className='seg';el.style.flexGrow=Math.max(t.duration,1);
+    el.innerHTML=`<small>行 ${t.index} · ${esc(t.text.slice(0,14))}</small><b>${t.duration.toFixed(2)}s</b>`;
+    el.title=`行 ${t.index} · ${t.duration.toFixed(3)}s\n${t.text}`;lane.appendChild(el);});
+  $('rigTotal').textContent=`${total.toFixed(3)} s · ${Math.round(total*30)} 帧 · 收口 ≤1 帧`;
+}
+const esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+/* ── 状态加载 ── */
+async function loadState(){
+  const s=await (await fetch('/api/state')).json();
+  POSITIONS=s.positions;
+  fill('engine',s.engines.map(k=>[k,ENGINE_LABEL[k]||k]));
+  $('engine').value=s.engines.includes('dots_local')?'dots_local':s.engines[0];
+  fill('aligner',s.aligners.map(k=>[k,k==='whisper'?'whisper（推荐）':k]));
+  fill('aspect',s.aspects.map(k=>[k,k]));
+  fill('edPos',s.positions.map(k=>[k,k]));
+  fill('voice',[['','（无）']].concat(s.voices.map(v=>[v.voice_id,v.voice_id+'｜'+v.name])));
+  $('vRootHint').textContent='库目录：'+s.voice_root;
+  $('vCount').textContent=s.voices.length;
+  const list=$('vList');list.innerHTML='';
+  if(!s.voices.length)list.innerHTML='<p class="empty">还没有音色 — 在左侧登记</p>';
+  s.voices.forEach((v,k)=>{
+    const el=document.createElement('div');el.className='vcard';
+    el.innerHTML=`<div class="vwave"></div><div><b>${esc(v.name)}</b>
+      <small>${v.transcript?'「'+esc(v.transcript)+'」':'（未填转写 · 纯音色克隆）'}</small></div>
+      <span class="x" onclick="delVoice('${encodeURIComponent(v.voice_id)}')">✕</span>`;
+    list.appendChild(el);
+    const wv=el.querySelector('.vwave');let ss=13+k*7;const r=()=>{ss=(ss*16807)%2147483647;return ss/2147483647};
+    for(let i=0;i<14;i++){const b=document.createElement('i');b.style.height=(22*(.25+.75*r())).toFixed(0)+'px';wv.appendChild(b);}
+  });
+  syncPv();
+}
+function fill(id,pairs){const el=$(id);el.innerHTML='';pairs.forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;el.appendChild(o);});}
+
+/* ── 组件工具箱（点击即下载/安装） ── */
+async function loadComponents(){
+  $('compList').innerHTML='<p class="empty">读取中…</p>';
+  try{
+    const s=await (await fetch('/api/components')).json();
+    const box=$('compList');box.innerHTML='';
+    s.components.forEach(c=>{
+      const el=document.createElement('div');el.className='check';
+      let action='';
+      if(c.installed){
+        action='<span class="pill ok">已就绪</span>';
+      }else if(c.kind==='manual'){
+        action=`<button class="btn" style="padding:8px 14px" onclick="showGuide('${c.key}')">部署指引</button>`;
+      }else{
+        const label=c.kind==='pip'?'安装':'下载';
+        action=`<button class="btn line" style="padding:8px 16px" onclick="installComponent('${c.key}')">${label}</button>`;
+      }
+      el.innerHTML=`<span class="dot ${c.installed?'ok':'no'}"></span>
+        <b>${esc(c.name)}</b>
+        <span title="${esc(c.detail)}">${esc(c.purpose)}</span>
+        <span style="margin-left:auto;flex:none">${action}</span>`;
+      box.appendChild(el);});
+    window._comps=s.components;
+  }catch(e){$('compList').innerHTML='<p class="empty">读取失败，请点「↻ 刷新」。</p>';}
+}
+async function installComponent(key){
+  logTarget='checklog';
+  const j=await (await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({action:'component',component_key:key})})).json();
+  if(j.error){paint(['❌ '+j.error]);return;}
+  if(polling)clearInterval(polling);
+  polling=setInterval(async()=>{await poll();
+    const s=await (await fetch('/api/job')).json();
+    if(!s.running&&s.done){loadComponents();}
+  },700);poll();
+}
+function showGuide(key){
+  const c=(window._comps||[]).find(x=>x.key===key);
+  logTarget='checklog';
+  paint(['══ '+ (c?c.name:key) +' 部署指引 ══', c?(c.guide||c.detail):'']);
+}
+
+/* ── 手机实时预览：已添加的 + 正在编辑的（虚线框） ── */
+const POS_RATIO={'顶部':6,'中上':30,'中部':47,'中下':66,'底部':84};
+function pvNode(o,ghost){
+  const el=document.createElement('div');
+  el.className='ov'+(o.boxed?' boxed':'')+(ghost?' ghost':'');
+  el.textContent=o.text||'（文本）';
+  el.style.top=(POS_RATIO[o.position]??47)+'%';
+  el.style.fontSize=Math.max(6,(o.font_size_px*250/1080)).toFixed(1)+'px';
+  el.style.color=o.color;return el;
+}
+function syncPv(fromInput){
+  if(!fromInput){const on=document.querySelector('.sw.on');if(on)$('edColor').value=on.dataset.c;}
+  $('edSizeV').textContent=$('edSize').value;
+  const phone=$('phone');phone.querySelectorAll('.ov').forEach(x=>x.remove());
+  overlays.forEach(o=>phone.appendChild(pvNode(o,false)));
+  phone.appendChild(pvNode(editorOverlay(),true));
+}
+function editorOverlay(){
+  return {text:$('edText').value.trim(),position:$('edPos').value||'中部',
+    font_size_px:+$('edSize').value||72,color:$('edColor').value.trim()||'#FFFFFF',
+    border_width:+$('edBorder').value||0,boxed:$('edBox').checked,
+    start:+$('edStart').value||0,end:+$('edEnd').value||0};
+}
+document.getElementById('swatches').addEventListener('click',e=>{
+  const s=e.target.closest('.sw');if(!s)return;
+  document.querySelectorAll('.sw').forEach(x=>x.classList.toggle('on',x===s));
+  $('edColor').value=s.dataset.c;syncPv(true);
+});
+function addOverlay(){
+  const o=editorOverlay();
+  if(!o.text){alert('请先填写文本内容');return;}
+  overlays.push(o);$('edText').value='';renderOverlays();syncPv();
+}
+function renderOverlays(){
+  $('ovN').textContent=overlays.length;
+  const tb=$('ovList');tb.innerHTML='';
+  if(!overlays.length){tb.innerHTML='<tr><td colspan="6" class="empty">还没有文本框 — 在左侧添加</td></tr>';return;}
+  overlays.forEach((o,i)=>{
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td>${esc(o.text.slice(0,16))}</td><td class="mut">${o.position}</td>
+      <td class="mut">${o.font_size_px}</td><td><span style="color:${o.color}">${o.color}</span></td>
+      <td class="mut">${o.end?o.start+'–'+o.end+'s':'全程'}</td>
+      <td><span class="x" onclick="overlays.splice(${i},1);renderOverlays();syncPv()">✕</span></td>`;
+    tb.appendChild(tr);});
+}
+
+/* ── 音色 ── */
+async function saveVoice(){
+  const f=$('vFile').files[0];const name=$('vName').value.trim();
+  if(!name){alert('请填写音色名称');return;}
+  if(!f){alert('请选择参考音频');return;}
+  const q=new URLSearchParams({name,transcript:$('vTrans').value.trim(),filename:f.name});
+  const j=await (await fetch('/api/voices?'+q,{method:'POST',body:f})).json();
+  if(j.error){alert(j.error);return;}
+  $('vName').value='';$('vTrans').value='';$('vFile').value='';
+  loadState();
+}
+async function delVoice(id){if(confirm('删除该音色？')){await fetch('/api/voices/'+id,{method:'DELETE'});loadState();}}
+
+/* ── 任务 ── */
+async function run(action,target){
+  logTarget=target||'mainlog';
+  const payload={action,text:$('text').value,engine:$('engine').value,aligner:$('aligner').value,
+    voice_id:$('voice').value,shots_dir:$('shots').value.trim(),output_dir:$('outdir').value.trim(),
+    max_pause:+$('pause').value,speed:+$('speed').value,seed:+$('seed').value,
+    burn_subtitles:$('burn').checked,subtitle_size:+$('subsize').value||64,
+    export_capcut:$('capcut').checked,aspect:$('aspect').value,overlays};
+  const j=await (await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})).json();
+  if(j.error){paint(['❌ '+j.error]);return;}
+  if(polling)clearInterval(polling);
+  polling=setInterval(poll,650);poll();
+}
+async function poll(){
+  const s=await (await fetch('/api/job')).json();
+  paint(s.log);
+  if(s.timings&&s.timings.length)renderLane(s.timings);
+  if(!s.running&&s.done){clearInterval(polling);polling=null;}
+}
+function paint(lines){const el=$(logTarget);el.textContent=lines.join('\n');el.scrollTop=el.scrollHeight;}
+
+renderOverlays();loadState();loadComponents();poll();  /* 载入时同步一次任务状态：刷新不丢日志与时间轴 */
+</script>
+</body>
+</html>

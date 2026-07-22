@@ -40,3 +40,9 @@ Thumbs.db
 .idea/
 .vscode/
 
+
+# 构建与组件（水星轻量安装纪律：重资产不入库）
+vendor_tools/
+build/
+dist/
+*.spec

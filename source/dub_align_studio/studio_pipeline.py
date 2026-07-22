@@ -1,0 +1,242 @@
+"""编排胶水层：把「引擎 → 尺子 → 渲染 → 剪映导出」串成可被 GUI/CLI 调用的四步。
+
+保持简单：一个输出目录就是一次成片工程，产物平铺其中：
+    输出目录/
+      master.wav + master.json     ① 生成配音
+      配音计时表.csv                ② 量时长
+      成片.mp4 + 成片.srt           ③ 渲染成片（分镜段在 成片_segments/）
+      剪映草稿包_*/                 ④ 导出剪映草稿
+
+纯编排不造轮子；每步都可独立调用（GUI 分步按钮）也可 run_all 一键。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from integrated_workbench.edit_compose import aspect_canvas
+from integrated_workbench.semantic_match import parse_script
+
+from .aligners import WhisperAligner
+from .capcut_draft import CapcutPackage, export_capcut_package
+from .engines import (
+    DotsLocalEngine,
+    DubEngine,
+    FishLocalEngine,
+    MasterAudio,
+    MockEngine,
+    SynthesisOptions,
+)
+from .engines.voice_ref import VoiceRef
+from .overlays import OverlayText
+from .render_b import DubBResult, RenderConfig, render_b
+from .subtitles import SubtitleStyle
+from .timing import (
+    LineTiming,
+    MockAligner,
+    TIMING_TABLE_NAME,
+    floor_violations,
+    read_timing_table,
+    write_timing_table,
+)
+
+
+MASTER_NAME = "master.wav"
+FILM_NAME = "成片.mp4"
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
+
+ENGINE_KEYS = ["mock", "dots_local", "fish_local"]
+ALIGNER_KEYS = ["whisper", "均分兜底"]
+
+# 五种常见画面比例（名称取自内核 edit_compose.ASPECT_RATIOS，画布由 aspect_canvas 计算）
+ASPECT_KEYS = ["9:16 竖屏", "16:9 横屏", "1:1 方形", "4:3", "3:4"]
+DEFAULT_ASPECT = ASPECT_KEYS[0]
+
+
+def make_render_config(aspect: str | None = None) -> RenderConfig:
+    """按画面比例名生成渲染配置（宽高来自内核 aspect_canvas，基准 1080）。"""
+    name = aspect if aspect in ASPECT_KEYS else DEFAULT_ASPECT
+    width, height = aspect_canvas(name, base=1080)
+    return RenderConfig(width=width, height=height)
+
+
+def segments_from_output(output_dir: Path, count: int) -> list[Path]:
+    """从输出目录读回渲染产出的逐行分镜段（NNN.mp4）。
+
+    供「④ 剪映导出」在软件重启后仍可工作：不依赖内存里的渲染结果，
+    只要 ③ 的产物还在磁盘上就能导出。数量不足时报明确错误。"""
+    seg_dir = Path(output_dir) / f"{Path(FILM_NAME).stem}_segments"
+    if not seg_dir.is_dir():
+        raise FileNotFoundError(f"找不到分镜段目录：{seg_dir}（请先执行「③ 渲染成片」）")
+    segments = sorted(
+        [p for p in seg_dir.iterdir() if p.suffix.lower() == ".mp4" and p.stem.isdigit()],
+        key=lambda p: int(p.stem),
+    )
+    if len(segments) < count:
+        raise FileNotFoundError(
+            f"分镜段不完整：需要 {count} 段，{seg_dir} 里只有 {len(segments)} 段（请重新执行「③ 渲染成片」）")
+    return segments[:count]
+
+
+def make_engine(key: str) -> DubEngine:
+    if key == "mock":
+        return MockEngine()
+    if key == "dots_local":
+        return DotsLocalEngine()
+    if key == "fish_local":
+        return FishLocalEngine()
+    raise KeyError(f"未知引擎：{key}（可选：{'、'.join(ENGINE_KEYS)}）")
+
+
+def list_shot_videos(directory: Path) -> list[Path]:
+    """分镜目录里按文件名自然序收视频（数字名优先按数值排）。"""
+    directory = Path(directory)
+    if not directory.is_dir():
+        raise FileNotFoundError(f"分镜目录不存在：{directory}")
+    videos = [p for p in directory.iterdir() if p.suffix.lower() in VIDEO_EXTENSIONS]
+
+    def sort_key(path: Path):
+        stem = path.stem
+        return (0, int(stem)) if stem.isdigit() else (1, stem)
+
+    return sorted(videos, key=sort_key)
+
+
+def even_split_timings(lines: list[str], total_seconds: float) -> list[LineTiming]:
+    """均分兜底：whisper 不可用时按行数均分 master 总长（末行吸收余数）。"""
+    if not lines:
+        raise ValueError("没有脚本行。")
+    if total_seconds <= 0:
+        raise ValueError(f"master 总时长必须为正：{total_seconds}")
+    share = round(total_seconds / len(lines), 3)
+    timings = [LineTiming(i, line, share) for i, line in enumerate(lines[:-1], start=1)]
+    consumed = share * (len(lines) - 1)
+    timings.append(LineTiming(len(lines), lines[-1], round(total_seconds - consumed, 3)))
+    return timings
+
+
+# ------------------------------------------------------------------ 四步
+def step_dub(
+    text: str,
+    engine_key: str,
+    output_dir: Path,
+    voice: VoiceRef | None = None,
+    options: SynthesisOptions | None = None,
+) -> MasterAudio:
+    """① 整篇克隆 master。mock 引擎时按每行 5s 生成假音频（供无 GPU 环境走通全流程）。"""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    engine = make_engine(engine_key)
+    return engine.synthesize_full(text, voice, output_dir / MASTER_NAME, options)
+
+
+def step_timing(
+    text: str,
+    master_wav: Path,
+    aligner_key: str,
+    output_dir: Path,
+) -> tuple[list[LineTiming], list[str]]:
+    """② 逐行量时长并落计时表。返回 (计时, 提示列表)。"""
+    lines = parse_script(text)
+    if not lines:
+        raise ValueError("整篇文案为空。")
+    notes: list[str] = []
+    if aligner_key == "whisper":
+        timings = WhisperAligner().measure(master_wav, lines)
+    elif aligner_key == "均分兜底":
+        from .engines.base import wav_seconds
+
+        timings = even_split_timings(lines, wav_seconds(Path(master_wav)))
+        notes.append("使用均分兜底（未用 whisper 实测，行边界为估算）。")
+    else:
+        raise KeyError(f"未知尺子：{aligner_key}（可选：{'、'.join(ALIGNER_KEYS)}）")
+
+    low = floor_violations(timings)
+    if low:
+        notes.append(f"第 {low} 行时长低于 5s 业务下限，请检查文案或停顿设置。")
+    write_timing_table(Path(output_dir) / TIMING_TABLE_NAME, timings)
+    return timings, notes
+
+
+def step_render(
+    master_wav: Path,
+    timings: list[LineTiming],
+    videos: list[Path],
+    output_dir: Path,
+    subtitle_style: SubtitleStyle | None = None,
+    config: RenderConfig | None = None,
+    overlays: list[OverlayText] | None = None,
+) -> DubBResult:
+    """③ B 渲染成片（逐行裁/变速 + 整轨叠加 + 帧收口；可选烧字幕 + 文本框）。"""
+    return render_b(
+        Path(master_wav), timings, [Path(v) for v in videos],
+        Path(output_dir) / FILM_NAME, config, subtitle_style, overlays,
+    )
+
+
+def step_capcut(
+    timings: list[LineTiming],
+    result: DubBResult | None,
+    master_wav: Path,
+    output_dir: Path,
+    style: SubtitleStyle | None = None,
+    canvas: tuple[int, int] = (1080, 1920),
+) -> CapcutPackage:
+    """④ 导出剪映草稿交接包（素材=渲染产出的逐行分镜段，与成片同一时间线）。
+
+    result 为 None 时（软件重启后）从输出目录磁盘读回分镜段，照常导出。"""
+    if result is not None:
+        segments = [shot.segment_file for shot in result.shots if shot.segment_file]
+    else:
+        segments = segments_from_output(output_dir, len(timings))
+    return export_capcut_package(timings, segments, Path(master_wav), Path(output_dir), style,
+                                 canvas=canvas)
+
+
+@dataclass
+class StudioRun:
+    master: MasterAudio
+    timings: list[LineTiming]
+    result: DubBResult
+    capcut: CapcutPackage | None
+    notes: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return self.result.ok
+
+
+def run_all(
+    text: str,
+    engine_key: str,
+    aligner_key: str,
+    shots_dir: Path,
+    output_dir: Path,
+    voice: VoiceRef | None = None,
+    options: SynthesisOptions | None = None,
+    subtitle_style: SubtitleStyle | None = None,
+    export_capcut: bool = False,
+    config: RenderConfig | None = None,
+    overlays: list[OverlayText] | None = None,
+) -> StudioRun:
+    """一键全流程：①配音 → ②量时长 → ③渲染 →（可选）④剪映导出。"""
+    lines = parse_script(text)
+    videos = list_shot_videos(shots_dir)
+    if len(videos) < len(lines):
+        raise ValueError(f"分镜视频不足：文案 {len(lines)} 行，目录里只有 {len(videos)} 个视频。")
+    videos = videos[: len(lines)]
+
+    config = config or make_render_config(DEFAULT_ASPECT)
+    master = step_dub(text, engine_key, output_dir, voice, options)
+    timings, notes = step_timing(text, master.path, aligner_key, output_dir)
+    result = step_render(master.path, timings, videos, output_dir, subtitle_style, config, overlays)
+    capcut = (step_capcut(timings, result, master.path, output_dir, subtitle_style,
+                          canvas=(config.width, config.height))
+              if export_capcut else None)
+    return StudioRun(master=master, timings=timings, result=result, capcut=capcut, notes=notes)
+
+
+def load_timings(output_dir: Path) -> list[LineTiming]:
+    """读回已有计时表（GUI 分步操作时跨步恢复）。"""
+    return read_timing_table(Path(output_dir) / TIMING_TABLE_NAME)
