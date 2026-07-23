@@ -578,6 +578,13 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json({"error": "JSON 无效"}, 400)
                 return
             action = str(payload.get("action") or "")
+            if action == "component_stop":
+                # 立即掐断卡住的安装子进程（不进任务队列，不被占用的槽阻塞）
+                key = str(payload.get("component_key") or "")
+                logs: list[str] = []
+                toolbox.stop_component(key, logs.append)
+                self._json({"ok": True, "log": logs})
+                return
             for key in ("output_dir", "shots_dir"):
                 _allow_media_root(str(payload.get(key) or ""))
             job, busy = _start_task(action, payload)

@@ -694,6 +694,12 @@ async function postRun(payload){
 }
 async function installComponent(key){ if(rootUnsaved())return; if(await postRun({action:'component',component_key:key}))pollAll(); }
 async function runFish(action){ if(await postRun({action}))pollAll(); }
+async function stopComponent(key){
+  if(!confirm('停止「'+key+'」的安装？（已下载部分保留，重装走国内镜像会更快）'))return;
+  await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({action:'component_stop',component_key:key})});
+  setTimeout(()=>{pollAll();loadComponents();},800);
+}
 
 /* ── 手机实时预览：已添加的 + 正在编辑的（虚线框） ── */
 const POS_RATIO={'顶部':6,'中上':30,'中部':47,'中下':66,'底部':84};
@@ -906,7 +912,10 @@ function updateTaskUi(tasks){
       const last=(t.log||[]).slice(-1)[0]||'';
       const m=last.match(/下载进度 \d+%[^）]*）?/);
       stat.textContent='⏳ '+(m?m[0]:'进行中…');
-      if(act)act.querySelectorAll('button').forEach(b=>b.disabled=true);
+      // 安装/pip 类允许「停止」掐断卡住的进程（下载类靠镜像+断点续传，不给停止避免误伤）
+      if(act&&!inFonts&&(key==='dots_tts'||key==='pycapcut'||key==='fish_speech')){
+        act.innerHTML='<button class="btn" style="padding:8px 14px;border-color:var(--bad);color:var(--bad)" onclick="stopComponent(\''+key+'\')">■ 停止</button>';
+      }else if(act){act.querySelectorAll('button').forEach(b=>b.disabled=true);}
     }else if(t&&t.done&&!t.ok){
       stat.textContent='❌ 失败（详见下方日志）';stat.style.color='var(--bad)';
       if(act)act.querySelectorAll('button').forEach(b=>b.disabled=false);

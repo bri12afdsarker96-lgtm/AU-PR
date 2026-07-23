@@ -96,7 +96,7 @@ def install_component(key: str, log: LogFn) -> None:
         _install_fish_speech(log)
         return
     if item["kind"] == "pip":
-        _pip_install(str(item["package"]), log)
+        _pip_install(str(item["package"]), log, key=key)
         return
     if key == "whisper_cli":
         _download_whisper_runtime(log)
@@ -205,29 +205,72 @@ def _download_model(key: str, log: LogFn) -> None:
     log(f"✅ 模型 {entry['name']} 就绪。")
 
 
-def _pip_install(package: str, log: LogFn) -> None:
-    log(f"pip install {package} …（使用当前 Python 环境）")
-    _stream_command([sys.executable, "-m", "pip", "install", package], log,
-                    error=f"pip 安装失败。请检查网络或手动执行：pip install {package}")
+# 国内 PyPI 镜像（直连 PyPI 在国内极慢，torch 等大包可卡数小时）——清华优先，阿里/中科大兜底
+PIP_INDEX = "https://pypi.tuna.tsinghua.edu.cn/simple"
+PIP_EXTRA = ["https://mirrors.aliyun.com/pypi/simple", "https://pypi.mirrors.ustc.edu.cn/simple",
+             "https://pypi.org/simple"]
+
+
+def _pip_base_cmd() -> list[str]:
+    """pip 安装基础命令：国内镜像 + 超时/重试 + 关进度条（日志更干净）。"""
+    cmd = [sys.executable, "-m", "pip", "install",
+           "-i", PIP_INDEX, "--timeout", "30", "--retries", "3", "--progress-bar", "off"]
+    for extra in PIP_EXTRA:
+        cmd += ["--extra-index-url", extra]
+    return cmd
+
+
+def _pip_install(package: str, log: LogFn, key: str | None = None) -> None:
+    log(f"pip install {package} …（国内镜像加速：{PIP_INDEX}）")
+    _stream_command(_pip_base_cmd() + [package], log, key=key,
+                    error=f"pip 安装失败。请检查网络，或手动执行：pip install -i {PIP_INDEX} {package}")
     if not _pip_installed(package):
         raise RuntimeError(f"安装完成但导入检测未通过，请重启软件后再试（pip install {package}）。")
     log(f"✅ {package} 安装完成。")
 
 
+# 运行中的子进程登记表：供「停止」掐断卡住的 pip/依赖安装
+_ACTIVE_PROCS: dict[str, subprocess.Popen] = {}
+_ACTIVE_LOCK = threading.Lock()
+
+
+def stop_component(key: str, log: LogFn) -> None:
+    """掐断某组件正在运行的安装子进程（pip/依赖）。下载类无独立子进程，提示改用镜像重试。"""
+    with _ACTIVE_LOCK:
+        proc = _ACTIVE_PROCS.get(key)
+    if proc is None or proc.poll() is not None:
+        log(f"「{key}」当前没有正在运行的安装进程（可能是下载类，或已结束）。")
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=8)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+    log(f"✅ 已停止「{key}」的安装。可重新点击安装（走国内镜像会快很多）。")
+
+
 def _stream_command(cmd: list[str], log: LogFn, error: str, cwd: Path | None = None,
-                    env: dict | None = None) -> None:
-    """子进程输出逐行进日志；非零退出码抛用户可读错误。"""
+                    env: dict | None = None, key: str | None = None) -> None:
+    """子进程输出逐行进日志；非零退出码抛用户可读错误。key 非空时登记以便「停止」掐断。"""
     process = subprocess.Popen(
         cmd, cwd=str(cwd) if cwd else None, env=env,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace",
     )
-    assert process.stdout is not None
-    for line in process.stdout:
-        line = line.rstrip()
-        if line:
-            log("  " + line[-160:])
-    code = process.wait()
+    if key:
+        with _ACTIVE_LOCK:
+            _ACTIVE_PROCS[key] = process
+    try:
+        assert process.stdout is not None
+        for line in process.stdout:
+            line = line.rstrip()
+            if line:
+                log("  " + line[-160:])
+        code = process.wait()
+    finally:
+        if key:
+            with _ACTIVE_LOCK:
+                _ACTIVE_PROCS.pop(key, None)
     if code != 0:
         raise RuntimeError(f"{error}（退出码 {code}）")
 
@@ -298,9 +341,9 @@ def _install_fish_speech(log: LogFn) -> None:
     if _fish_deps_ready():
         log("✅ Python 依赖已安装（跳过）。")
     else:
-        log("② 安装 Python 依赖（pip install -e，体量较大请耐心）…")
-        _stream_command([sys.executable, "-m", "pip", "install", "-e", str(src)], log,
-                        error="fish-speech 依赖安装失败。可手动执行：pip install -e " + str(src))
+        log(f"② 安装 Python 依赖（国内镜像 {PIP_INDEX}，含 torch 体量大请耐心）…")
+        _stream_command(_pip_base_cmd() + ["-e", str(src)], log, key="fish_speech",
+                        error="fish-speech 依赖安装失败。可手动执行：pip install -i " + PIP_INDEX + " -e " + str(src))
         log("✅ 依赖安装完成。GPU 加速需自行安装 CUDA 版 torch（pytorch.org 选择对应命令）。")
     # ③ 模型
     if _fish_model_ready():
@@ -315,7 +358,7 @@ def _install_fish_speech(log: LogFn) -> None:
             f"snapshot_download(repo_id={FISH_MODEL_REPO!r}, local_dir={str(fish_checkpoints_dir())!r})"
         )
         try:
-            _stream_command([sys.executable, "-c", script], log, env=env,
+            _stream_command([sys.executable, "-c", script], log, env=env, key="fish_speech",
                             error="模型下载失败")
         except RuntimeError as exc:
             raise RuntimeError(
