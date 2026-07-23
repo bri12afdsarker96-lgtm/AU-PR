@@ -673,7 +673,7 @@ async function loadComponents(){
       }else if(c.installed){
         action='<span class="pill ok">已就绪</span>';
       }else{
-        const label=c.kind==='pip'?'安装':'下载';
+        const label=c.kind==='download'?'下载':'安装';
         action=`<button class="btn line" style="padding:8px 16px" onclick="installComponent('${c.key}')">${label}</button>`;
       }
       el.innerHTML=`<span class="dot ${c.installed?'ok':'no'}"></span>
@@ -913,7 +913,7 @@ function updateTaskUi(tasks){
       const m=last.match(/下载进度 \d+%[^）]*）?/);
       stat.textContent='⏳ '+(m?m[0]:'进行中…');
       // 安装/pip 类允许「停止」掐断卡住的进程（下载类靠镜像+断点续传，不给停止避免误伤）
-      if(act&&!inFonts&&(key==='dots_tts'||key==='pycapcut'||key==='fish_speech')){
+      if(act&&!inFonts&&(key==='dots_tts'||key==='pycapcut'||key==='fish_speech'||key==='torch_cuda')){
         act.innerHTML='<button class="btn" style="padding:8px 14px;border-color:var(--bad);color:var(--bad)" onclick="stopComponent(\''+key+'\')">■ 停止</button>';
       }else if(act){act.querySelectorAll('button').forEach(b=>b.disabled=true);}
     }else if(t&&t.done&&!t.ok){

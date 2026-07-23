@@ -8,7 +8,16 @@ from dub_align_studio import components
 class ComponentCatalogTests(unittest.TestCase):
     def test_catalog_covers_all_kinds(self):
         kinds = {c["kind"] for c in components.COMPONENTS}
-        self.assertEqual(kinds, {"download", "pip", "install"})  # fish 已从「指引」升级为一键安装
+        self.assertEqual(kinds, {"download", "pip", "install", "torch"})  # torch=GPU运行时一键装
+
+    def test_torch_before_dots_and_uses_cuda_index(self):
+        keys = [c["key"] for c in components.COMPONENTS]
+        self.assertIn("torch_cuda", keys)
+        self.assertLess(keys.index("torch_cuda"), keys.index("dots_tts"))  # 先装 torch 再装 dots
+        self.assertIn("download.pytorch.org/whl/cu121", components.TORCH_CUDA_INDEX)
+        st = {c["key"]: c for c in components.component_statuses()}
+        self.assertIn("torch_cuda", st)
+        self.assertTrue(st["torch_cuda"]["detail"])
         keys = [c["key"] for c in components.COMPONENTS]
         self.assertEqual(len(keys), len(set(keys)))
         for item in components.COMPONENTS:

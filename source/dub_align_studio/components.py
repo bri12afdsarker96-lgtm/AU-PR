@@ -39,13 +39,18 @@ COMPONENTS: list[dict] = [
      "purpose": "whisper 均衡模型（约 142MB，推荐）"},
     {"key": "small", "name": "ggml-small 模型", "kind": "download",
      "purpose": "whisper 高精模型（约 466MB）"},
+    {"key": "torch_cuda", "name": "PyTorch GPU 版 (CUDA 12.1)", "kind": "torch",
+     "purpose": "dots.tts / fish-speech 的 GPU 运行时（NVIDIA RTX 20/30/40 系适用，约 2.5GB）"},
     {"key": "dots_tts", "name": "dots.tts 配音引擎", "kind": "pip", "package": "dots.tts",
-     "purpose": "整篇声音克隆（2B/48kHz，需 NVIDIA GPU ≥6GB 显存）"},
+     "purpose": "整篇声音克隆（2B/48kHz，需先装 PyTorch GPU 版 + NVIDIA GPU ≥6GB）"},
     {"key": "pycapcut", "name": "pyCapCut 草稿组件", "kind": "pip", "package": "pycapcut",
      "purpose": "本机直接生成真实剪映草稿（缺失时交接包照常导出）"},
     {"key": "fish_speech", "name": "fish-speech 引擎", "kind": "install",
      "purpose": "整篇声音克隆备选（一键装源码+依赖+模型，装好后点「启动服务」）"},
 ]
+
+# PyTorch GPU 版：官方 CUDA 12.1 wheel 源（RTX 20/30/40 系通用；不走 PyPI 镜像，torch 只在此源）
+TORCH_CUDA_INDEX = "https://download.pytorch.org/whl/cu121"
 
 # fish-speech 一键安装的固定口径
 FISH_SOURCE_URLS = ["https://github.com/fishaudio/fish-speech/archive/refs/heads/main.zip"]
@@ -74,6 +79,10 @@ def component_statuses() -> list[dict]:
             installed, detail = _download_status(item["key"])
             entry["installed"] = installed
             entry["detail"] = detail
+        elif item["kind"] == "torch":
+            ok, detail = _torch_status()
+            entry["installed"] = ok
+            entry["detail"] = detail
         elif item["kind"] == "pip":
             installed = _pip_installed(str(item["package"]))
             entry["installed"] = installed
@@ -94,6 +103,9 @@ def install_component(key: str, log: LogFn) -> None:
         raise KeyError(f"未知组件：{key}")
     if item["kind"] == "install":
         _install_fish_speech(log)
+        return
+    if item["kind"] == "torch":
+        _install_torch_cuda(log, key=key)
         return
     if item["kind"] == "pip":
         _pip_install(str(item["package"]), log, key=key)
@@ -218,6 +230,36 @@ def _pip_base_cmd() -> list[str]:
     for extra in PIP_EXTRA:
         cmd += ["--extra-index-url", extra]
     return cmd
+
+
+def _torch_status() -> tuple[bool, str]:
+    """PyTorch GPU 版状态：torch 可导入且 CUDA 可用才算就绪。"""
+    try:
+        torch = importlib.import_module("torch")
+    except ImportError:
+        return False, "未安装。点「安装」自动装 CUDA 12.1 版 torch（RTX 20/30/40 系适用）。"
+    ver = getattr(torch, "__version__", "?")
+    try:
+        if torch.cuda.is_available():
+            return True, f"已就绪：torch {ver}，GPU {torch.cuda.get_device_name(0)}。"
+        return (False, f"torch {ver} 已装但为 CPU 版（CUDA 不可用）。点「安装」换装 CUDA 版，"
+                       "或确认已装 NVIDIA 驱动。")
+    except Exception as exc:
+        return False, f"torch {ver} 已装但 CUDA 检测异常：{exc}"
+
+
+def _install_torch_cuda(log: LogFn, key: str | None = None) -> None:
+    """安装/换装 CUDA 12.1 版 torch + torchaudio（官方源，约 2.5GB）。"""
+    log("安装 PyTorch GPU 版（CUDA 12.1，官方源，约 2.5GB，请耐心）…")
+    cmd = [sys.executable, "-m", "pip", "install", "--upgrade",
+           "torch", "torchaudio", "--index-url", TORCH_CUDA_INDEX,
+           "--timeout", "60", "--retries", "3", "--progress-bar", "off"]
+    _stream_command(cmd, log, key=key,
+                    error="PyTorch GPU 版安装失败。可手动执行：pip install torch torchaudio --index-url " + TORCH_CUDA_INDEX)
+    ok, detail = _torch_status()
+    if not ok:
+        raise RuntimeError("安装完成但 CUDA 仍不可用：" + detail + " 请确认已装 NVIDIA 显卡驱动后重启软件。")
+    log("✅ " + detail)
 
 
 def _pip_install(package: str, log: LogFn, key: str | None = None) -> None:
