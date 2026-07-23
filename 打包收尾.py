@@ -14,10 +14,20 @@ sys.path.insert(0, "source")
 
 from dub_align_studio.version import APP_VERSION, full_version  # noqa: E402
 
+ROOT = os.path.dirname(os.path.abspath(__file__))
 PRODUCT_NAME = "水星配音对齐工作室"
-PROD_DIR = os.path.join("dist", PRODUCT_NAME)
+PROD_DIR = os.path.join(ROOT, "dist", PRODUCT_NAME)
 EXE = os.path.join(PROD_DIR, PRODUCT_NAME + ".exe")
-RELEASE_DIR = "发布包"
+
+
+def release_dir() -> str:
+    explicit = os.environ.get("AU_PR_RELEASE_DIR")
+    if explicit:
+        return os.path.abspath(explicit)
+    parent = os.path.abspath(os.path.join(ROOT, os.pardir))
+    if os.path.isdir(os.path.join(parent, "发布包")) or os.path.isdir(os.path.join(parent, "水星配音数据")):
+        return os.path.join(parent, "发布包")
+    return os.path.join(ROOT, "发布包")
 
 
 def main() -> int:
@@ -34,10 +44,11 @@ def main() -> int:
 
     # ③ 生成带版本号 + 时间戳的发布压缩包（多版本一眼可分）
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
-    base = os.path.join(RELEASE_DIR, PRODUCT_NAME + "_v" + APP_VERSION + "_" + stamp)
-    os.makedirs(RELEASE_DIR, exist_ok=True)
+    target_release = release_dir()
+    base = os.path.join(target_release, PRODUCT_NAME + "_v" + APP_VERSION + "_" + stamp)
+    os.makedirs(target_release, exist_ok=True)
     try:
-        archive = shutil.make_archive(base, "zip", "dist", PRODUCT_NAME)
+        archive = shutil.make_archive(base, "zip", os.path.join(ROOT, "dist"), PRODUCT_NAME)
         print("[打包] 压缩包已生成：" + archive)
     except Exception as exc:  # 压缩失败不影响 dist 成品可用
         print("[提示] 压缩包生成失败（" + str(exc) + "），可手动压缩 dist\\" + PRODUCT_NAME + " 文件夹。")

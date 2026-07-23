@@ -59,7 +59,32 @@ FISH_SERVER_ADDR = "127.0.0.1:8080"
 _HF_MIRROR = "https://hf-mirror.com"  # HF 直连不可达时的国内镜像（可用 HF_ENDPOINT 覆盖）
 
 
+def _prepend_sys_paths(paths: list[Path]) -> None:
+    for root in reversed(paths):
+        if root.exists() and str(root) not in sys.path:
+            sys.path.insert(0, str(root))
+
+
+def _component_python_roots(package: str) -> list[Path]:
+    """Offline Python package roots under the portable data/components folder."""
+    root = studio_settings.components_root()
+    torch_root = root / "torch" / "python"
+    normalized = package.replace("-", "_").replace(".", "_").lower()
+    if normalized in {"torch", "torchaudio"}:
+        return [torch_root]
+    if normalized == "dots_tts":
+        return [torch_root, root / "dots.tts" / "python"]
+    if normalized == "pycapcut":
+        return [root / "pyCapCut", root / "pycapcut"]
+    if normalized == "fish_speech":
+        return [fish_python_dir(), torch_root, fish_source_dir()]
+    return []
+
+
 def _pip_installed(package: str) -> bool:
+    _prepend_sys_paths(_component_python_roots(package))
+    if package == "torch":
+        return _torch_runtime_ready()
     module = package.replace("-", "_").replace(".", "_")
     for name in (module, package):
         try:
@@ -68,6 +93,23 @@ def _pip_installed(package: str) -> bool:
         except (ImportError, ValueError):
             continue
     return False
+
+
+def _torch_runtime_ready() -> bool:
+    import importlib.metadata as md
+
+    _prepend_sys_paths(_component_python_roots("torch"))
+    try:
+        import torch  # noqa: F401
+        import torchaudio  # noqa: F401
+    except Exception:
+        return False
+    try:
+        torch_minor = tuple(md.version("torch").split("+")[0].split(".")[:2])
+        audio_minor = tuple(md.version("torchaudio").split("+")[0].split(".")[:2])
+    except Exception:
+        return False
+    return torch_minor == audio_minor
 
 
 def component_statuses() -> list[dict]:
@@ -94,7 +136,7 @@ def component_statuses() -> list[dict]:
             entry["detail"] = "已安装。" if installed else f"未安装（点击安装：pip install {item['package']}）。"
         else:  # fish_speech（install）
             stage, detail = fish_stage()
-            entry["installed"] = stage == "online"
+            entry["installed"] = stage in {"online", "startable"}
             entry["fish_stage"] = stage
             entry["detail"] = detail
         result.append(entry)
@@ -269,22 +311,24 @@ def _install_dots_tts(log: LogFn, key: str | None = None) -> None:
 
 def _torch_status() -> tuple[bool, str]:
     """PyTorch GPU 版状态：torch 可导入且 CUDA 可用才算就绪。"""
+    _prepend_sys_paths(_component_python_roots("torch"))
     try:
         torch = importlib.import_module("torch")
     except ImportError:
         return False, "未安装。点「安装」自动装 CUDA 12.1 版 torch（RTX 20/30/40 系适用）。"
-    ver = getattr(torch, "__version__", "?")
-    # torch 与 torchaudio 必须同小版本，否则 dots.tts 启动即报错
     try:
         torchaudio = importlib.import_module("torchaudio")
-        ta = getattr(torchaudio, "__version__", "?")
-        t_minor = ".".join(ver.split("+")[0].split(".")[:2])
-        a_minor = ".".join(ta.split("+")[0].split(".")[:2])
-        if t_minor != a_minor:
-            return (False, f"torch {ver} 与 torchaudio {ta} 版本不匹配（dots.tts 要求一致）。"
-                           "点「安装」重装匹配对即可修复。")
     except ImportError:
+        ver = getattr(torch, "__version__", "?")
         return False, f"torch {ver} 已装但缺 torchaudio。点「安装」补齐匹配的 torch+torchaudio。"
+    ver = getattr(torch, "__version__", "?")
+    ta = getattr(torchaudio, "__version__", "?")
+    # torch 与 torchaudio 必须同小版本，否则 dots.tts 启动即报错
+    t_minor = ".".join(ver.split("+")[0].split(".")[:2])
+    a_minor = ".".join(ta.split("+")[0].split(".")[:2])
+    if t_minor != a_minor:
+        return (False, f"torch {ver} 与 torchaudio {ta} 版本不匹配（dots.tts 要求一致）。"
+                       "点「安装」重装匹配对即可修复。")
     try:
         if torch.cuda.is_available():
             return True, f"已就绪：torch {ver} + torchaudio {ta}，GPU {torch.cuda.get_device_name(0)}。"
@@ -370,6 +414,14 @@ def fish_source_dir() -> Path:
     return studio_settings.components_root() / "fish-speech"
 
 
+def fish_python_dir() -> Path:
+    return fish_source_dir() / "python"
+
+
+def fish_python_runtime() -> Path:
+    return fish_source_dir() / "python-runtime" / "python.exe"
+
+
 def fish_checkpoints_dir() -> Path:
     return fish_source_dir() / "checkpoints" / FISH_MODEL_REPO.rsplit("/", 1)[-1]
 
@@ -379,7 +431,23 @@ def _fish_source_ready() -> bool:
 
 
 def _fish_deps_ready() -> bool:
-    return _pip_installed("fish_speech")
+    root = studio_settings.components_root()
+    required = [
+        fish_python_runtime(),
+        fish_python_dir() / "uvicorn",
+        fish_python_dir() / "kui",
+        fish_python_dir() / "ormsgpack",
+        fish_python_dir() / "transformers",
+        fish_python_dir() / "librosa",
+        fish_python_dir() / "audiotools",
+        fish_python_dir() / "pytorch_lightning",
+        fish_python_dir() / "pydantic",
+        fish_python_dir() / "safetensors",
+        root / "torch" / "python" / "torch",
+        root / "torch" / "python" / "torchaudio",
+        root / "torch" / "python" / "torio",
+    ]
+    return _fish_source_ready() and all(path.exists() for path in required)
 
 
 def _fish_model_ready() -> bool:
@@ -482,7 +550,8 @@ def start_fish_server(log: LogFn, wait_seconds: float = 90.0) -> None:
     if stage in {"none", "source", "deps", "model"}:
         raise RuntimeError(f"还不能启动：{detail}")
     src = fish_source_dir()
-    cmd = [sys.executable, "-m", "tools.api_server", "--listen", FISH_SERVER_ADDR]
+    python = fish_python_runtime() if fish_python_runtime().exists() else Path(sys.executable)
+    cmd = [str(python), "-m", "tools.api_server", "--listen", FISH_SERVER_ADDR]
     ckpt = fish_checkpoints_dir()
     decoder = next((p for p in sorted(ckpt.glob("firefly*generator*.pth"))), None) if ckpt.is_dir() else None
     if ckpt.is_dir():
@@ -492,7 +561,8 @@ def start_fish_server(log: LogFn, wait_seconds: float = 90.0) -> None:
     log("启动命令：" + " ".join(cmd))
     with _FISH_LOCK:
         _FISH_PROC = subprocess.Popen(
-            cmd, cwd=str(src), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            cmd, cwd=str(src), env=_fish_subprocess_env(),
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding="utf-8", errors="replace",
         )
         proc = _FISH_PROC
@@ -535,3 +605,15 @@ def stop_fish_server(log: LogFn) -> None:
     except subprocess.TimeoutExpired:
         proc.kill()
     log("✅ fish-speech 服务已停止。")
+
+
+def _fish_subprocess_env() -> dict:
+    env = dict(os.environ)
+    paths = [fish_python_dir(), studio_settings.components_root() / "torch" / "python", fish_source_dir()]
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = os.pathsep.join(str(path) for path in paths if path.exists()) + (
+        os.pathsep + existing if existing else ""
+    )
+    env["PYTHONNOUSERSITE"] = "1"
+    env["PATH"] = str(fish_python_runtime().parent) + os.pathsep + env.get("PATH", "")
+    return env

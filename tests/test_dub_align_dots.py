@@ -31,6 +31,9 @@ class _FakeAudio:
         return [0.0, 0.1, -0.1]
 
 
+_MISSING = object()
+
+
 class _FakeRuntime:
     last_from_pretrained = None
     last_generate = None
@@ -40,7 +43,27 @@ class _FakeRuntime:
         cls.last_from_pretrained = {"model": model_name_or_path, **kw}
         return cls()
 
-    def generate(self, **kwargs):
+    def generate(
+        self,
+        *,
+        text,
+        prompt_audio_path=None,
+        prompt_text=_MISSING,
+        num_steps=10,
+        guidance_scale=1.2,
+        normalize_text=_MISSING,
+    ):
+        kwargs = {
+            "text": text,
+            "num_steps": num_steps,
+            "guidance_scale": guidance_scale,
+        }
+        if prompt_audio_path is not None:
+            kwargs["prompt_audio_path"] = prompt_audio_path
+        if prompt_text is not _MISSING:
+            kwargs["prompt_text"] = prompt_text
+        if normalize_text is not _MISSING:
+            kwargs["normalize_text"] = normalize_text
         _FakeRuntime.last_generate = kwargs
         return {"audio": _FakeAudio(), "sample_rate": 48000}
 
@@ -94,9 +117,8 @@ class DotsAdapterCallSignatureTests(unittest.TestCase):
         self.assertEqual(g["prompt_text"], "参考句")
         self.assertEqual(g["num_steps"], 16)
         self.assertEqual(g["guidance_scale"], 1.5)
-        self.assertEqual(g["seed"], 7)
         # 不得传上游不支持的参数，否则真包会 TypeError
-        for bad in ("speed", "max_pause", "max_pause_seconds", "normalize_text", "prompt_audio"):
+        for bad in ("seed", "speed", "max_pause", "max_pause_seconds", "normalize_text", "prompt_audio"):
             self.assertNotIn(bad, g, bad)
         # 落盘用返回的 sample_rate
         self.assertEqual(self.written["sr"], 48000)
@@ -109,6 +131,12 @@ class DotsAdapterCallSignatureTests(unittest.TestCase):
         engine._generate("文案", voice, out, SynthesisOptions())
         self.assertIn("prompt_audio_path", _FakeRuntime.last_generate)
         self.assertNotIn("prompt_text", _FakeRuntime.last_generate)
+
+    def test_normalize_text_passes_only_when_enabled_and_supported(self):
+        engine = DotsLocalEngine()
+        out = Path(tempfile.mkdtemp()) / "m.wav"
+        engine._generate("文案", None, out, SynthesisOptions(normalize_text=True))
+        self.assertIs(_FakeRuntime.last_generate["normalize_text"], True)
 
     def test_runtime_cached_across_calls(self):
         from dub_align_studio.engines import dots_local

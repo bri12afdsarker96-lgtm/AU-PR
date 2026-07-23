@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from . import settings as studio_settings
 from .subtitles import SubtitleEntry, SubtitleStyle, write_srt
 from .timing import LineTiming
 
@@ -29,11 +30,13 @@ from .timing import LineTiming
 def _pycapcut_import_ready() -> bool:
     """pyCapCut 可导入性探测（本地实现，避免拖入水星项目管理层依赖）。
 
-    与水星 capcut_export 同口径：优先 vendor_tools/pyCapCut 源码目录，其次 pip 安装。"""
+    与水星 capcut_export 同口径：优先组件目录 / vendor_tools/pyCapCut，其次 pip 安装。"""
     import importlib.util
     import sys
 
     candidates = [
+        studio_settings.components_root() / "pyCapCut",
+        studio_settings.components_root() / "pycapcut",
         Path(__file__).resolve().parents[2] / "vendor_tools" / "pyCapCut",
         Path(sys.executable).resolve().parent / "vendor_tools" / "pyCapCut",
         Path.cwd() / "vendor_tools" / "pyCapCut",
