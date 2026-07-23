@@ -47,28 +47,13 @@ python -m PyInstaller --noconfirm --clean --onedir --name "水星配音对齐工
   --collect-submodules dub_align_studio --collect-submodules integrated_workbench ^
   --console "source\dub_align_studio\launcher.py" || goto :BUILDFAIL
 
-rem [6] 落版本文件
-python -c "import sys;sys.path.insert(0,'source');from dub_align_studio.version import full_version;print(full_version())" > "dist\水星配音对齐工作室\版本.txt" 2>nul
-
-rem [7] 自检：产物存在 + 版本文件已写入（自行检测本次打包是否成功、是否为新版本）
-if not exist "dist\水星配音对齐工作室\水星配音对齐工作室.exe" goto :SELFFAIL
-if not exist "dist\水星配音对齐工作室\版本.txt" goto :SELFFAIL
-set "BUILTVER="
-for /f "usebackq delims=" %%v in ("dist\水星配音对齐工作室\版本.txt") do set "BUILTVER=%%v"
-echo [自检] exe 已生成；产物版本：%BUILTVER%
-echo [自检] 通过。
-
-rem [8] 自动生成带版本号的发布压缩包（发布包\水星配音对齐工作室_v版本_日期时间.zip），每次可区分
-echo [打包] 正在生成带版本号的压缩包 ...
-python -c "import shutil,os,datetime,dub_align_studio.version as v; n='水星配音对齐工作室_v'+v.APP_VERSION+'_'+datetime.datetime.now().strftime('%%Y%%m%%d_%%H%%M'); os.makedirs('发布包',exist_ok=True); p=shutil.make_archive(os.path.join('发布包',n),'zip','dist','水星配音对齐工作室'); print('ZIP_OK '+p)" 1>"%TEMP%\_zip.log" 2>&1
-type "%TEMP%\_zip.log"
-findstr /b "ZIP_OK" "%TEMP%\_zip.log" >nul && set "ZIPPED=1" || set "ZIPPED="
+rem [6] 收尾：写版本文件 + 自检产物 + 生成带版本号压缩包（独立脚本，避免 cmd 引号拆断）
+python "打包收尾.py" || goto :SELFFAIL
 
 echo.
-echo [完成] 产物目录：dist\水星配音对齐工作室\   版本：%BUILTVER%
-if defined ZIPPED echo [完成] 压缩包已生成到：发布包\  （文件名含版本号+时间，多版本一眼可分）
-if not defined ZIPPED echo [提示] 压缩包生成失败，可手动压缩 dist\水星配音对齐工作室 文件夹（不影响使用）。
-echo    1. 把 ffmpeg.exe 和 ffprobe.exe 放进 dist\水星配音对齐工作室（exe 旁边）后再压缩，成品即自带 ffmpeg
+echo [完成] 产物目录：dist\水星配音对齐工作室\
+echo [完成] 带版本号压缩包在：发布包\  （文件名含版本号+时间，多版本一眼可分）
+echo    1. 把 ffmpeg.exe 和 ffprobe.exe 放进 dist\水星配音对齐工作室（exe 旁边）后再打包，成品即自带 ffmpeg
 echo    2. 双击 exe，右上角应显示版本号
 echo    3. 数据总目录建议设在 dist 之外，例如 D:\水星配音数据
 pause

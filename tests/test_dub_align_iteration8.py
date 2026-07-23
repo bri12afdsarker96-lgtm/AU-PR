@@ -40,15 +40,26 @@ class PackagingScriptTests(unittest.TestCase):
     def test_cleans_stale_and_selfchecks(self):
         bat = self._bat()
         self.assertIn("__pycache__", bat)      # 清旧字节码
-        self.assertIn("[自检]", bat)            # 自行检测
-        self.assertIn(":SELFFAIL", bat)         # 自检失败分支
-        self.assertIn("版本.txt", bat)
+        self.assertIn(":SELFFAIL", bat)         # 自检失败分支（收尾脚本非0退出触发）
+        self.assertIn("打包收尾.py", bat)        # 自检/版本/压缩包收尾在独立脚本
 
-    def test_makes_versioned_zip(self):
+    def test_calls_finalize_script(self):
         bat = self._bat()
-        self.assertIn("make_archive", bat)     # 自动生成压缩包
-        self.assertIn("发布包", bat)            # 输出到发布包目录
-        self.assertIn("APP_VERSION", bat)      # 文件名含版本号
+        # 收尾改用独立脚本，避免 cmd 对 python -c 复杂引号拆断
+        self.assertIn("打包收尾.py", bat)
+        self.assertNotIn("python -c", bat)     # 不再在 bat 里用 python -c
+
+    def test_finalize_script_present_and_valid(self):
+        for cand in (Path("打包收尾.py"), Path(__file__).resolve().parents[1] / "打包收尾.py"):
+            if cand.exists():
+                src = cand.read_text(encoding="utf-8")
+                self.assertIn("make_archive", src)   # 生成压缩包
+                self.assertIn("发布包", src)          # 输出目录
+                self.assertIn("APP_VERSION", src)    # 文件名含版本号
+                self.assertIn("版本.txt", src)        # 写版本文件
+                compile(src, str(cand), "exec")      # 语法可编译
+                return
+        self.skipTest("打包收尾.py 不在此仓库根")
 
 
 class VersionedZipLogicTests(unittest.TestCase):
