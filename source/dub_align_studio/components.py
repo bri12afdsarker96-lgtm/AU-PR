@@ -41,7 +41,7 @@ COMPONENTS: list[dict] = [
      "purpose": "whisper 高精模型（约 466MB）"},
     {"key": "torch_cuda", "name": "PyTorch GPU 版 (CUDA 12.1)", "kind": "torch",
      "purpose": "dots.tts / fish-speech 的 GPU 运行时（NVIDIA RTX 20/30/40 系适用，约 2.5GB）"},
-    {"key": "dots_tts", "name": "dots.tts 配音引擎", "kind": "pip", "package": "dots.tts",
+    {"key": "dots_tts", "name": "dots.tts 配音引擎", "kind": "dots", "package": "dots.tts",
      "purpose": "整篇声音克隆（2B/48kHz，需先装 PyTorch GPU 版 + NVIDIA GPU ≥6GB）"},
     {"key": "pycapcut", "name": "pyCapCut 草稿组件", "kind": "pip", "package": "pycapcut",
      "purpose": "本机直接生成真实剪映草稿（缺失时交接包照常导出）"},
@@ -83,6 +83,11 @@ def component_statuses() -> list[dict]:
             ok, detail = _torch_status()
             entry["installed"] = ok
             entry["detail"] = detail
+        elif item["kind"] == "dots":
+            installed = _pip_installed("dots.tts")
+            entry["installed"] = installed
+            entry["detail"] = ("已安装（Windows 安全模式，已跳过 pynini/文本正则化）。"
+                               if installed else "未安装。点「安装」（自动跳过 Windows 装不了的 pynini）。")
         elif item["kind"] == "pip":
             installed = _pip_installed(str(item["package"]))
             entry["installed"] = installed
@@ -106,6 +111,9 @@ def install_component(key: str, log: LogFn) -> None:
         return
     if item["kind"] == "torch":
         _install_torch_cuda(log, key=key)
+        return
+    if item["kind"] == "dots":
+        _install_dots_tts(log, key=key)
         return
     if item["kind"] == "pip":
         _pip_install(str(item["package"]), log, key=key)
@@ -232,6 +240,33 @@ def _pip_base_cmd() -> list[str]:
     return cmd
 
 
+# dots.tts 运行依赖（对照 pyproject，去掉 torch/torchaudio 由 GPU 组件单独装；
+# 去掉 WeTextProcessing —— 它靠 pynini，Windows 无法编译，且仅用于「可选、默认关」的文本正则化）
+DOTS_RUNTIME_DEPS = [
+    "transformers", "huggingface-hub", "loguru", "langcodes[data]", "gradio",
+    "einops", "librosa", "soundfile", "numpy", "pydantic", "PyYAML",
+    "safetensors", "torchdiffeq", "tqdm", "lingua-language-detector",
+]
+
+
+def _install_dots_tts(log: LogFn, key: str | None = None) -> None:
+    """Windows 安全装 dots.tts：本体 --no-deps + 手动补运行依赖，绕开 WeTextProcessing/pynini。
+
+    pynini 在 Windows 编译不了（OpenFST，MSVC 不认其 GCC 编译参数）；而它只服务于
+    dots.tts 的文本正则化（normalize_text 默认 False、懒加载），跳过不影响配音出声。
+    """
+    log("安装 dots.tts（Windows 安全模式：跳过 WeTextProcessing/pynini —— 仅用于可选文本正则化，"
+        "Windows 编译不了，默认本就关闭，不影响配音）…")
+    _stream_command(_pip_base_cmd() + ["--no-deps", "dots.tts"], log, key=key,
+                    error="dots.tts 本体安装失败")
+    log("补齐运行依赖（不含 torch —— 由「PyTorch GPU 版」提供，避免覆盖 CUDA 版）…")
+    _stream_command(_pip_base_cmd() + DOTS_RUNTIME_DEPS, log, key=key,
+                    error="dots.tts 运行依赖安装失败")
+    if not _pip_installed("dots.tts"):
+        raise RuntimeError("安装完成但未检测到 dots.tts，请重试。")
+    log("✅ dots.tts 安装完成（已跳过 pynini；文本正则化默认关闭，不影响配音）。")
+
+
 def _torch_status() -> tuple[bool, str]:
     """PyTorch GPU 版状态：torch 可导入且 CUDA 可用才算就绪。"""
     try:
@@ -239,9 +274,20 @@ def _torch_status() -> tuple[bool, str]:
     except ImportError:
         return False, "未安装。点「安装」自动装 CUDA 12.1 版 torch（RTX 20/30/40 系适用）。"
     ver = getattr(torch, "__version__", "?")
+    # torch 与 torchaudio 必须同小版本，否则 dots.tts 启动即报错
+    try:
+        torchaudio = importlib.import_module("torchaudio")
+        ta = getattr(torchaudio, "__version__", "?")
+        t_minor = ".".join(ver.split("+")[0].split(".")[:2])
+        a_minor = ".".join(ta.split("+")[0].split(".")[:2])
+        if t_minor != a_minor:
+            return (False, f"torch {ver} 与 torchaudio {ta} 版本不匹配（dots.tts 要求一致）。"
+                           "点「安装」重装匹配对即可修复。")
+    except ImportError:
+        return False, f"torch {ver} 已装但缺 torchaudio。点「安装」补齐匹配的 torch+torchaudio。"
     try:
         if torch.cuda.is_available():
-            return True, f"已就绪：torch {ver}，GPU {torch.cuda.get_device_name(0)}。"
+            return True, f"已就绪：torch {ver} + torchaudio {ta}，GPU {torch.cuda.get_device_name(0)}。"
         return (False, f"torch {ver} 已装但为 CPU 版（CUDA 不可用）。点「安装」换装 CUDA 版，"
                        "或确认已装 NVIDIA 驱动。")
     except Exception as exc:
@@ -251,11 +297,13 @@ def _torch_status() -> tuple[bool, str]:
 def _install_torch_cuda(log: LogFn, key: str | None = None) -> None:
     """安装/换装 CUDA 12.1 版 torch + torchaudio（官方源，约 2.5GB）。"""
     log("安装 PyTorch GPU 版（CUDA 12.1，官方源，约 2.5GB，请耐心）…")
-    cmd = [sys.executable, "-m", "pip", "install", "--upgrade",
+    # torch 与 torchaudio 同一命令、同一源一起装 → 保证版本匹配；
+    # --force-reinstall 覆盖此前分开装导致的版本不匹配（dots.tts 启动会校验一致）
+    cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "--force-reinstall",
            "torch", "torchaudio", "--index-url", TORCH_CUDA_INDEX,
            "--timeout", "60", "--retries", "3", "--progress-bar", "off"]
     _stream_command(cmd, log, key=key,
-                    error="PyTorch GPU 版安装失败。可手动执行：pip install torch torchaudio --index-url " + TORCH_CUDA_INDEX)
+                    error="PyTorch GPU 版安装失败。可手动执行：pip install --force-reinstall torch torchaudio --index-url " + TORCH_CUDA_INDEX)
     ok, detail = _torch_status()
     if not ok:
         raise RuntimeError("安装完成但 CUDA 仍不可用：" + detail + " 请确认已装 NVIDIA 显卡驱动后重启软件。")

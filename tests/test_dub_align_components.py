@@ -8,7 +8,17 @@ from dub_align_studio import components
 class ComponentCatalogTests(unittest.TestCase):
     def test_catalog_covers_all_kinds(self):
         kinds = {c["kind"] for c in components.COMPONENTS}
-        self.assertEqual(kinds, {"download", "pip", "install", "torch"})  # torch=GPU运行时一键装
+        self.assertEqual(kinds, {"download", "pip", "install", "torch", "dots"})
+
+    def test_dots_install_skips_pynini_wetextprocessing(self):
+        # dots.tts 运行依赖里绝不能含 WeTextProcessing/pynini（Windows 编译不了），
+        # 也不含 torch（避免覆盖 CUDA 版）
+        low = [d.lower() for d in components.DOTS_RUNTIME_DEPS]
+        # 精确按包名判断（torchdiffeq 含子串 torch 但不是 torch 本体，应允许）
+        for banned in ("wetextprocessing", "pynini", "torch", "torchaudio"):
+            self.assertNotIn(banned, low, banned)
+        for need in ("loguru", "transformers", "soundfile"):
+            self.assertIn(need, low, need)
 
     def test_torch_before_dots_and_uses_cuda_index(self):
         keys = [c["key"] for c in components.COMPONENTS]
@@ -36,7 +46,7 @@ class ComponentCatalogTests(unittest.TestCase):
         if not statuses["whisper_cli"]["installed"]:
             self.assertTrue(statuses["whisper_cli"]["detail"])
         if not statuses["dots_tts"]["installed"]:
-            self.assertIn("pip install", statuses["dots_tts"]["detail"])
+            self.assertIn("安装", statuses["dots_tts"]["detail"])  # dots 走 Windows 安全装法
 
 
 class InstallGuardTests(unittest.TestCase):
