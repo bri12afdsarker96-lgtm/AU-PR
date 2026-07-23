@@ -142,9 +142,20 @@ class DotsLocalEngine:
             return cached
         try:
             runtime_mod = importlib.import_module(_RUNTIME_MODULE)
+        except ModuleNotFoundError as exc:
+            missing = getattr(exc, "name", "") or str(exc)
+            if missing.split(".")[0] not in ("dots_tts",):
+                # dots.tts 本体在，但缺它的依赖（如 loguru/torch）——多为安装被中途停止/超时
+                raise EngineUnavailable(
+                    f"dots.tts 依赖未装全（缺 {missing}）。请到工具箱重新点 dots.tts「安装」并耐心等它完整跑完"
+                    "（勿中途停止）；若缺 torch/CUDA，请先装「PyTorch GPU 版」。"
+                ) from exc
+            raise EngineUnavailable(
+                f"无法导入 {_RUNTIME_MODULE}（{exc}）。请到工具箱重新安装 dots.tts。"
+            ) from exc
         except ImportError as exc:
             raise EngineUnavailable(
-                f"无法导入 {_RUNTIME_MODULE}（{exc}）。请确认 dots.tts 已正确安装（pip install dots.tts）。"
+                f"导入 {_RUNTIME_MODULE} 失败（{exc}）。请到工具箱重新安装 dots.tts。"
             ) from exc
         runtime_cls = getattr(runtime_mod, "DotsTtsRuntime", None)
         if runtime_cls is None:
