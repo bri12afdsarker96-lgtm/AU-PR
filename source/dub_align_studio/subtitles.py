@@ -12,8 +12,17 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
+
+
+def normalize_color(value: str) -> str:
+    """#RRGGBB → 0xRRGGBB（ffmpeg drawtext 记法）；颜色名（white/black…）原样放行。"""
+    value = (value or "").strip() or "white"
+    if re.fullmatch(r"#[0-9a-fA-F]{6}", value):
+        return "0x" + value[1:]
+    return value
 
 
 # 常见中文字体候选（Windows 优先，Linux 兜底；找不到则不烧字幕只出 SRT）。
@@ -134,8 +143,8 @@ def drawtext_filters(
             f"fontfile='{_filter_path(font)}':"
             f"textfile='{_filter_path(text_path)}':"
             f"fontsize={int(style.font_size_px)}:"
-            f"fontcolor={style.color}:"
-            f"borderw={int(style.border_width)}:bordercolor={style.border_color}:"
+            f"fontcolor={normalize_color(style.color)}:"
+            f"borderw={int(style.border_width)}:bordercolor={normalize_color(style.border_color)}:"
             "x=(w-text_w)/2:"
             f"y={_subtitle_y(style)}:"
             f"enable='between(t,{entry.start:.3f},{entry.end:.3f})'"

@@ -73,6 +73,8 @@ class JobState:
     log: list[str] = field(default_factory=list)
     timings: list | None = None
     result: object | None = None
+    stage: str = ""          # 当前阶段文字（生成成片进度用）
+    progress: int = 0        # 0~100 进度百分比
 
     def snapshot(self) -> dict:
         with self.lock:
@@ -86,11 +88,16 @@ class JobState:
             return {"id": self.slot, "label": self.label,
                     "running": self.running, "done": self.done, "ok": self.ok,
                     "action": self.action, "log": list(self.log), "timings": timings,
-                    "try_audio": try_audio}
+                    "try_audio": try_audio, "stage": self.stage, "progress": self.progress}
 
     def append(self, message: str) -> None:
         with self.lock:
             self.log.append(message)
+
+    def set_progress(self, stage: str, percent: int) -> None:
+        with self.lock:
+            self.stage = stage
+            self.progress = max(0, min(100, int(percent)))
 
 
 JOB = JobState()          # main 槽（保持旧口径：/api/job 即它）
@@ -128,6 +135,7 @@ def _start_task(action: str, payload: dict) -> tuple[JobState | None, str]:
                 job.running, job.done, job.ok = True, False, False
                 job.action, job.label = action, label
                 job.log = [f"══ {action} 开始 ══"]
+                job.stage, job.progress = "", 0
         else:
             job = JobState(slot=slot, label=label, running=True, action=action,
                            log=[f"══ {label} 开始 ══"])
@@ -157,6 +165,8 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                 font_size_px=int(payload.get("subtitle_size") or 64),
                 position=str(payload.get("subtitle_position") or "底部"),
                 font_name=str(payload.get("subtitle_font") or ""),
+                color=str(payload.get("subtitle_color") or "white"),
+                border_width=int(payload.get("subtitle_border", 3)),
             )
         overlays = overlays_from_dicts(payload.get("overlays") or [])
         aspect = str(payload.get("aspect") or pipeline.DEFAULT_ASPECT)
@@ -167,23 +177,50 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
         audio_mix = mix_from_payload(payload.get("audio") or {}, _resolve_asset)
 
         if action == "run_all":
-            run = pipeline.run_all(
-                text, engine_key, aligner_key,
-                Path(str(payload.get("shots_dir") or "")), output_dir,
-                voice=voice, options=options, subtitle_style=style,
-                export_capcut=bool(payload.get("export_capcut")), overlays=overlays,
-                config=config, audio_mix=audio_mix,
-            )
-            for note in run.notes:
-                log(f"⚠ {note}")
-            for shot in run.result.shots:
-                log(f"  {shot.index:>2} | 音频{shot.target_seconds:>6.2f}s | {shot.strategy}")
-            log(f"字幕/文本框：{run.result.subtitle_note or '未启用'}")
-            if run.capcut:
-                log(f"剪映：{run.capcut.message}")
-            log(("✅ 成片完成：" if run.ok else "❌ 收口断言未通过：") + str(run.result.output_path))
+            from integrated_workbench.semantic_match import parse_script
+
+            shots_dir = Path(str(payload.get("shots_dir") or ""))
+            lines = parse_script(text)
+            videos = pipeline.list_shot_videos(shots_dir)
+            if len(videos) < len(lines):
+                raise ValueError(f"分镜视频不足：文案 {len(lines)} 行，目录里只有 {len(videos)} 个视频。")
+            videos = videos[: len(lines)]
+
+            JOB.set_progress("① 配音 · 整篇克隆", 6)
+            log("① 配音 · 整篇克隆…")
+            master = pipeline.step_dub(text, engine_key, output_dir, voice, options)
+            log(f"  ✅ master {master.seconds:.2f}s（引擎 {master.engine}）")
+
+            JOB.set_progress("② 量时长 · 逐行对齐", 28)
+            log("② 量时长 · 逐行对齐…")
+            timings, notes = pipeline.step_timing(text, master.path, aligner_key, output_dir)
+            for note in notes:
+                log(f"  ⚠ {note}")
             with JOB.lock:
-                JOB.timings, JOB.result, JOB.ok = run.timings, run.result, run.ok
+                JOB.timings = timings
+
+            JOB.set_progress("③ 渲染成片 · 逐行收口", 38)
+            log("③ 渲染成片 · 逐行裁剪/变速 + 整轨叠加…")
+
+            def _render_progress(done: int, total: int) -> None:
+                pct = 38 + int(done / max(1, total) * 52)
+                JOB.set_progress(f"③ 渲染成片 · 第 {done}/{total} 段", pct)
+
+            result = pipeline.step_render(master.path, timings, videos, output_dir, style,
+                                          config=config, overlays=overlays, audio_mix=audio_mix,
+                                          progress=_render_progress)
+            log(f"  字幕/文本框：{result.subtitle_note or '未启用'}")
+            capcut = None
+            if payload.get("export_capcut"):
+                JOB.set_progress("④ 导出剪映草稿", 93)
+                log("④ 导出剪映草稿…")
+                capcut = pipeline.step_capcut(timings, result, master.path, output_dir, style,
+                                              canvas=canvas)
+                log(f"  剪映：{capcut.message}")
+            JOB.set_progress("完成", 100)
+            log(("✅ 成片完成：" if result.ok else "❌ 收口断言未通过：") + str(result.output_path))
+            with JOB.lock:
+                JOB.timings, JOB.result, JOB.ok = timings, result, result.ok
         elif action == "dub":
             master = pipeline.step_dub(text, engine_key, output_dir, voice, options)
             log(f"✅ master：{master.path.name}（{master.seconds:.2f}s，引擎 {master.engine}）")
@@ -202,9 +239,13 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
         elif action == "render":
             timings = JOB.timings or pipeline.load_timings(output_dir)
             videos = pipeline.list_shot_videos(Path(str(payload.get("shots_dir") or "")))[: len(timings)]
+
+            def _render_progress(done: int, total: int) -> None:
+                JOB.set_progress(f"渲染成片 · 第 {done}/{total} 段", int(done / max(1, total) * 100))
+
             result = pipeline.step_render(output_dir / pipeline.MASTER_NAME, timings, videos,
                                           output_dir, style, config=config, overlays=overlays,
-                                          audio_mix=audio_mix)
+                                          audio_mix=audio_mix, progress=_render_progress)
             log(f"字幕/文本框：{result.subtitle_note or '未启用'}")
             log(("✅ 成片完成：" if result.ok else "❌ 收口断言未通过：") + str(result.output_path))
             with JOB.lock:
@@ -231,7 +272,9 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             with JOB.lock:
                 JOB.ok = True
         elif action == "voice_try":
-            # 音色试听：用该音色的引擎+参数合成一句示例，产物落克隆音频目录，前端播放
+            # 音色试听：按 音色+引擎+参数+试听句 缓存到本地；命中缓存直接复用，不重复渲染。
+            import hashlib
+
             sample = str(payload.get("text") or "水星配音对齐，整篇克隆，逐行对齐，一句一画面。")
             engine_key = str(payload.get("engine") or "mock")
             opts = SynthesisOptions(
@@ -241,16 +284,25 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                 max_pause_seconds=float(payload.get("max_pause_seconds") or 0.0),
                 seed=int(float(payload.get("seed") or 42)),
             )
-            from datetime import datetime as _dt
-
-            stamp = _dt.now().strftime("%H%M%S")
-            out = studio_settings.clones_dir() / f"试听_{engine_key}_{stamp}.wav"
-            log(f"用引擎 {engine_key} 合成试听句（{len(sample)} 字）…")
-            master = pipeline.make_engine(engine_key).synthesize_full(sample, voice, out, opts)
-            with JOB.lock:
-                JOB.ok = True
-                JOB.result = {"try_audio": str(master.path)}
-            log(f"✅ 试听已生成：{master.path.name}（{master.seconds:.2f}s）")
+            voice_id = str(payload.get("voice_id") or "默认声线")
+            sig = hashlib.md5(  # noqa: S324 —— 仅做缓存键，非安全用途
+                f"{voice_id}|{engine_key}|{opts.to_payload()}|{sample}".encode("utf-8")
+            ).hexdigest()[:10]
+            cache_dir = studio_settings.clones_dir() / "试听缓存"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            cached = cache_dir / f"{_safe_name(voice_id)}_{engine_key}_{sig}.wav"
+            if cached.is_file() and cached.stat().st_size > 44:
+                log(f"✅ 命中试听缓存，直接复用（未重复渲染）：{cached.name}")
+                with JOB.lock:
+                    JOB.ok = True
+                    JOB.result = {"try_audio": str(cached)}
+            else:
+                log(f"用引擎 {engine_key} 合成试听句（{len(sample)} 字）…首次合成后会缓存，之后试听秒开。")
+                master = pipeline.make_engine(engine_key).synthesize_full(sample, voice, cached, opts)
+                with JOB.lock:
+                    JOB.ok = True
+                    JOB.result = {"try_audio": str(master.path)}
+                log(f"✅ 试听已生成并缓存：{master.path.name}（{master.seconds:.2f}s）")
         elif action == "fish_server":
             toolbox.start_fish_server(log)
             with JOB.lock:
@@ -745,6 +797,13 @@ def _delete_config_preset(name: str) -> None:
         del presets[name]
         _config_presets_file().write_text(json.dumps(presets, ensure_ascii=False, indent=2),
                                           encoding="utf-8")
+
+
+def _safe_name(text: str) -> str:
+    """文件名安全化（去掉路径分隔与非法字符）。"""
+    import re as _re
+
+    return _re.sub(r"[^\w一-鿿-]+", "_", str(text)).strip("_") or "voice"
 
 
 def _resolve_asset(filename: str) -> Path | None:

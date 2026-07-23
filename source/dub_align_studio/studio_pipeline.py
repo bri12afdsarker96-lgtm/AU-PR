@@ -189,11 +189,12 @@ def step_render(
     config: RenderConfig | None = None,
     overlays: list[OverlayText] | None = None,
     audio_mix: "AudioMix | None" = None,
+    progress=None,
 ) -> DubBResult:
     """③ B 渲染成片（逐行裁/变速 + 整轨叠加 + 帧收口；可选烧字幕 + 文本框 + BGM/音效混流）。"""
     return render_b(
         Path(master_wav), timings, [Path(v) for v in videos],
-        Path(output_dir) / FILM_NAME, config, subtitle_style, overlays, audio_mix,
+        Path(output_dir) / FILM_NAME, config, subtitle_style, overlays, audio_mix, progress,
     )
 
 

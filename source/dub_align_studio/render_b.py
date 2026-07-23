@@ -159,6 +159,7 @@ def render_b(
     subtitle_style: SubtitleStyle | None = None,
     overlays: list[OverlayText] | None = None,
     audio_mix: AudioMix | None = None,
+    progress=None,
 ) -> DubBResult:
     """整条 master 叠加 + 逐行画面收口渲染，返回带断言结果的 DubBResult。
 
@@ -193,6 +194,11 @@ def render_b(
         )
         segment = work_dir / f"{position:03d}.mp4"
         _render_silent_segment(config, video, ",".join(vf), frame_count, segment)
+        if progress is not None:
+            try:
+                progress(position, len(lines))  # 逐段渲染进度回调
+            except Exception:
+                pass
         shot = ShotPlan(
             index=timing.index,
             text=timing.text,

@@ -342,7 +342,17 @@ footer b{color:var(--muted);font-weight:600}
         <button class="btn line" onclick="run('dub')">① 配音</button>
         <button class="btn line" onclick="run('timing')">② 量时长</button>
         <button class="btn line" onclick="run('render')">③ 渲染</button>
-        <button class="btn line" onclick="run('capcut')">④ 剪映</button>
+        <button class="btn line" onclick="run('capcut')" title="成片确认无误后的最后一步">④ 剪映导出</button>
+      </div>
+      <p class="mini" style="color:var(--faint);margin-top:6px">④ 剪映导出为「成片确认无误后」的最后一步：先生成/渲染并在「文本框」页核对逐行字幕，无误后再导出剪映草稿。</p>
+      <div id="progWrap" style="display:none;margin-top:12px">
+        <div class="row" style="justify-content:space-between">
+          <span class="mini" id="progStage" style="color:var(--gold)">准备中…</span>
+          <span class="mini" id="progPct" style="color:var(--gold);font-variant-numeric:tabular-nums">0%</span>
+        </div>
+        <div style="height:10px;border-radius:6px;background:var(--field);border:1px solid var(--line);overflow:hidden;margin-top:5px">
+          <div id="progBar" style="height:100%;width:0%;background:linear-gradient(90deg,var(--gold-hi),var(--gold));transition:width .3s"></div>
+        </div>
       </div>
       <div class="console" id="mainlog"><span class="dim">—— 就绪 · 运行日志将在这里滚动 ——</span></div>
     </div>
@@ -421,6 +431,19 @@ footer b{color:var(--muted);font-weight:600}
           <input type="range" id="subsize" min="32" max="140" step="4" value="64" oninput="syncPv()"></div>
         <div class="sp"><span class="f">字幕字体（在「字体库」页下载或自备）</span>
           <select id="subFont" onchange="syncPv()"></select></div>
+        <div class="sp"><span class="f">字幕颜色</span>
+          <div class="row" id="subSwatches">
+            <div class="sw on" data-c="#FFFFFF" style="background:#FFFFFF"></div>
+            <div class="sw" data-c="#FFE14D" style="background:#FFE14D"></div>
+            <div class="sw" data-c="#E4B963" style="background:#E4B963"></div>
+            <div class="sw" data-c="#FF5A4D" style="background:#FF5A4D"></div>
+            <div class="sw" data-c="#111111" style="background:#111"></div>
+            <span id="subMyColors" style="display:contents"></span>
+            <input type="text" id="subColor" value="#FFFFFF" style="width:104px;flex:none" oninput="syncPv(true)">
+          </div></div>
+        <div class="row sp" style="gap:10px"><span class="f" style="margin:0;flex:none">描边</span>
+          <input type="number" id="subBorder" value="3" min="0" max="20" style="width:74px" oninput="syncPv()">
+          <span class="mini" style="color:var(--faint)">像素 · 0 = 无描边</span></div>
       </div>
       <div class="card">
         <h2>已添加 <span class="badge" id="ovN">0</span></h2>
@@ -766,7 +789,9 @@ function syncPv(fromInput){
     sub.textContent='—— 字幕位置示意 ——';
     sub.style.top=((SUB_POS_RATIO[$('subPos')?.value]??0.885)*94)+'%';
     sub.style.fontSize=Math.max(6,((+$('subsize')?.value||64)*pvW/cw)).toFixed(1)+'px';
-    sub.style.color='#FFFFFF';sub.style.opacity='.8';
+    sub.style.color=($('subColor')&&$('subColor').value.trim())||'#FFFFFF';sub.style.opacity='.92';
+    const sbw=(+$('subBorder')?.value||0)*pvW/cw;
+    sub.style.textShadow=strokeShadow(sbw*0.9,'#000');
     const sf=$('subFont')?.value; if(sf)sub.style.fontFamily=faceFamily(sf)+CJK_FALLBACK;
     sub.textContent='字幕示意 · '+($('subFont')?.selectedOptions[0]?.textContent||'默认');
     phone.appendChild(sub);
@@ -781,8 +806,13 @@ function editorOverlay(){
 }
 document.getElementById('swatches').addEventListener('click',e=>{
   const s=e.target.closest('.sw');if(!s)return;
-  document.querySelectorAll('.sw').forEach(x=>x.classList.toggle('on',x===s));
+  document.querySelectorAll('#swatches .sw').forEach(x=>x.classList.toggle('on',x===s));
   $('edColor').value=s.dataset.c;syncPv(true);
+});
+document.getElementById('subSwatches').addEventListener('click',e=>{
+  const s=e.target.closest('.sw');if(!s)return;
+  document.querySelectorAll('#subSwatches .sw').forEach(x=>x.classList.toggle('on',x===s));
+  $('subColor').value=s.dataset.c;syncPv(true);
 });
 function addOverlay(){
   const o=editorOverlay();
@@ -851,6 +881,8 @@ async function run(action,target){
     max_pause:+$('pause').value,speed:+$('speed').value,seed:+$('seed').value,
     burn_subtitles:$('burn').checked,subtitle_size:+$('subsize').value||64,
     subtitle_position:$('subPos').value||'底部',subtitle_font:$('subFont')?.value||'',
+    subtitle_color:($('subColor')&&$('subColor').value.trim())||'#FFFFFF',
+    subtitle_border:+($('subBorder')&&$('subBorder').value)||0,
     export_capcut:$('capcut').checked,aspect:$('aspect').value,overlays,audio:collectAudio()};
   if(await postRun(payload))pollAll();
 }
@@ -861,6 +893,7 @@ async function pollAll(){
   if(main&&main.log&&main.log.length&&(main.running||main.done)){
     paint(main.log);
     if(main.timings&&main.timings.length)renderLane(main.timings);
+    updateProgress(main);
     if(_prevRun.main&&!main.running&&main.done)onMainDone(main);
     _prevRun.main=main.running;
   }
@@ -874,6 +907,22 @@ async function pollAll(){
   });
   if(comps)loadComponents();
   if(fonts){loadFonts();loadComponents();}
+}
+// 生成成片进度条：显示阶段文字 + 百分比
+function updateProgress(main){
+  const wrap=$('progWrap');if(!wrap)return;
+  const isFilm=['run_all','render','dub','timing','capcut'].includes(main.action);
+  if(main.running&&isFilm){
+    wrap.style.display='block';
+    $('progStage').textContent=main.stage||'进行中…';
+    $('progPct').textContent=(main.progress||0)+'%';
+    $('progBar').style.width=(main.progress||0)+'%';
+  }else if(main.done&&isFilm){
+    $('progStage').textContent=main.ok?'✅ 完成':'❌ 未通过';
+    $('progPct').textContent=(main.ok?100:(main.progress||0))+'%';
+    $('progBar').style.width=(main.ok?100:(main.progress||0))+'%';
+    $('progBar').style.background=main.ok?'linear-gradient(90deg,var(--gold-hi),var(--gold))':'var(--bad)';
+  }
 }
 function onMainDone(main){
   if(!main.ok)return;
@@ -889,6 +938,28 @@ function onMainDone(main){
     }
   }
   if(['dub','run_all'].includes(main.action))loadClones();
+  // #7 渲染/成片完成后，把逐行字幕转成可二次编辑的文本框（文字/颜色/位置可改，再渲染重烧）
+  if(['render','run_all'].includes(main.action)&&$('burn').checked&&main.timings&&main.timings.length){
+    subtitlesToOverlays(main.timings);
+  }
+}
+// 逐行字幕 → 文本框条目（累加时长得每行时间窗；位置/颜色取字幕样式设定）
+function subtitlesToOverlays(timings){
+  const pos=$('subPos').value||'底部';
+  const color=($('subColor')&&$('subColor').value.trim())||'#FFFFFF';
+  const font=$('subFont')?.value||'';
+  const size=+$('subsize').value||64;
+  let t=0; const rows=[];
+  timings.forEach(x=>{const start=t;t+=x.duration;rows.push({
+    text:x.text,position:pos,font_size_px:size,color:color,font_name:font,
+    border_width:+$('subBorder')?.value||3,boxed:false,start:+start.toFixed(2),end:+t.toFixed(2),_sub:true});});
+  // 移除上一批由字幕转入的条目（带 _sub 标记），保留用户手加的文本框
+  overlays=overlays.filter(o=>!o._sub).concat(rows);
+  renderOverlays();
+  // 字幕已变成逐行文本框，关掉自动烧录避免重复；提示用户去文本框页二次编辑
+  $('burn').checked=false;
+  if(!window._subNoticed){window._subNoticed=true;
+    alert('字幕已按行转入「文本框」页，可逐行修改文字/颜色/位置，改完再点「③ 渲染」重新烧录。\n（已自动关闭「烧录字幕」以免重复；剪映导出请在确认无误后作为最后一步。）');}
 }
 function renderDlog(tasks){
   const el=$('dlog');if(!el)return;
@@ -1140,6 +1211,11 @@ function renderMyColors(){
     x.onclick=(e)=>{e.stopPropagation();delColor(c);};
     wrap.appendChild(d);wrap.appendChild(x);box.appendChild(wrap);
   });
+  // 字幕色板复用同一批自定义色（可点选，不带删除，删除在文本框侧管理）
+  const sbox=$('subMyColors');
+  if(sbox){sbox.innerHTML='';myColors().forEach(c=>{
+    const d=document.createElement('div');d.className='sw';d.dataset.c=c;d.style.background=c;d.title=c;
+    sbox.appendChild(d);});}
 }
 function saveColor(){
   let c=$('edColor').value.trim().toUpperCase();
@@ -1207,23 +1283,34 @@ async function delAsset(file){
   loadAssets();
 }
 
-/* ── 音轨混音：总音量 / BGM(循环) / 音效(拖动定位)（用户反馈④⑤） ── */
+/* ── 音轨混音：总音量 / BGM(循环) / 音效(拖动定位)（用户反馈②③④⑤） ── */
 let sfxCues=[];  // {file, at, volume}
+function num(v,d){const n=parseFloat(v);return isNaN(n)?d:n;}  // 解析音量：允许 0（不被 || 吃掉）
 function getMasterSeconds(){
   return window._masterSeconds || (($('masterAudio').duration>0)?$('masterAudio').duration:60);
 }
 function collectAudio(){
   const bgmFile=$('bgmSel')?.value||'';
   return {
-    master_volume:(+$('mVol').value||100)/100,
-    bgm:bgmFile?{file:bgmFile,volume:(+$('bVol').value||35)/100,loop:$('bLoop').checked}:null,
-    sfx:sfxCues.map(c=>({file:c.file,at:+c.at||0,volume:+c.volume||1}))
+    master_volume:num($('mVol').value,100)/100,
+    bgm:bgmFile?{file:bgmFile,volume:num($('bVol').value,35)/100,loop:$('bLoop').checked}:null,
+    sfx:sfxCues.map(c=>({file:c.file,at:+c.at||0,volume:(c.volume==null?1:+c.volume)}))
   };
 }
 function onMixChange(){
   $('mVolV').textContent=$('mVol').value+'%';
   $('bVolV').textContent=$('bVol').value+'%';
   $('bgmCtl').style.display=$('bgmSel').value?'flex':'none';
+  // 试听中实时改总音量/BGM 音量（无需重新试听）——各路独立增益，BGM 不受音效影响
+  if(mixPlaying){
+    if(mixGains.master)mixGains.master.gain.value=num($('mVol').value,100)/100;
+    if(mixGains.bgm)mixGains.bgm.gain.value=num($('bVol').value,35)/100;
+  }
+}
+function setSfxVol(i,v){
+  if(!sfxCues[i])return;
+  sfxCues[i].volume=num(v,100)/100;
+  if(mixPlaying&&mixGains.sfx[i])mixGains.sfx[i].gain.value=sfxCues[i].volume;  // 试听中实时生效
 }
 async function loadAssets(){
   try{
@@ -1284,15 +1371,16 @@ function renderSfxRows(){
       <span class="mini" style="flex:1 1 100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.file)}</span>
       <span class="mini" style="flex:none">位置 <b id="sfxAt${i}">${c.at.toFixed(1)}s</b></span>
       <button class="btn" style="padding:6px 10px;flex:none" onclick="playUrl('/api/asset?file=${encodeURIComponent(c.file)}',this)">▶</button>
-      <span class="mini" style="flex:none">音量</span>
-      <input type="range" min="0" max="200" step="5" value="${Math.round(c.volume*100)}" style="flex:0 1 90px" oninput="sfxCues[${i}].volume=this.value/100">
+      <span class="mini" style="flex:none">音量 <b id="sfxVolV${i}">${Math.round(c.volume*100)}%</b></span>
+      <input type="range" min="0" max="200" step="5" value="${Math.round(c.volume*100)}" style="flex:0 1 90px" oninput="setSfxVol(${i},this.value);document.getElementById('sfxVolV${i}').textContent=this.value+'%'">
       <span class="x" style="flex:none" onclick="sfxCues.splice(${i},1);renderSfxPins();renderSfxRows()">✕</span>`;
     box.appendChild(row);
   });
 }
 
-/* ── 混音试听（Web Audio 实时合成：配音＋BGM循环＋音效定点，与渲染端音量口径一致） ── */
+/* ── 混音试听（Web Audio 实时合成：配音＋BGM循环＋音效定点，各路独立增益、可实时调音量） ── */
 let actx=null,mixNodes=[],mixPlaying=false,mixTimer=null;
+let mixGains={master:null,bgm:null,sfx:[]};   // 保存各路增益节点，供试听中实时调音量
 async function fetchBuf(url){
   const arr=await (await fetch(url)).arrayBuffer();
   return await actx.decodeAudioData(arr);
@@ -1304,6 +1392,7 @@ function schedule(buf,when,gain,loop,stopAfter){
   src.start(when);
   if(loop&&stopAfter)src.stop(when+stopAfter);
   mixNodes.push(src);
+  return g;   // 返回增益节点以便实时调节
 }
 async function toggleMixPreview(){
   if(mixPlaying){stopMixPreview();return;}
@@ -1321,10 +1410,10 @@ async function toggleMixPreview(){
     if(!masterBuf&&!bgmBuf&&!sfxBufs.some(Boolean)){$('mixPlay').textContent='▶ 混音试听（配音＋BGM＋音效）';alert('没有可试听的音频：先运行「①配音」生成 master，或选择 BGM/音效。');return;}
     const t0=actx.currentTime+0.06;
     const dur=masterBuf?masterBuf.duration:getMasterSeconds();
-    mixNodes=[];
-    if(masterBuf)schedule(masterBuf,t0,(+$('mVol').value||100)/100,false,0);
-    if(bgmBuf)schedule(bgmBuf,t0,(+$('bVol').value||35)/100,$('bLoop').checked,dur);
-    sfxCues.forEach((c,i)=>{if(sfxBufs[i])schedule(sfxBufs[i],t0+(+c.at||0),(+c.volume||1),false,0);});
+    mixNodes=[];mixGains={master:null,bgm:null,sfx:[]};
+    if(masterBuf)mixGains.master=schedule(masterBuf,t0,num($('mVol').value,100)/100,false,0);
+    if(bgmBuf)mixGains.bgm=schedule(bgmBuf,t0,num($('bVol').value,35)/100,$('bLoop').checked,dur);
+    sfxCues.forEach((c,i)=>{if(sfxBufs[i])mixGains.sfx[i]=schedule(sfxBufs[i],t0+(+c.at||0),(c.volume==null?1:+c.volume),false,0);});
     mixPlaying=true;$('mixPlay').textContent='⏹ 停止试听';
     clearTimeout(mixTimer);mixTimer=setTimeout(stopMixPreview,(dur+0.4)*1000);
   }catch(e){$('mixPlay').textContent='▶ 混音试听（配音＋BGM＋音效）';alert('试听失败：'+e.message);}
@@ -1332,6 +1421,7 @@ async function toggleMixPreview(){
 function stopMixPreview(){
   clearTimeout(mixTimer);
   mixNodes.forEach(n=>{try{n.stop();}catch(e){}});mixNodes=[];
+  mixGains={master:null,bgm:null,sfx:[]};
   mixPlaying=false;$('mixPlay').textContent='▶ 混音试听（配音＋BGM＋音效）';
 }
 
