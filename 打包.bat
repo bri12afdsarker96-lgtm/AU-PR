@@ -58,10 +58,18 @@ for /f "usebackq delims=" %%v in ("dist\水星配音对齐工作室\版本.txt")
 echo [自检] exe 已生成；产物版本：%BUILTVER%
 echo [自检] 通过。
 
+rem [8] 自动生成带版本号的发布压缩包（发布包\水星配音对齐工作室_v版本_日期时间.zip），每次可区分
+echo [打包] 正在生成带版本号的压缩包 ...
+python -c "import shutil,os,datetime,dub_align_studio.version as v; n='水星配音对齐工作室_v'+v.APP_VERSION+'_'+datetime.datetime.now().strftime('%%Y%%m%%d_%%H%%M'); os.makedirs('发布包',exist_ok=True); p=shutil.make_archive(os.path.join('发布包',n),'zip','dist','水星配音对齐工作室'); print('ZIP_OK '+p)" 1>"%TEMP%\_zip.log" 2>&1
+type "%TEMP%\_zip.log"
+findstr /b "ZIP_OK" "%TEMP%\_zip.log" >nul && set "ZIPPED=1" || set "ZIPPED="
+
 echo.
 echo [完成] 产物目录：dist\水星配音对齐工作室\   版本：%BUILTVER%
-echo    1. 把 ffmpeg.exe 和 ffprobe.exe 放进该目录（exe 旁边）
-echo    2. 双击其中的 水星配音对齐工作室.exe，右上角应显示版本号
+if defined ZIPPED echo [完成] 压缩包已生成到：发布包\  （文件名含版本号+时间，多版本一眼可分）
+if not defined ZIPPED echo [提示] 压缩包生成失败，可手动压缩 dist\水星配音对齐工作室 文件夹（不影响使用）。
+echo    1. 把 ffmpeg.exe 和 ffprobe.exe 放进 dist\水星配音对齐工作室（exe 旁边）后再压缩，成品即自带 ffmpeg
+echo    2. 双击 exe，右上角应显示版本号
 echo    3. 数据总目录建议设在 dist 之外，例如 D:\水星配音数据
 pause
 exit /b 0

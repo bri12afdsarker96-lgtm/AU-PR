@@ -44,6 +44,41 @@ class PackagingScriptTests(unittest.TestCase):
         self.assertIn(":SELFFAIL", bat)         # 自检失败分支
         self.assertIn("版本.txt", bat)
 
+    def test_makes_versioned_zip(self):
+        bat = self._bat()
+        self.assertIn("make_archive", bat)     # 自动生成压缩包
+        self.assertIn("发布包", bat)            # 输出到发布包目录
+        self.assertIn("APP_VERSION", bat)      # 文件名含版本号
+
+
+class VersionedZipLogicTests(unittest.TestCase):
+    def test_archive_names_with_version_and_contains_product(self):
+        import datetime
+        import shutil
+        import tempfile
+        import zipfile
+        from pathlib import Path
+
+        from dub_align_studio import version
+
+        work = Path(tempfile.mkdtemp(prefix="zip_"))
+        try:
+            prod = work / "dist" / "水星配音对齐工作室"
+            prod.mkdir(parents=True)
+            (prod / "水星配音对齐工作室.exe").write_text("x", encoding="utf-8")
+            name = ("水星配音对齐工作室_v" + version.APP_VERSION + "_" +
+                    datetime.datetime(2026, 7, 23, 15, 30).strftime("%Y%m%d_%H%M"))
+            (work / "发布包").mkdir()
+            archive = shutil.make_archive(str(work / "发布包" / name), "zip",
+                                          str(work / "dist"), "水星配音对齐工作室")
+            self.assertTrue(archive.endswith(".zip"))
+            self.assertIn(version.APP_VERSION, Path(archive).name)  # 文件名含版本号 → 可区分
+            with zipfile.ZipFile(archive) as z:
+                names = z.namelist()
+            self.assertIn("水星配音对齐工作室/水星配音对齐工作室.exe", names)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()
