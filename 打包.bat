@@ -18,14 +18,16 @@ echo [保护] 已搬到 "%~dp0水星配音数据"，打包后在软件「工具�
 
 rem [2] 清除上一次打包的全部产物（每次打包都从干净状态开始）
 :CLEAN
-echo [清理] 删除上次打包产物：dist 输出 + build 中间件 + 历史回退目录 + spec ...
+echo [清理] 删除上次打包产物与旧生成文件：dist / build / spec / __pycache__ / 历史回退目录 ...
 rd /s /q "dist\水星配音对齐工作室" 2>nul
 rd /s /q "build\水星配音对齐工作室" 2>nul
 del /q "水星配音对齐工作室.spec" 2>nul
 for /d %%D in ("dist_new_*") do rd /s /q "%%D" 2>nul
+rem 清理源码目录下的旧字节码缓存（避免旧代码残留进包）
+for /d /r "source" %%p in (__pycache__) do rd /s /q "%%p" 2>nul
 rem 清不掉说明仍被占用，直接提示，不再堆新目录
 if exist "dist\水星配音对齐工作室" goto :LOCKED
-echo [清理] 旧产物已清除。
+echo [清理] 旧产物与旧缓存已清除。
 
 rem [3] 环境检查
 where python >nul 2>nul || goto :NOPY
@@ -47,13 +49,28 @@ python -m PyInstaller --noconfirm --clean --onedir --name "水星配音对齐工
 
 rem [6] 落版本文件
 python -c "import sys;sys.path.insert(0,'source');from dub_align_studio.version import full_version;print(full_version())" > "dist\水星配音对齐工作室\版本.txt" 2>nul
+
+rem [7] 自检：产物存在 + 版本文件已写入（自行检测本次打包是否成功、是否为新版本）
+if not exist "dist\水星配音对齐工作室\水星配音对齐工作室.exe" goto :SELFFAIL
+if not exist "dist\水星配音对齐工作室\版本.txt" goto :SELFFAIL
+set "BUILTVER="
+for /f "usebackq delims=" %%v in ("dist\水星配音对齐工作室\版本.txt") do set "BUILTVER=%%v"
+echo [自检] exe 已生成；产物版本：%BUILTVER%
+echo [自检] 通过。
+
 echo.
-echo [完成] 产物目录：dist\水星配音对齐工作室\
+echo [完成] 产物目录：dist\水星配音对齐工作室\   版本：%BUILTVER%
 echo    1. 把 ffmpeg.exe 和 ffprobe.exe 放进该目录（exe 旁边）
 echo    2. 双击其中的 水星配音对齐工作室.exe，右上角应显示版本号
 echo    3. 数据总目录建议设在 dist 之外，例如 D:\水星配音数据
 pause
 exit /b 0
+
+:SELFFAIL
+echo [自检失败] 未在 dist\水星配音对齐工作室 找到 exe 或版本文件，打包可能未成功。
+echo             请把上方 PyInstaller 输出整段发给开发。
+pause
+exit /b 1
 
 :LOCKED
 echo [错误] 旧产物 dist\水星配音对齐工作室 被占用，无法清除。请先：

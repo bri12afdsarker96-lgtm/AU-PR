@@ -139,8 +139,8 @@ td.mut{color:var(--muted)} tr:hover td{background:rgba(228,185,99,.035)}
 .badge{font-size:11px;padding:2px 11px;border-radius:99px;border:1px solid var(--line2);color:var(--muted);font-variant-numeric:tabular-nums}
 
 /* ───────── 手机预览（文本框页） ───────── */
-.g3ov{display:grid;grid-template-columns:minmax(320px,1.1fr) minmax(360px,1.1fr) minmax(280px,.8fr);gap:16px;align-items:start}
-@media(max-width:1280px){.g3ov{grid-template-columns:minmax(300px,1fr) 1fr}.g3ov>*:last-child{grid-column:1/-1}}
+.g3ov{display:grid;grid-template-columns:minmax(280px,.95fr) minmax(380px,1.35fr) minmax(280px,.85fr);gap:16px;align-items:start}
+@media(max-width:1280px){.g3ov{grid-template-columns:minmax(280px,1fr) 1.3fr}.g3ov>*:last-child{grid-column:1/-1}}
 .phone{width:260px;max-width:100%;aspect-ratio:9/16;flex:none;margin:0 auto;position:relative;border-radius:22px;overflow:hidden;
   border:1px solid var(--line2);box-shadow:0 20px 50px rgba(0,0,0,.5), inset 0 0 0 1px rgba(255,255,255,.04);
   background:linear-gradient(160deg,#3B3242 0%,#241F2E 34%,#151218 78%)}
@@ -272,6 +272,10 @@ footer b{color:var(--muted);font-weight:600}
           <div class="hintline" id="sfxHint" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--faint);font-size:11px;letter-spacing:1px">还没有音效 — 选一个点「＋ 加音效」，然后拖动定位</div>
         </div>
         <div id="sfxRows" style="margin-top:8px"></div>
+        <div style="margin-top:10px">
+          <span id="assetToggle" style="cursor:pointer;color:var(--gold);font-size:12px;user-select:none" onclick="toggleAssets()">▸ 🗂 素材库（音效/BGM 上传一次即永久入库，可复用可删除）</span>
+          <div id="assetList" style="display:none;margin-top:6px"></div>
+        </div>
       </div>
 
       <div class="row" style="margin-top:12px">
@@ -367,19 +371,17 @@ footer b{color:var(--muted);font-weight:600}
       </div>
     </div>
 
-    <div>
-    <div class="card" style="margin-bottom:16px">
-      <h2>字幕样式（烧录时生效）</h2>
-      <div class="grid g2e sp">
-        <div><span class="f">字幕位置</span><select id="subPos" onchange="syncPv()"></select></div>
-        <div><span class="f">字幕字号 <span class="val" id="subSizeV" style="padding:2px 8px">64</span></span>
-          <input type="range" id="subsize" min="32" max="140" step="4" value="64" oninput="syncPv()"></div>
-      </div>
-      <div class="sp"><span class="f">字幕字体（字体库下载或自行放入，见工具箱）</span>
-        <select id="subFont" onchange="syncPv()"></select></div>
-    </div>
+    <!-- 主列：编辑文本框 -->
     <div class="card">
       <h2>编辑文本框</h2>
+      <div class="row sp" style="gap:8px">
+        <span class="f" style="margin:0;flex:none">📐 样式模板</span>
+        <select id="tplSel" style="flex:1 1 110px"></select>
+        <button class="btn" style="padding:8px 11px;flex:none" onclick="applyTpl()">载入</button>
+        <button class="btn" style="padding:8px 11px;flex:none" onclick="renameTpl()">重命名</button>
+        <button class="btn" style="padding:8px 11px;flex:none" onclick="delTpl()">删除</button>
+        <button class="btn gold" style="padding:8px 11px;flex:none" onclick="saveTpl()">存为模板</button>
+      </div>
       <div class="sp"><span class="f">文本内容</span>
         <input type="text" id="edText" placeholder="下载知乎搜书名《…》看后续" oninput="syncPv()"></div>
       <div class="grid g2e sp">
@@ -388,7 +390,7 @@ footer b{color:var(--muted);font-weight:600}
           <input type="range" id="edSize" min="32" max="160" step="4" value="72" oninput="syncPv()"></div>
       </div>
       <div class="sp"><span class="f">字体</span><select id="edFont" onchange="syncPv()"></select></div>
-      <div class="sp"><span class="f">颜色（输入色号后点 ★ 存色，下次直接复用）</span>
+      <div class="sp"><span class="f">颜色（输入色号点 ★ 存色；自定义色块点右上角 ✕ 删除）</span>
         <div class="row" id="swatches">
           <div class="sw on" data-c="#FFFFFF" style="background:#FFFFFF"></div>
           <div class="sw" data-c="#FFE14D" style="background:#FFE14D"></div>
@@ -401,7 +403,7 @@ footer b{color:var(--muted);font-weight:600}
         </div></div>
       <div class="row sp" style="gap:20px;flex-wrap:wrap">
         <label class="row mini" style="gap:7px"><input type="checkbox" id="edBox" onchange="syncPv()">半透明背景框</label>
-        <span class="row mini" style="gap:7px">描边 <input type="number" id="edBorder" value="3" style="width:64px"></span>
+        <span class="row mini" style="gap:7px">描边 <input type="number" id="edBorder" value="3" style="width:64px" oninput="syncPv()"></span>
       </div>
       <div class="grid g2e sp">
         <div><span class="f">开始（秒）</span><input type="number" id="edStart" value="0" step="0.5"></div>
@@ -409,13 +411,23 @@ footer b{color:var(--muted);font-weight:600}
       </div>
       <button class="btn gold" onclick="addOverlay()">＋ 添加到列表</button>
     </div>
-    </div>
 
-    <div class="card">
-      <h2>已添加 <span class="badge" id="ovN">0</span></h2>
-      <table><thead><tr><th>文本</th><th>位置</th><th>字号</th><th>颜色</th><th>时间窗</th><th></th></tr></thead>
-        <tbody id="ovList"></tbody></table>
-      <p style="font-size:11px;color:var(--faint);margin-top:12px;letter-spacing:.5px">渲染「③ / 生成成片」时全部烧入。</p>
+    <!-- 右列：字幕样式 + 已添加（窄列堆叠） -->
+    <div>
+      <div class="card" style="margin-bottom:16px">
+        <h2>字幕样式（烧录时生效）</h2>
+        <div class="sp"><span class="f">字幕位置</span><select id="subPos" onchange="syncPv()"></select></div>
+        <div class="sp"><span class="f">字幕字号 <span class="val" id="subSizeV" style="padding:2px 8px">64</span></span>
+          <input type="range" id="subsize" min="32" max="140" step="4" value="64" oninput="syncPv()"></div>
+        <div class="sp"><span class="f">字幕字体（在「字体库」页下载或自备）</span>
+          <select id="subFont" onchange="syncPv()"></select></div>
+      </div>
+      <div class="card">
+        <h2>已添加 <span class="badge" id="ovN">0</span></h2>
+        <table><thead><tr><th>文本</th><th>位置</th><th>字号</th><th>颜色</th><th></th></tr></thead>
+          <tbody id="ovList"></tbody></table>
+        <p style="font-size:11px;color:var(--faint);margin-top:12px;letter-spacing:.5px">渲染「③ / 生成成片」时全部烧入。</p>
+      </div>
     </div>
   </div>
 </section>
@@ -774,12 +786,11 @@ function addOverlay(){
 function renderOverlays(){
   $('ovN').textContent=overlays.length;
   const tb=$('ovList');tb.innerHTML='';
-  if(!overlays.length){tb.innerHTML='<tr><td colspan="6" class="empty">还没有文本框 — 在左侧添加</td></tr>';return;}
+  if(!overlays.length){tb.innerHTML='<tr><td colspan="5" class="empty">还没有文本框 — 在左侧添加</td></tr>';return;}
   overlays.forEach((o,i)=>{
     const tr=document.createElement('tr');
-    tr.innerHTML=`<td>${esc(o.text.slice(0,16))}</td><td class="mut">${o.position}</td>
+    tr.innerHTML=`<td>${esc(o.text.slice(0,12))}</td><td class="mut">${o.position}</td>
       <td class="mut">${o.font_size_px}</td><td><span style="color:${o.color}">${o.color}</span></td>
-      <td class="mut">${o.end?o.start+'–'+o.end+'s':'全程'}</td>
       <td><span class="x" onclick="overlays.splice(${i},1);renderOverlays();syncPv()">✕</span></td>`;
     tb.appendChild(tr);});
 }
@@ -1103,13 +1114,22 @@ function togglePaths(){
 
 /* ── 自定义色号保存（localStorage，用户反馈②） ── */
 function myColors(){try{return JSON.parse(localStorage.getItem('dubColors')||'[]');}catch(e){return [];}}
+function delColor(c){
+  localStorage.setItem('dubColors',JSON.stringify(myColors().filter(x=>x!==c)));
+  renderMyColors();
+}
 function renderMyColors(){
   const box=$('myColors');if(!box)return;box.innerHTML='';
   myColors().forEach(c=>{
-    const d=document.createElement('div');d.className='sw';d.dataset.c=c;d.style.background=c;
-    d.title=c+'（双击删除）';
-    d.ondblclick=(e)=>{e.stopPropagation();localStorage.setItem('dubColors',JSON.stringify(myColors().filter(x=>x!==c)));renderMyColors();};
-    box.appendChild(d);
+    const wrap=document.createElement('span');
+    wrap.style.cssText='position:relative;display:inline-flex;flex:none';
+    const d=document.createElement('div');d.className='sw';d.dataset.c=c;d.style.background=c;d.title=c+'（点选用）';
+    const x=document.createElement('span');x.textContent='✕';x.title='删除该色';
+    x.style.cssText='position:absolute;top:-6px;right:-6px;width:15px;height:15px;line-height:15px;'
+      +'text-align:center;font-size:9px;border-radius:50%;background:var(--bad);color:#fff;cursor:pointer;'
+      +'box-shadow:0 1px 4px rgba(0,0,0,.5)';
+    x.onclick=(e)=>{e.stopPropagation();delColor(c);};
+    wrap.appendChild(d);wrap.appendChild(x);box.appendChild(wrap);
   });
 }
 function saveColor(){
@@ -1117,6 +1137,65 @@ function saveColor(){
   if(!/^#[0-9A-F]{6}$/.test(c)){alert('请输入合法色号，如 #FF5A4D');return;}
   const arr=myColors();if(!arr.includes(c)){arr.push(c);localStorage.setItem('dubColors',JSON.stringify(arr.slice(-16)));}
   renderMyColors();
+}
+
+/* ── 文本框样式模板（可命名/复用/重命名/删除，localStorage 持久） ── */
+function tpls(){try{return JSON.parse(localStorage.getItem('dubOverlayTpl')||'{}');}catch(e){return {};}}
+function saveTplStore(o){localStorage.setItem('dubOverlayTpl',JSON.stringify(o));}
+function loadTpls(){
+  const names=Object.keys(tpls());
+  fill('tplSel',names.length?names.map(n=>[n,n]):[['','（暂无模板）']]);
+}
+function curStyle(){return {position:$('edPos').value,font_size_px:+$('edSize').value,font_name:$('edFont').value,
+  color:$('edColor').value.trim(),border_width:+$('edBorder').value||0,boxed:$('edBox').checked};}
+function saveTpl(){
+  const name=prompt('模板名（例：顶部书名·金色描边）：');if(!name||!name.trim())return;
+  const t=tpls();t[name.trim()]=curStyle();saveTplStore(t);loadTpls();$('tplSel').value=name.trim();
+  alert('已存文本框样式模板：'+name.trim()+'（位置/字号/字体/颜色/描边/背景框）');
+}
+function applyTpl(){
+  const s=tpls()[$('tplSel').value];if(!s){alert('请选择一个模板');return;}
+  if(s.position!=null)$('edPos').value=s.position;
+  if(s.font_size_px!=null){$('edSize').value=s.font_size_px;$('edSizeV').textContent=s.font_size_px;}
+  if(s.font_name!=null&&[...$('edFont').options].some(o=>o.value===s.font_name))$('edFont').value=s.font_name;
+  if(s.color!=null)$('edColor').value=s.color;
+  if(s.border_width!=null)$('edBorder').value=s.border_width;
+  if(s.boxed!=null)$('edBox').checked=s.boxed;
+  syncPv(true);
+}
+function renameTpl(){
+  const old=$('tplSel').value;const t=tpls();if(!t[old]){alert('请选择一个模板');return;}
+  const name=prompt('新名称：',old);if(!name||!name.trim()||name.trim()===old)return;
+  t[name.trim()]=t[old];delete t[old];saveTplStore(t);loadTpls();$('tplSel').value=name.trim();
+}
+function delTpl(){
+  const n=$('tplSel').value;const t=tpls();if(!t[n]){alert('请选择一个模板');return;}
+  if(!confirm('删除模板「'+n+'」？'))return;delete t[n];saveTplStore(t);loadTpls();
+}
+
+/* ── 素材库管理（已入库音效/BGM，可删除；上传即入库不必重复上传） ── */
+function toggleAssets(){
+  const el=$('assetList'),t=$('assetToggle');
+  const open=el.style.display==='none';el.style.display=open?'block':'none';
+  t.textContent=(open?'▾':'▸')+' 🗂 素材库（音效/BGM 上传一次即永久入库，可复用可删除）';
+}
+function renderAssetList(assets){
+  const box=$('assetList');if(!box)return;
+  if(!assets.length){box.innerHTML='<p class="mini" style="color:var(--faint)">素材库为空 — 上传的音效/BGM 会永久保存在这里。</p>';return;}
+  box.innerHTML='';
+  assets.forEach(a=>{
+    const row=document.createElement('div');row.className='row';row.style.marginTop='4px';
+    row.innerHTML=`<span class="mini" style="flex:1 1 120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.file)}</span>
+      <span class="mini" style="flex:none;color:var(--faint)">${a.size_mb}MB</span>
+      <button class="btn" style="padding:5px 9px;flex:none" onclick="playUrl('${a.url}',this)">▶</button>
+      <span class="x" style="flex:none" onclick="delAsset('${encodeURIComponent(a.file)}')">✕</span>`;
+    box.appendChild(row);
+  });
+}
+async function delAsset(file){
+  if(!confirm('从素材库删除该文件？（正在使用它的音效/BGM 需重新选择）'))return;
+  await fetch('/api/assets/'+file,{method:'DELETE'});
+  loadAssets();
 }
 
 /* ── 音轨混音：总音量 / BGM(循环) / 音效(拖动定位)（用户反馈④⑤） ── */
@@ -1145,7 +1224,7 @@ async function loadAssets(){
     $('bgmSel').value=[...$('bgmSel').options].some(o=>o.value===bkeep)?bkeep:'';
     const skeep=$('sfxSel').value; fill('sfxSel',opts.length?opts:[['','（先上传音效）']]);
     if(opts.length&&[...$('sfxSel').options].some(o=>o.value===skeep))$('sfxSel').value=skeep;
-    window._assets=s.assets; onMixChange();
+    window._assets=s.assets; renderAssetList(s.assets); onMixChange();
   }catch(e){}
 }
 async function uploadAsset(input,kind){
@@ -1302,7 +1381,7 @@ async function delConfig(){
   window._presets=j.presets||{};loadConfigs();
 }
 
-renderMyColors();renderOverlays();loadState();loadComponents();loadSettings();loadFonts();loadClones();loadAssets();loadConfigs();pollAll();  /* 载入时同步任务状态：刷新不丢日志/时间轴/下载进度 */
+renderMyColors();loadTpls();renderOverlays();loadState();loadComponents();loadSettings();loadFonts();loadClones();loadAssets();loadConfigs();pollAll();  /* 载入时同步任务状态：刷新不丢日志/时间轴/下载进度 */
 </script>
 </body>
 </html>
