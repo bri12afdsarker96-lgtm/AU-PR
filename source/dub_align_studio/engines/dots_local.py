@@ -81,6 +81,8 @@ class DotsLocalEngine:
     seed: int = 42
     precision: str = "bfloat16"
     optimize: bool = False   # torch.compile 加速：首次编译慢且在部分 Windows 环境易失败，默认关
+    # 单次合成字数上限：超长整篇会被 AR 模型截断/劣化 → 由 longform 分块拼接（保守取 120 中文字≈30~40s/段）
+    max_chars: int = 120
 
     key: str = "dots_local"
 

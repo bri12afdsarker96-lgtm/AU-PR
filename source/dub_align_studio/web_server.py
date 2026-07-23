@@ -188,7 +188,7 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
 
             JOB.set_progress("① 配音 · 整篇克隆", 6)
             log("① 配音 · 整篇克隆…")
-            master = pipeline.step_dub(text, engine_key, output_dir, voice, options)
+            master = pipeline.step_dub(text, engine_key, output_dir, voice, options, log=log)
             log(f"  ✅ master {master.seconds:.2f}s（引擎 {master.engine}）")
 
             JOB.set_progress("② 量时长 · 逐行对齐", 28)
@@ -222,7 +222,7 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             with JOB.lock:
                 JOB.timings, JOB.result, JOB.ok = timings, result, result.ok
         elif action == "dub":
-            master = pipeline.step_dub(text, engine_key, output_dir, voice, options)
+            master = pipeline.step_dub(text, engine_key, output_dir, voice, options, log=log)
             log(f"✅ master：{master.path.name}（{master.seconds:.2f}s，引擎 {master.engine}）")
             with JOB.lock:
                 JOB.ok = True
@@ -607,6 +607,8 @@ class _Handler(BaseHTTPRequestHandler):
                     lines = [line.strip() for line in text.replace("\r\n", "\n").split("\n") if line.strip()]
                 else:
                     raise ValueError("kind 应为 xlsx 或 txt。")
+                if str(query.get("header") or "") in ("1", "true") and lines:
+                    lines = lines[1:]  # 跳过表头行（如「口播文稿内容」这类列标题）
                 if not lines:
                     raise ValueError("没有读到任何文案行（xlsx 请确认列号；txt 请确认一行一句）。")
                 self._json({"ok": True, "lines": lines})

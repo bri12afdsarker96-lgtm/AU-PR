@@ -30,6 +30,7 @@ class MockEngine:
 
     durations: list[float] = field(default_factory=list)
     sample_rate: int = _SAMPLE_RATE
+    max_chars: int = 1_000_000   # mock 不分块（确定性测试口径不变）
 
     key: str = "mock"
 

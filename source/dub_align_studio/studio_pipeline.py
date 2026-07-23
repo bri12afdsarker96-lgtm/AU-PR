@@ -125,12 +125,17 @@ def step_dub(
     output_dir: Path,
     voice: VoiceRef | None = None,
     options: SynthesisOptions | None = None,
+    log=None,
 ) -> MasterAudio:
     """① 整篇克隆 master。mock 引擎时按每行 5s 生成假音频（供无 GPU 环境走通全流程）。"""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     engine = make_engine(engine_key)
-    master = engine.synthesize_full(text, voice, output_dir / MASTER_NAME, options)
+    from .engines.longform import synthesize_long
+
+    # 长文分块合成 + 同音色拼接：超长整篇不再被引擎截断/漂移（超限才分块，否则单次合成）
+    max_chars = int(getattr(engine, "max_chars", 1_000_000))
+    master = synthesize_long(engine, text, voice, output_dir / MASTER_NAME, options, max_chars, log=log)
     _archive_clone(master, voice)
     return master
 

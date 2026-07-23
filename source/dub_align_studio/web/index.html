@@ -293,6 +293,7 @@ footer b{color:var(--muted);font-weight:600}
           <button class="btn" onclick="xlsxFile.click()">📊 导入表格(xlsx)</button>
           <span class="mini" style="flex:none">列</span>
           <select id="xlsxCol" style="width:76px;flex:none"></select>
+          <label class="row mini" style="gap:6px;flex:none"><input type="checkbox" id="xlsxHeader" checked>跳过表头(首行)</label>
           <button class="btn" onclick="txtFile.click()">📄 导入TXT</button>
           <input type="file" id="xlsxFile" accept=".xlsx" style="display:none" onchange="importScript(this,'xlsx')">
           <input type="file" id="txtFile" accept=".txt" style="display:none" onchange="importScript(this,'txt')">
@@ -1073,7 +1074,7 @@ function chooseDir(){
 /* ── 文案导入（xlsx / txt）── */
 async function importScript(input,kind){
   const f=input.files[0]; input.value=''; if(!f)return;
-  const q=new URLSearchParams({kind, column:$('xlsxCol').value});
+  const q=new URLSearchParams({kind, column:$('xlsxCol').value, header:(kind==='xlsx'&&$('xlsxHeader')?.checked)?'1':'0'});
   const r=await fetch('/api/script/parse?'+q,{method:'POST',body:f});
   const j=await r.json();
   if(j.error){alert(j.error);return;}

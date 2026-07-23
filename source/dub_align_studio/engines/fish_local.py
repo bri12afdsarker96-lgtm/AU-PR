@@ -42,6 +42,7 @@ class FishLocalEngine:
     """fish-speech 本地服务引擎。服务由用户按官方文档启动，本软件只连不管。"""
 
     base_url: str = DEFAULT_BASE_URL
+    max_chars: int = 160   # 单次合成字数上限；超长整篇由 longform 分块拼接，避免截断/漂移
 
     key: str = "fish_local"
 
