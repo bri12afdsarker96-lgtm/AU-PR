@@ -284,8 +284,13 @@ def _pip_base_cmd() -> list[str]:
 
 # dots.tts 运行依赖（对照 pyproject，去掉 torch/torchaudio 由 GPU 组件单独装；
 # 去掉 WeTextProcessing —— 它靠 pynini，Windows 无法编译，且仅用于「可选、默认关」的文本正则化）
+# 对照 dots.tts 官方 constraints/recommended.txt 锁版本：
+# transformers 必须够新才有 Qwen2ForCausalLM（dots.tts 模型基于 Qwen2 架构，旧版报
+# "Could not import module 'Qwen2ForCausalLM'"）；accelerate 供大模型加载。torch/torchaudio
+# 由「PyTorch GPU 版」组件单独装，此处不含以免覆盖 CUDA 版。
 DOTS_RUNTIME_DEPS = [
-    "transformers", "huggingface-hub", "loguru", "langcodes[data]", "gradio",
+    "transformers==4.57.0", "accelerate==1.12.0",
+    "huggingface-hub", "loguru", "langcodes[data]", "gradio",
     "einops", "librosa", "soundfile", "numpy", "pydantic", "PyYAML",
     "safetensors", "torchdiffeq", "tqdm", "lingua-language-detector",
 ]

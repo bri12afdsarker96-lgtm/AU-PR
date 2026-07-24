@@ -130,10 +130,15 @@ class DotsLocalEngine:
         try:
             importlib.import_module(_RUNTIME_MODULE)
         except Exception as exc:
+            hint = ""
+            if "Qwen2" in str(exc) or "transformers" in str(exc).lower():
+                hint = ("（transformers 版本过旧，缺 Qwen2 支持）。请执行："
+                        "pip install \"transformers==4.57.0\" \"accelerate==1.12.0\" "
+                        "-i https://pypi.tuna.tsinghua.edu.cn/simple；或到工具箱重装 dots.tts。")
             return EngineStatus(
                 key=self.key,
                 available=False,
-                detail=f"dots.tts 已找到但导入失败：{exc}",
+                detail=f"dots.tts 已找到但导入失败：{exc}{hint}",
             )
         cuda_ok, cuda_detail = _cuda_detail()
         if not cuda_ok:

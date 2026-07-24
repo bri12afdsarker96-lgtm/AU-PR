@@ -13,12 +13,17 @@ class ComponentCatalogTests(unittest.TestCase):
     def test_dots_install_skips_pynini_wetextprocessing(self):
         # dots.tts 运行依赖里绝不能含 WeTextProcessing/pynini（Windows 编译不了），
         # 也不含 torch（避免覆盖 CUDA 版）
-        low = [d.lower() for d in components.DOTS_RUNTIME_DEPS]
-        # 精确按包名判断（torchdiffeq 含子串 torch 但不是 torch 本体，应允许）
+        # 取每项的包名（去掉 ==版本 / [extra]），精确判断
+        def pkg(dep):
+            return dep.split("==")[0].split("[")[0].strip().lower()
+
+        names = [pkg(d) for d in components.DOTS_RUNTIME_DEPS]
         for banned in ("wetextprocessing", "pynini", "torch", "torchaudio"):
-            self.assertNotIn(banned, low, banned)
-        for need in ("loguru", "transformers", "soundfile"):
-            self.assertIn(need, low, need)
+            self.assertNotIn(banned, names, banned)  # torchdiffeq 是独立名，不会误判
+        for need in ("loguru", "transformers", "soundfile", "accelerate"):
+            self.assertIn(need, names, need)
+        # transformers 必须锁到有 Qwen2 支持的版本
+        self.assertIn("transformers==4.57.0", components.DOTS_RUNTIME_DEPS)
 
     def test_torch_before_dots_and_uses_cuda_index(self):
         keys = [c["key"] for c in components.COMPONENTS]
