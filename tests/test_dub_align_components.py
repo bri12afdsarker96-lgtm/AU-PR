@@ -29,7 +29,12 @@ class ComponentCatalogTests(unittest.TestCase):
         keys = [c["key"] for c in components.COMPONENTS]
         self.assertIn("torch_cuda", keys)
         self.assertLess(keys.index("torch_cuda"), keys.index("dots_tts"))  # 先装 torch 再装 dots
-        self.assertIn("download.pytorch.org/whl/cu121", components.TORCH_CUDA_INDEX)
+        # 必须是 cu126：cu121 源停更在 torch 2.5.1，会把新版 torch 降级装坏（2026-07-24 实测）
+        self.assertIn("download.pytorch.org/whl/cu126", components.TORCH_CUDA_INDEX)
+        # torchvision↔torch 配对判断（0.n+15 ↔ 2.n）
+        self.assertTrue(components._torchvision_pairs_with("0.26.0", "2.11.0"))
+        self.assertFalse(components._torchvision_pairs_with("0.26.0", "2.5.1"))
+        self.assertTrue(components._torchvision_pairs_with("坏版本", "2.11.0"))  # 解析失败→保守不动
         st = {c["key"]: c for c in components.component_statuses()}
         self.assertIn("torch_cuda", st)
         self.assertTrue(st["torch_cuda"]["detail"])

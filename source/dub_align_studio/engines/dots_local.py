@@ -156,8 +156,9 @@ def _cuda_detail() -> tuple[bool, str]:
 
 
 _TORCH_CUDA_HINT = (
-    "需要 CUDA 版 torch：到 https://pytorch.org/get-started/locally/ 选 CUDA 对应命令，"
-    "例如 pip install torch --index-url https://download.pytorch.org/whl/cu121。"
+    "需要 CUDA 版 torch：推荐工具箱一键装，或手动 "
+    "pip install --force-reinstall torch==2.11.0 torchaudio==2.11.0 "
+    "--index-url https://download.pytorch.org/whl/cu126（勿用 cu121 源，已停更会装到旧版）。"
     "无 NVIDIA 显卡的电脑无法用 dots.tts，请改用 fish-speech 或 mock（测试）引擎。"
 )
 

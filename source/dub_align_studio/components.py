@@ -49,8 +49,12 @@ COMPONENTS: list[dict] = [
      "purpose": "整篇声音克隆备选（一键装源码+依赖+模型，装好后点「启动服务」）"},
 ]
 
-# PyTorch GPU 版：官方 CUDA 12.1 wheel 源（RTX 20/30/40 系通用；不走 PyPI 镜像，torch 只在此源）
-TORCH_CUDA_INDEX = "https://download.pytorch.org/whl/cu121"
+# PyTorch GPU 版：官方 CUDA 12.6 wheel 源（RTX 20/30/40 系通用；不走 PyPI 镜像，torch 只在此源）。
+# 千万不要用 cu121——该源停更在 torch 2.5.1，会把用户好好的新版 torch 降级装坏
+# （2026-07-24 实测：工具箱点安装把 2.11.0 降到 2.5.1，transformers 4.57 随即带不动 Qwen2）。
+TORCH_CUDA_INDEX = "https://download.pytorch.org/whl/cu126"
+# dots.tts + transformers==4.57 需要 torch ≥ 2.8（2.11 实测通过）；低于此即判未就绪
+TORCH_MIN_MINOR = (2, 8)
 
 # fish-speech 一键安装的固定口径
 FISH_SOURCE_URLS = ["https://github.com/fishaudio/fish-speech/archive/refs/heads/main.zip"]
@@ -333,7 +337,7 @@ def _torch_status() -> tuple[bool, str]:
     try:
         torch = importlib.import_module("torch")
     except ImportError:
-        return False, "未安装。点「安装」自动装 CUDA 12.1 版 torch（RTX 20/30/40 系适用）。"
+        return False, "未安装。点「安装」自动装 CUDA 版 torch（RTX 20/30/40 系适用）。"
     try:
         torchaudio = importlib.import_module("torchaudio")
     except ImportError:
@@ -347,6 +351,13 @@ def _torch_status() -> tuple[bool, str]:
     if t_minor != a_minor:
         return (False, f"torch {ver} 与 torchaudio {ta} 版本不匹配（dots.tts 要求一致）。"
                        "点「安装」重装匹配对即可修复。")
+    try:
+        if tuple(int(x) for x in t_minor.split(".")) < TORCH_MIN_MINOR:
+            floor = ".".join(str(x) for x in TORCH_MIN_MINOR)
+            return (False, f"torch {ver} 过旧（dots.tts + transformers 4.57 需 ≥{floor}，实测 2.11 可用）。"
+                           "点「安装」升级到匹配的新版。")
+    except ValueError:
+        pass
     try:
         if torch.cuda.is_available():
             return True, f"已就绪：torch {ver} + torchaudio {ta}，GPU {torch.cuda.get_device_name(0)}。"
@@ -399,6 +410,16 @@ def _install_torch_cuda(log: LogFn, key: str | None = None) -> None:
 _TORCH_ABI_STRAGGLERS = ["torchcodec"]
 
 
+def _torchvision_pairs_with(tv_version: str, torch_version: str) -> bool:
+    """纯逻辑：torchvision 0.(n+15) ↔ torch 2.n（近年官方配对恒成立：0.20↔2.5、0.26↔2.11）。"""
+    try:
+        tv_minor = int(tv_version.split(".")[1])
+        t_minor = int(torch_version.split(".")[1])
+    except (IndexError, ValueError):
+        return True  # 解析不了就不动它，宁可保守
+    return tv_minor == t_minor + 15
+
+
 def _cleanup_torch_stragglers(log: LogFn, key: str | None = None) -> None:
     for package in _TORCH_ABI_STRAGGLERS:
         if not _installed_dist_version(package):
@@ -409,6 +430,15 @@ def _cleanup_torch_stragglers(log: LogFn, key: str | None = None) -> None:
                             log, key=key, error=f"{package} 卸载失败")
         except RuntimeError as exc:
             log(f"⚠ {exc} —— 可手动执行：pip uninstall -y {package}")
+    # torchvision：本软件不用它，但失配时其 _C.pyd 会弹 DLL 错框——仅在与当前 torch 不配对时清掉
+    tv, t = _installed_dist_version("torchvision"), _installed_dist_version("torch")
+    if tv and t and not _torchvision_pairs_with(tv, t):
+        log(f"③ 清理 torchvision {tv}（与 torch {t} 不配对，DLL 必弹错框；本软件不需要它，如别处要用可再装匹配版）…")
+        try:
+            _stream_command([_py(), "-m", "pip", "uninstall", "-y", "torchvision"],
+                            log, key=key, error="torchvision 卸载失败")
+        except RuntimeError as exc:
+            log(f"⚠ {exc} —— 可手动执行：pip uninstall -y torchvision")
 
 
 def _pip_install(package: str, log: LogFn, key: str | None = None) -> None:
