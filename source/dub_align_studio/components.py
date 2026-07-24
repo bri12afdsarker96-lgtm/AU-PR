@@ -343,19 +343,36 @@ def _torch_status() -> tuple[bool, str]:
         return False, f"torch {ver} 已装但 CUDA 检测异常：{exc}"
 
 
+def _installed_dist_version(package: str) -> str:
+    """在子进程里读刚装好的版本（去掉 +cuXXX 本地标签），避开当前进程的导入缓存。"""
+    try:
+        out = subprocess.check_output(
+            [sys.executable, "-c", f"import importlib.metadata as m;print(m.version({package!r}))"],
+            text=True, stderr=subprocess.DEVNULL).strip()
+        return out.split("+")[0]
+    except Exception:
+        return ""
+
+
 def _install_torch_cuda(log: LogFn, key: str | None = None) -> None:
-    """安装/换装 CUDA 12.1 版 torch + torchaudio（官方源，约 2.5GB）。"""
+    """安装/换装 CUDA 12.1 版 torch + torchaudio（官方源，约 2.5GB）。
+
+    关键：torchaudio 往往滞后 torch 一两个小版本，且不硬性锁 torch —— 放任 pip 各取
+    最新会得到 torch 2.13 + torchaudio 2.11 这类不匹配（dots.tts 启动即报
+    "minor versions do not match"）。故分两步：先装 torchaudio（最矮的板决定可用档位），
+    再把 torch 锁到「与 torchaudio 完全相同的版本」，保证小版本一致。
+    """
+    index = ["--index-url", TORCH_CUDA_INDEX, "--timeout", "60", "--retries", "3", "--progress-bar", "off"]
     log("安装 PyTorch GPU 版（CUDA 12.1，官方源，约 2.5GB，请耐心）…")
-    # 只点名 torchaudio，让 pip 按它的精确依赖自动拉取「与之匹配的 torch」——
-    # torchaudio 的 wheel 锁死了对应 torch 版本，故二者必然同小版本，从根上杜绝
-    # "torch (x) and torchaudio (y) minor versions do not match"。
-    # （若同时显式点名 torch，pip 会各取最新：torch 常比 torchaudio 高一个小版本 → 不匹配。）
-    # --force-reinstall 覆盖此前漂移出的不匹配组合，并一并重装匹配的 torch。
-    cmd = [sys.executable, "-m", "pip", "install", "--force-reinstall",
-           "torchaudio", "--index-url", TORCH_CUDA_INDEX,
-           "--timeout", "60", "--retries", "3", "--progress-bar", "off"]
-    _stream_command(cmd, log, key=key,
-                    error="PyTorch GPU 版安装失败。可手动执行：pip install --force-reinstall torchaudio --index-url " + TORCH_CUDA_INDEX)
+    log("① 安装 torchaudio（它决定可匹配的 torch 版本）…")
+    _stream_command([sys.executable, "-m", "pip", "install", "--force-reinstall", "torchaudio"] + index,
+                    log, key=key, error="torchaudio 安装失败")
+    ta_ver = _installed_dist_version("torchaudio")
+    if ta_ver:
+        log(f"② 将 torch 锁到与 torchaudio 相同的版本 {ta_ver}（避免 torch 被拉高造成不匹配）…")
+        _stream_command([sys.executable, "-m", "pip", "install", "--force-reinstall", f"torch=={ta_ver}"] + index,
+                        log, key=key,
+                        error=f"torch=={ta_ver} 安装失败。可手动执行：pip install --force-reinstall torch=={ta_ver} torchaudio=={ta_ver} --index-url " + TORCH_CUDA_INDEX)
     ok, detail = _torch_status()
     if not ok:
         raise RuntimeError("安装完成但 CUDA 仍不可用：" + detail + " 请确认已装 NVIDIA 显卡驱动后重启软件。")
