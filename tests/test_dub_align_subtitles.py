@@ -49,6 +49,15 @@ class DrawtextStyleTests(unittest.TestCase):
         self.assertEqual(len(filters), 1)
         self.assertIn("subtitle_002", filters[0])
 
+    def test_subtitle_never_wraps_single_line(self):
+        # 单条字幕永不折行：即便超过样式每行上限，textfile 也必须是一行（长度只靠标点分句控制）
+        long_phrase = "假设有个叫沈砚的年轻人他十八岁那年第一次进城"  # 22 字，远超 max_chars_per_line
+        style = SubtitleStyle(font_size_px=64, max_chars_per_line=10, max_lines=2)
+        subtitles.drawtext_filters([SubtitleEntry(1, 0.0, 6.0, long_phrase)], style, self.font, self.workdir)
+        content = (self.workdir / "subtitle_001.txt").read_text(encoding="utf-8")
+        self.assertNotIn("\n", content)          # 无换行 = 单行
+        self.assertEqual(content, long_phrase)   # 原句不截断、不折
+
     def test_wrap_respects_style_limits(self):
         style = SubtitleStyle(max_chars_per_line=4, max_lines=2)
         wrapped = subtitles.wrap_subtitle_text("一二三四五六七八九十", style)

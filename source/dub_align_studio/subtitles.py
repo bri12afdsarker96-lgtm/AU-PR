@@ -189,7 +189,9 @@ def drawtext_filters(
         if not entry.text:
             continue
         text_path = textfile_dir / f"subtitle_{entry.index:03d}.txt"
-        text_path.write_text(wrap_subtitle_text(entry.text, style, canvas_width), encoding="utf-8")
+        # 单条字幕永不折行：长度只由标点分句控制（2026-07-25 用户定案）。
+        # 整句压成一行（清掉任何换行/多空白），wrap_subtitle_text 仅留给文本框 overlay。
+        text_path.write_text(" ".join(str(entry.text).split()), encoding="utf-8")
         filters.append(
             "drawtext="
             f"fontfile='{_filter_path(font)}':"
