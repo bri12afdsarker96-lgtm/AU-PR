@@ -1,10 +1,10 @@
-水星配音对齐工作室 · 环境快照  2026-07-24 21:57:57
+水星配音对齐工作室 · 环境快照  2026-07-24 22:24:53
 
 ════════ Python 环境 ════════
   python: D:\Python\Python311\python.exe
   版本: 3.11.8
-  torch: 2.5.1+cu121
-  torchaudio: 2.5.1+cu121
+  torch: 2.11.0+cu126
+  torchaudio: 2.11.0+cu126
   torchvision: 0.26.0+cu126
   torchcodec: 未安装
   transformers: 4.57.0
@@ -18,18 +18,18 @@
   
   You may be able to resolve this warning by setting `model_config['protected_namespaces'] = ()`.
     warnings.warn(
-  available= False
-  dots.tts ���ҵ�������ʧ�ܣ�Could not import module 'Qwen2ForCausalLM'. Are this object's requirements defined correctly?����ϣ�transformers 4.57.0��D:\Python\Python311\Lib\site-packages\transformers\__init__.py�������л��� D:\Python\Python311\python.exe��dots.tts ��Ҫ transformers==4.57.0��5.x ����ͬ��ȱ Qwen2���������� pip ��װ 4.57.0 ����������ʾ��İ汾/·����˵��װ������һ�� Python ���� ���á����б�������ͬһ�� Python����װ���򵽹������ dots.tts����װ�������pip install "transformers==4.57.0" "accelerate==1.12.0" -i https://pypi.tuna.tsinghua.edu.cn/simple��
+  available= True
+  dots.tts ���ã����� D:\GitHub\By\AU&PR\ˮ����������\���\dots.tts\dots.tts-soar����GPU��NVIDIA GeForce RTX 3060���Դ� 11.0/12.0 GB ���ã��� ��6GB���Ƽ� ��11GB�������ı�������׮������ȱ WeTextProcessing/pynini����Ӱ������������İ�������д�����ģ�
 
 ════════ 仓库状态 ════════
   分支: release/v0.5-download-fix
-  HEAD: bda5bec3 打包 exe 桥接系统 Python + 环境快照工具 + 导出按钮溢出修复 (v0.7.23)
+  HEAD: 8a652055 本次操作日志
   近5次提交:
+    8a652055 本次操作日志
+    19431505 新增「本次操作.bat」协作通道：远程下发本地操作，日志自动回传
+    25b5b3b0 torch 源换 cu126 + 版本下限护栏 + torchvision 失配清理 (v0.7.24)
+    abc3d3b0 环境快照：本机目录与环境状态
     bda5bec3 打包 exe 桥接系统 Python + 环境快照工具 + 导出按钮溢出修复 (v0.7.23)
-    931da9a2 打包说明更新：整合版自检步骤 / 数据目录自动找回 / torch ABI 弹窗处理
-    77982d00 torch 安装后自动清理 ABI 锁死残留（torchcodec） (v0.7.22)
-    ff3d82ca 封面工厂文字层对标 PS：透明度/旋转/字距/行距/字重斜体/投影/渐变/Ctrl+J (v0.7.21)
-    509e0a86 封面工厂：底图+文字层+PS式图层面板+模板复刻+自定义像素导出 (v0.7.20)
   未提交改动: 
     ?? "source/dub_align_studio/\345\220\257\345\212\250\351\224\231\350\257\257.log"
 
@@ -44,9 +44,12 @@
      打包_整合离线版.bat  (0.0MB, 07-24 16:43)
      打包收尾.py  (0.0MB, 07-24 11:11)
      打包说明.md  (0.0MB, 07-24 21:27)
-     水星配音对齐工作室.spec  (0.0MB, 07-24 21:36)
+     本次操作.bat  (0.0MB, 07-24 22:13)
+     本次操作日志.txt  (0.0MB, 07-24 22:24)
+     水星配音对齐工作室.spec  (0.0MB, 07-24 21:58)
      环境快照.bat  (0.0MB, 07-24 21:57)
      环境快照.py  (0.0MB, 07-24 21:57)
+     环境快照.txt  (0.0MB, 07-24 21:58)
 
 ════════ 父目录（检查散落的旧脚本副本） ════════
   D:\GitHub\By\AU&PR
@@ -58,7 +61,7 @@
   D:\GitHub\By\AU&PR\AU-PR\dist
   📁 水星配音对齐工作室/
     📁 _internal/
-       水星配音对齐工作室.exe  (111.2MB, 07-24 21:42)
+       水星配音对齐工作室.exe  (111.2MB, 07-24 22:06)
 
 ════════ 发布包 ════════
   （不存在）D:\GitHub\By\AU&PR\AU-PR\发布包
