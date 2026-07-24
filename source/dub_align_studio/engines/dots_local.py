@@ -47,16 +47,25 @@ _RUNTIME_MODULE = "dots_tts.runtime"   # DotsTtsRuntime 在此子模块
 EXPECTED_SAMPLE_RATE = 48000
 LOCAL_CHECKPOINT_DIR = "dots.tts-soar"
 
-# 起音丢字兜底：dots.tts（自回归）每段生成的最前端不稳，常把首字/首音吃掉（用户实测
-# 「文案开头几个字没声音」）。在句首加一个近乎无声的停顿（逗号），让被吃的落在这个停顿上，
-# 真正的首字后移一位、完整发出。留空则关闭。句号比逗号停顿更明确、吸收起音更稳；
-# 若仍偶发丢字可再加长为 "。。"。落盘时会裁掉这段停顿留下的开头静音，不会有开场气口。
-_ONSET_LEAD_IN = "。"
+# 起音丢字兜底 · 牺牲音节方案（2026-07-24 实测定稿）：
+# 纯标点引子（"，"/"。"）零音素、模型不为其生成音频帧，吸收不了任何东西——实测正文首字
+# 仍被 AR 起始不稳掐掉（音频第 0ms 即满音量、无起音爬坡）。必须用**真发音的音节**当炮灰：
+# 先发一声「嗯」+ 句停，被吃的落在「嗯」上；落盘时定位嗯后的停顿缺口，把「嗯+停顿」整体
+# 切掉，正文以自己完整的自然起音开头。留空则关闭整套兜底。
+_ONSET_LEAD_IN = "嗯。"
 
-# 加了句首停顿会带来开场静默/气口，故落盘前裁掉开头静音：从第一个真实字音开始。
-_SILENCE_THRESHOLD = 0.015     # 归一化幅度阈值：低于视为静音
-_LEADING_KEEP_MS = 20          # 起音前保留一点，避免削掉首音上升沿
-_MAX_LEADING_TRIM_S = 0.8      # 最多裁这么长，避免误伤（开头本就轻的语音不至于被删）
+_SILENCE_THRESHOLD = 0.015     # 归一化幅度阈值（相对峰值）：低于视为静音
+_LEADING_KEEP_MS = 20          # 兜底裁静音时起音前保留的余量
+_MAX_LEADING_TRIM_S = 0.8      # 兜底裁静音的封顶
+# 牺牲音节判定（三条同时满足才切，防误切正文）：
+#   ① 缺口 ≥ _FILLER_GAP_MIN_S；② 缺口在 _FILLER_MAX_S 之前开始；
+#   ③ 缺口前的发声段 ≤ _FILLER_VOICED_MAX_S ——「嗯」很短，真实首句普遍更长
+#     （实测用户音频首句 0.79s 即有句间停顿，仅靠①②会误切，③把它排除）。
+# 任一不满足 → 视为「填充音未产生/正文无缝开讲」，回退普通裁静音，绝不切正文。
+_FILLER_GAP_MIN_S = 0.12
+_FILLER_MAX_S = 0.9
+_FILLER_VOICED_MAX_S = 0.55
+_FILLER_KEEP_MS = 40           # 缺口后回退这点余量，保住正文首音上升沿
 
 # 运行时缓存：{(checkpoint, precision, optimize): runtime}，跨多次合成复用已加载的大模型。
 _RUNTIME_CACHE: dict = {}
@@ -382,8 +391,46 @@ def _leading_trim_index(abs_samples, sample_rate: int, peak: float) -> int:
     return max(0, first - keep)
 
 
+def _onset_cut_index(abs_samples, sample_rate: int, peak: float) -> int:
+    """纯逻辑：牺牲音节切点。返回应从第几个样本开始播放。
+
+    以 10ms 窗扫描：找到首个有声窗（填充音「嗯」起点）→ 在 _FILLER_MAX_S 之前寻找
+    其后的第一个 ≥_FILLER_GAP_MIN_S 的静音缺口 → 切到缺口结束（正文起点）前
+    _FILLER_KEEP_MS 处。找不到合格缺口（填充音未产生/正文无缝开讲）则回退
+    _leading_trim_index（只裁开头纯静音，绝不切正文）。
+    """
+    win = max(1, int(sample_rate * 0.010))
+    thr = _SILENCE_THRESHOLD * (peak or 1.0)
+    n_windows = min(len(abs_samples) // win, int((_FILLER_MAX_S + 1.0) / 0.010))
+    if n_windows <= 0:
+        return 0
+    voiced = []
+    for i in range(n_windows):
+        seg = abs_samples[i * win:(i + 1) * win]
+        voiced.append(max(seg) > thr if len(seg) else False)
+    try:
+        first_voiced = voiced.index(True)
+    except ValueError:
+        return 0  # 全静音，不动
+    gap_need = max(1, int(_FILLER_GAP_MIN_S / 0.010))
+    filler_deadline = int(_FILLER_MAX_S / 0.010)
+    voiced_max = int(_FILLER_VOICED_MAX_S / 0.010)
+    run = 0
+    for i in range(first_voiced + 1, n_windows):
+        if not voiced[i]:
+            run += 1
+            continue
+        gap_start = i - run
+        if (run >= gap_need and gap_start <= filler_deadline
+                and (gap_start - first_voiced) <= voiced_max):  # 缺口前发声段短 → 确是「嗯」
+            # i 是缺口后第一个有声窗 = 正文起点；回退保留正文起音余量
+            return max(0, i * win - int(_FILLER_KEEP_MS / 1000.0 * sample_rate))
+        run = 0
+    return _leading_trim_index(abs_samples, sample_rate, peak)  # 无合格缺口 → 只裁开头静音
+
+
 def _trim_leading_silence(array, sample_rate: int):
-    """裁掉 dots.tts 段音频开头的静音/气口（含句首停顿留下的空白）。numpy 缺失时原样返回。"""
+    """裁掉 dots.tts 段音频开头的「牺牲音节+停顿」（或纯静音）。numpy 缺失时原样返回。"""
     try:
         import numpy as np
     except Exception:
@@ -399,7 +446,7 @@ def _trim_leading_silence(array, sample_rate: int):
         other = tuple(ax for ax in range(a.ndim) if ax != time_axis)
         mono = np.abs(a).mean(axis=other)
     peak = float(np.max(mono)) if mono.size else 0.0
-    start = _leading_trim_index(mono, sample_rate, peak)
+    start = _onset_cut_index(mono, sample_rate, peak) if _ONSET_LEAD_IN else _leading_trim_index(mono, sample_rate, peak)
     if start <= 0:
         return a
     if a.ndim == 1:

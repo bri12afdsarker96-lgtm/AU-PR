@@ -175,6 +175,39 @@ class OnsetTrimTests(unittest.TestCase):
         self.assertEqual(_leading_trim_index(seq, 1000, 0.6), 0)
 
 
+class FillerCutTests(unittest.TestCase):
+    """牺牲音节切点：嗯+停顿被整体切掉、正文起音保留；无合格缺口时绝不切正文。"""
+
+    def test_cuts_filler_and_gap(self):
+        from dub_align_studio.engines.dots_local import _onset_cut_index
+        # sr=1000：50 静音 + 300 填充音 + 200 缺口 + 400 正文
+        seq = [0.0]*50 + [0.5]*300 + [0.0]*200 + [0.6]*400
+        # 正文起点=样本550（第55窗）；回退 40ms=40样本 → 510
+        self.assertEqual(_onset_cut_index(seq, 1000, 0.6), 510)
+
+    def test_no_gap_falls_back_to_silence_trim(self):
+        from dub_align_studio.engines.dots_local import _onset_cut_index
+        # 正文无缝开讲（缺口出现在 0.9s 之后）→ 不切正文，回退普通裁静音（此处开头即有声 → 0）
+        seq = [0.5]*950 + [0.0]*200 + [0.6]*300
+        self.assertEqual(_onset_cut_index(seq, 1000, 0.6), 0)
+
+    def test_all_silent_untouched(self):
+        from dub_align_studio.engines.dots_local import _onset_cut_index
+        self.assertEqual(_onset_cut_index([0.0]*2000, 1000, 0.0), 0)
+
+    def test_long_first_phrase_never_mistaken_for_filler(self):
+        from dub_align_studio.engines.dots_local import _onset_cut_index
+        # 复刻用户真实音频形态：填充音未产生，正文首句 0.79s + 0.16s 句间停顿——
+        # 发声段 0.79s > 0.55s 上限 → 不得当填充音切掉，回退普通裁静音（起点即有声 → 0）
+        seq = [0.6]*790 + [0.0]*160 + [0.5]*400
+        self.assertEqual(_onset_cut_index(seq, 1000, 0.6), 0)
+
+    def test_lead_in_is_audible_syllable(self):
+        from dub_align_studio.engines import dots_local
+        # 引子必须含真发音字符（纯标点零音素吸收不了起音不稳——2026-07-24 实测）
+        self.assertTrue(any('一' <= ch <= '鿿' for ch in dots_local._ONSET_LEAD_IN))
+
+
 class TnStubTests(unittest.TestCase):
     """dots.tts 在导入时硬 import `tn`（WeTextProcessing，靠 pynini，Windows 装不了）。
     缺 tn 时须注入原样返回的桩，让 dots.tts 能导入并出声。"""
