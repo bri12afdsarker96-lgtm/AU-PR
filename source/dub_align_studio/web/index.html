@@ -207,6 +207,7 @@ footer b{color:var(--muted);font-weight:600}
   <nav id="nav">
     <button data-p="p1" class="on">一键成片</button>
     <button data-p="p2">文本框</button>
+    <button data-p="p6">封面工厂</button>
     <button data-p="p3">音色库</button>
     <button data-p="p5">字体库</button>
     <button data-p="p4">工具箱自检</button>
@@ -474,6 +475,119 @@ footer b{color:var(--muted);font-weight:600}
           <a id="filmBtn2" class="btn line" style="display:none;flex:1" href="#" target="_blank">▶ 打开成片</a>
           <button class="btn line" style="flex:none" onclick="run('capcut')" title="不重烧，仅按当前成片导出剪映草稿">仅导出剪映草稿</button>
         </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ════ 封面工厂 ════ -->
+<section id="p6">
+<style>
+/* 封面工厂：PS 式图层面板 */
+.lrow{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line);
+  border-radius:9px;margin-bottom:6px;background:var(--panel2);cursor:grab;user-select:none;font-size:13px}
+.lrow.sel{border-color:var(--gold);box-shadow:0 0 0 1px var(--gold) inset}
+.lrow.dragover{border-style:dashed;border-color:var(--gold-hi)}
+.lrow .lbtn{cursor:pointer;flex:none;opacity:.9;width:22px;text-align:center}
+.lrow .lbtn.off{opacity:.32}
+.lrow .lname{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lrow .lname input{width:100%;font-size:13px;padding:2px 6px}
+.lrow .ltype{flex:none;font-size:11px;color:var(--faint);border:1px solid var(--line);border-radius:5px;padding:1px 6px}
+.cvwrap{position:relative;background:
+  repeating-conic-gradient(#23201a 0 25%,#191612 0 50%) 0 0/22px 22px;border-radius:12px;overflow:hidden;
+  border:1px solid var(--line2)}
+.cvwrap canvas{display:block;width:100%;height:auto;cursor:crosshair}
+.grid9{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;width:132px}
+.grid9 button{padding:8px 0;font-size:13px}
+</style>
+  <div class="thesis">
+    <h1>一张底图，<em>一套模板，账号封面统一</em>。</h1>
+    <p>导入图片 → 加自定义文字层 → 存为模板复刻 —— 图层面板对齐 PS 习惯（显隐 · 锁定 · 拖拽排序 · 双击重命名），按你设定的像素导出。</p>
+  </div>
+
+  <div class="g3ov">
+    <!-- 左：画布 -->
+    <div class="card">
+      <h2>画布</h2>
+      <div class="row sp" style="gap:8px">
+        <button class="btn gold" style="flex:none" onclick="$('cvImgFile').click()">🖼 导入底图</button>
+        <input type="file" id="cvImgFile" accept="image/*" style="display:none" onchange="cvImportImg(this)">
+        <select id="cvPreset" style="flex:1 1 110px" onchange="cvApplyPreset()">
+          <option value="1920x1080">横版 1920×1080 (16:9)</option>
+          <option value="1080x1920">竖版 1080×1920 (9:16)</option>
+          <option value="1080x1080">方形 1080×1080 (1:1)</option>
+          <option value="1280x720">横版 1280×720</option>
+          <option value="900x1200">竖版 900×1200 (3:4)</option>
+          <option value="custom">自定义…</option>
+        </select>
+        <span class="row mini" style="gap:5px;flex:none">
+          <input type="number" id="cvW" value="1920" min="16" max="8192" style="width:76px" onchange="cvSetSize()">×
+          <input type="number" id="cvH" value="1080" min="16" max="8192" style="width:76px" onchange="cvSetSize()">px</span>
+      </div>
+      <div class="cvwrap sp"><canvas id="cvCanvas" width="1920" height="1080"></canvas></div>
+      <p class="mini" style="color:var(--faint);margin-top:8px">画布上直接<b>拖动</b>文字定位；方向键微调（Shift=10px）；Delete 删除选中层（锁定层不受影响）。</p>
+      <div class="row" style="gap:8px;margin-top:10px">
+        <select id="cvFmt" style="flex:none;width:110px"><option value="png">PNG</option><option value="jpg">JPG</option></select>
+        <button class="btn gold big" style="flex:1" onclick="cvExport()">⬇ 按当前尺寸导出封面</button>
+      </div>
+    </div>
+
+    <!-- 中：文字层属性 -->
+    <div class="card">
+      <h2>文字层</h2>
+      <button class="btn gold" onclick="cvAddText()">＋ 添加文字层</button>
+      <div id="cvProps" style="display:none">
+        <div class="sp"><span class="f">文字内容（可多行）</span>
+          <textarea id="cvText" rows="2" style="width:100%" oninput="cvProp('text',this.value)"></textarea></div>
+        <div class="grid g2e sp">
+          <div><span class="f">字号 <span class="val" id="cvSizeV">96</span></span>
+            <input type="range" id="cvSize" min="16" max="400" step="2" value="96" oninput="cvProp('size',+this.value);$('cvSizeV').textContent=this.value"></div>
+          <div><span class="f">对齐</span>
+            <div class="row" style="gap:6px">
+              <button class="btn" id="alL" style="flex:1;padding:8px 0" onclick="cvProp('align','left')">⇤ 左</button>
+              <button class="btn" id="alC" style="flex:1;padding:8px 0" onclick="cvProp('align','center')">↔ 中</button>
+              <button class="btn" id="alR" style="flex:1;padding:8px 0" onclick="cvProp('align','right')">⇥ 右</button>
+            </div></div>
+        </div>
+        <div class="sp"><span class="f">字体（与「字体库」同步）</span><select id="cvFont" onchange="cvProp('font',this.value)"></select></div>
+        <div class="grid g2e sp">
+          <div><span class="f">颜色</span><div class="row" style="gap:6px">
+            <input type="color" id="cvColor" value="#FFFFFF" style="width:44px;height:36px;padding:2px" oninput="cvProp('color',this.value)">
+            <input type="text" id="cvColorT" value="#FFFFFF" style="flex:1" oninput="cvProp('color',this.value)"></div></div>
+          <div><span class="f">描边 <span class="val" id="cvBorderV">6</span>px</span>
+            <div class="row" style="gap:6px">
+              <input type="range" id="cvBorder" min="0" max="40" value="6" style="flex:1" oninput="cvProp('border',+this.value);$('cvBorderV').textContent=this.value">
+              <input type="color" id="cvBorderC" value="#000000" style="width:44px;height:32px;padding:2px" oninput="cvProp('borderColor',this.value)"></div></div>
+        </div>
+        <div class="row sp" style="gap:14px;align-items:flex-start">
+          <div><span class="f">快捷定位（也可画布拖动）</span>
+            <div class="grid9" id="cvGrid9"></div></div>
+          <div style="flex:1"><span class="f">精确位置（画布百分比）</span>
+            <div class="row" style="gap:6px">X <input type="number" id="cvX" min="0" max="100" style="width:72px" onchange="cvProp('x',+this.value/100)">%
+              Y <input type="number" id="cvY" min="0" max="100" style="width:72px" onchange="cvProp('y',+this.value/100)">%</div>
+            <label class="row mini" style="gap:7px;margin-top:10px"><input type="checkbox" id="cvBoxed" onchange="cvProp('boxed',this.checked)">半透明背景框</label></div>
+        </div>
+      </div>
+      <p class="mini" id="cvNoSel" style="color:var(--faint);margin-top:10px">先「添加文字层」或在右侧图层面板选中一层。</p>
+    </div>
+
+    <!-- 右：图层面板 + 模板 -->
+    <div>
+      <div class="card" style="margin-bottom:16px">
+        <h2>图层 <span class="badge" id="cvLayerN">0</span></h2>
+        <p class="mini" style="color:var(--faint);margin:-4px 0 8px">上面的层压住下面的层（同 PS）。👁 显隐 · 🔒 锁定（可选中不可动）· 拖动排序 · 双击改名。</p>
+        <div id="cvLayers"></div>
+      </div>
+      <div class="card">
+        <h2>封面模板</h2>
+        <p class="mini" style="color:var(--faint);margin:-4px 0 8px">存「画布尺寸 + 全部文字层」；换一张底图载入模板即复刻同款排版，保持账号封面统一。</p>
+        <div class="row sp" style="gap:8px">
+          <select id="cvTplSel" style="flex:1 1 110px"></select>
+          <button class="btn" style="padding:8px 11px;flex:none" onclick="cvTplLoad()">载入</button>
+          <button class="btn" style="padding:8px 11px;flex:none" onclick="cvTplRename()">重命名</button>
+          <button class="btn" style="padding:8px 11px;flex:none" onclick="cvTplDel()">删除</button>
+        </div>
+        <button class="btn gold" onclick="cvTplSave()">★ 当前设计存为模板</button>
       </div>
     </div>
   </div>
@@ -758,7 +872,7 @@ function ensureFace(fontFile){
   const fam='studio-'+fontFile.replace(/[^\w-]/g,'_');
   const face=new FontFace(fam,`url("/fonts/${encodeURIComponent(fontFile)}")`);
   // 字体是异步加载：加载完成后强制重绘预览，否则选了字体但预览仍是旧字形（用户反馈①）
-  face.load().then(f=>{document.fonts.add(f);syncPv();}).catch(()=>{});
+  face.load().then(f=>{document.fonts.add(f);syncPv();if(typeof cvDraw==='function')cvDraw();}).catch(()=>{});
 }
 const CJK_FALLBACK='"PingFang SC","Microsoft YaHei UI","Noto Sans SC",sans-serif';
 function faceFamily(fontFile){
@@ -1216,7 +1330,7 @@ async function loadFonts(){
     const order=['黑体标题','楷宋文艺','圆体可爱','手写书法','其他/自备'];
     const groups=order.filter(c=>byCat[c]).map(c=>[c,byCat[c]]).concat(
       Object.keys(byCat).filter(c=>!order.includes(c)).map(c=>[c,byCat[c]]));
-    fillGrouped('subFont',groups);fillGrouped('edFont',groups);
+    fillGrouped('subFont',groups);fillGrouped('edFont',groups);fillGrouped('cvFont',groups);
   }catch(e){}
 }
 async function installFont(key){ if(rootUnsaved())return; if(await postRun({action:'font',font_key:key}))pollAll(); }
@@ -1535,7 +1649,225 @@ async function delConfig(){
   window._presets=j.presets||{};loadConfigs();
 }
 
-renderMyColors();loadTpls();renderOverlays();loadState();loadComponents();loadSettings();loadFonts();loadClones();loadChunks();loadAssets();loadConfigs();pollAll();  /* 载入时同步任务状态：刷新不丢日志/时间轴/下载进度 */
+/* ══════════ 封面工厂：图层栈画布（参考 Fabric/Konva 的层模型，原生 Canvas 零依赖实现） ══════════ */
+const cover={w:1920,h:1080,layers:[],sel:-1,nextId:1};
+const cvEl=()=>$('cvCanvas');
+function cvLayer(){return cover.layers[cover.sel]||null;}
+
+function cvDraw(showSel=true){
+  const cv=cvEl();if(!cv)return;
+  if(cv.width!==cover.w)cv.width=cover.w; if(cv.height!==cover.h)cv.height=cover.h;
+  const ctx=cv.getContext('2d');ctx.clearRect(0,0,cover.w,cover.h);
+  cover.layers.forEach(L=>{
+    if(!L.visible)return;
+    if(L.type==='image'&&L.img){ // 底图 cover 裁切铺满
+      const s=Math.max(cover.w/L.img.width,cover.h/L.img.height);
+      const w=L.img.width*s,h=L.img.height*s;
+      ctx.drawImage(L.img,(cover.w-w)/2,(cover.h-h)/2,w,h);
+      L._bbox=[0,0,cover.w,cover.h];return;
+    }
+    if(L.type!=='text')return;
+    const lines=String(L.text||'').split('\n');
+    const lh=L.size*1.24, fam=faceFamily(L.font)||'';
+    ctx.font=`700 ${L.size}px ${fam}${CJK_FALLBACK}`;
+    ctx.textAlign=L.align;ctx.textBaseline='top';
+    const ax=L.x*cover.w, ay=L.y*cover.h;
+    let maxW=0;lines.forEach(t=>{maxW=Math.max(maxW,ctx.measureText(t).width);});
+    const x0=L.align==='left'?ax:(L.align==='right'?ax-maxW:ax-maxW/2);
+    L._bbox=[x0-8,ay-6,x0+maxW+8,ay+lines.length*lh+6];
+    if(L.boxed){ctx.fillStyle='rgba(0,0,0,.45)';
+      ctx.fillRect(L._bbox[0]-10,L._bbox[1]-4,(L._bbox[2]-L._bbox[0])+20,(L._bbox[3]-L._bbox[1])+8);}
+    lines.forEach((t,i)=>{
+      const y=ay+i*lh;
+      if(L.border>0){ctx.lineJoin='round';ctx.strokeStyle=L.borderColor;ctx.lineWidth=L.border*2;ctx.strokeText(t,ax,y);}
+      ctx.fillStyle=L.color;ctx.fillText(t,ax,y);
+    });
+  });
+  const S=cvLayer();
+  if(showSel&&S&&S.visible&&S._bbox){ // 选中层虚线框（导出时不画）
+    ctx.save();ctx.strokeStyle='#F5D68F';ctx.setLineDash([10,7]);ctx.lineWidth=3;
+    ctx.strokeRect(S._bbox[0],S._bbox[1],S._bbox[2]-S._bbox[0],S._bbox[3]-S._bbox[1]);ctx.restore();
+  }
+}
+/* —— 图层面板（PS 习惯：顶行=最上层；👁显隐 🔒锁定 拖拽排序 双击重命名） —— */
+function cvRenderLayers(){
+  const box=$('cvLayers');if(!box)return;
+  $('cvLayerN').textContent=cover.layers.length;
+  box.innerHTML='';
+  if(!cover.layers.length){box.innerHTML='<p class="empty">还没有图层 — 导入底图或添加文字层</p>';return;}
+  for(let li=cover.layers.length-1;li>=0;li--){
+    const L=cover.layers[li];
+    const row=document.createElement('div');
+    row.className='lrow'+(li===cover.sel?' sel':'');row.draggable=true;row.dataset.li=li;
+    row.innerHTML=`<span class="lbtn ${L.visible?'':'off'}" title="显示/隐藏">${L.visible?'👁':'—'}</span>
+      <span class="lbtn ${L.locked?'':'off'}" title="锁定后可选中查看，不能移动/删除">${L.locked?'🔒':'🔓'}</span>
+      <span class="lname" title="双击重命名">${esc(L.name)}</span>
+      <span class="ltype">${L.type==='image'?'图':'文'}</span>`;
+    const [eye,lock,name]=row.children;
+    eye.onclick=e=>{e.stopPropagation();L.visible=!L.visible;cvSync();};
+    lock.onclick=e=>{e.stopPropagation();L.locked=!L.locked;cvSync();};
+    name.ondblclick=e=>{e.stopPropagation();
+      name.innerHTML=`<input type="text" value="${esc(L.name)}">`;
+      const inp=name.firstChild;inp.focus();inp.select();
+      const commit=()=>{L.name=inp.value.trim()||L.name;cvRenderLayers();};
+      inp.onblur=commit;inp.onkeydown=ev=>{if(ev.key==='Enter')commit();if(ev.key==='Escape')cvRenderLayers();};};
+    row.onclick=()=>{if(cover.sel!==li){cover.sel=li;cvSync();}};  // 已选中则不重建面板（保证双击重命名能落在同一节点）
+    row.ondragstart=e=>{e.dataTransfer.setData('text/plain',String(li));};
+    row.ondragover=e=>{e.preventDefault();row.classList.add('dragover');};
+    row.ondragleave=()=>row.classList.remove('dragover');
+    row.ondrop=e=>{e.preventDefault();row.classList.remove('dragover');
+      const a=+e.dataTransfer.getData('text/plain'), b=+row.dataset.li;
+      if(isNaN(a)||a===b)return;
+      const sel=cvLayer();
+      const[m]=cover.layers.splice(a,1);cover.layers.splice(b,0,m); // 上拖落在目标上方、下拖落在下方（常规排序手感）
+      cover.sel=cover.layers.indexOf(sel);cvSync();};
+    box.appendChild(row);
+  }
+}
+function cvSync(){cvDraw();cvRenderLayers();cvSyncProps();}
+function cvSyncProps(){
+  const L=cvLayer(), isText=L&&L.type==='text';
+  $('cvProps').style.display=isText?'block':'none';
+  $('cvNoSel').style.display=isText?'none':'block';
+  if(!isText)return;
+  $('cvText').value=L.text;$('cvSize').value=L.size;$('cvSizeV').textContent=L.size;
+  $('cvFont').value=L.font||'';$('cvColorT').value=L.color;
+  try{$('cvColor').value=L.color;}catch(e){}
+  $('cvBorder').value=L.border;$('cvBorderV').textContent=L.border;$('cvBorderC').value=L.borderColor;
+  $('cvBoxed').checked=!!L.boxed;
+  $('cvX').value=Math.round(L.x*100);$('cvY').value=Math.round(L.y*100);
+  ['alL','alC','alR'].forEach((id,i)=>$(id).classList.toggle('gold',['left','center','right'][i]===L.align));
+}
+function cvProp(k,v){const L=cvLayer();if(!L||L.type!=='text')return;L[k]=v;cvSync();}
+function cvAddText(){
+  cover.layers.push({id:cover.nextId,name:'文字层 '+cover.nextId,type:'text',visible:true,locked:false,
+    text:'双击此层可重命名\n拖动定位',x:.5,y:.4,size:96,color:'#FFFFFF',font:'',align:'center',
+    border:6,borderColor:'#000000',boxed:false});
+  cover.sel=cover.layers.length-1;cover.nextId++;cvSync();
+}
+function cvImportImg(input){
+  const f=input.files[0];input.value='';if(!f)return;
+  const rd=new FileReader();
+  rd.onload=()=>{const img=new Image();
+    img.onload=()=>{
+      const bg=cover.layers.find(l=>l.type==='image');
+      if(bg){bg.img=img;bg.src=rd.result;}
+      else cover.layers.unshift({id:cover.nextId++,name:'背景图层',type:'image',visible:true,locked:false,img,src:rd.result,x:0,y:0});
+      cvSync();};
+    img.src=rd.result;};
+  rd.readAsDataURL(f);
+}
+/* —— 画布交互：点选（自顶向下命中）/拖动（锁定层可选不可动）/方向键/Delete —— */
+(function(){
+  let drag=null;
+  const pt=e=>{const cv=cvEl(),r=cv.getBoundingClientRect();
+    return [(e.clientX-r.left)*cover.w/r.width,(e.clientY-r.top)*cover.h/r.height];};
+  document.addEventListener('pointerdown',e=>{
+    const cv=cvEl();if(!cv||e.target!==cv)return;
+    const [x,y]=pt(e);let hit=-1;
+    for(let i=cover.layers.length-1;i>=0;i--){const L=cover.layers[i];
+      if(!L.visible||!L._bbox)continue;
+      const[b0,b1,b2,b3]=L._bbox;
+      if(x>=b0&&x<=b2&&y>=b1&&y<=b3){hit=i;break;}}
+    cover.sel=hit;cvSync();
+    const L=cvLayer();
+    if(L&&L.type==='text'&&!L.locked){drag={ox:x-L.x*cover.w,oy:y-L.y*cover.h};cv.setPointerCapture(e.pointerId);}
+  });
+  document.addEventListener('pointermove',e=>{
+    if(!drag)return;const L=cvLayer();if(!L)return;
+    const[x,y]=pt(e);
+    L.x=Math.min(1,Math.max(0,(x-drag.ox)/cover.w));
+    L.y=Math.min(1,Math.max(0,(y-drag.oy)/cover.h));
+    cvDraw();$('cvX').value=Math.round(L.x*100);$('cvY').value=Math.round(L.y*100);
+  });
+  document.addEventListener('pointerup',()=>{drag=null;});
+  document.addEventListener('keydown',e=>{
+    if(!document.querySelector('#p6.on'))return;
+    const t=document.activeElement&&document.activeElement.tagName;
+    if(t==='INPUT'||t==='TEXTAREA'||t==='SELECT')return;
+    const L=cvLayer();if(!L)return;
+    if(e.key==='Delete'||e.key==='Backspace'){
+      if(L.locked)return; // 与 PS 一致：锁定层不可删
+      cover.layers.splice(cover.sel,1);cover.sel=-1;cvSync();e.preventDefault();return;}
+    const step=(e.shiftKey?10:1);
+    const mv={ArrowLeft:[-step,0],ArrowRight:[step,0],ArrowUp:[0,-step],ArrowDown:[0,step]}[e.key];
+    if(mv&&L.type==='text'&&!L.locked){L.x+= mv[0]/cover.w;L.y+=mv[1]/cover.h;
+      L.x=Math.min(1,Math.max(0,L.x));L.y=Math.min(1,Math.max(0,L.y));cvDraw();cvSyncProps();e.preventDefault();}
+  });
+})();
+/* —— 九宫格快捷定位（列同时决定对齐方向，符合直觉） —— */
+function cvInitGrid9(){
+  const box=$('cvGrid9');if(!box)return;
+  const P=[['↖',.06,.06,'left'],['↑',.5,.06,'center'],['↗',.94,.06,'right'],
+           ['←',.06,.5,'left'],['●',.5,.5,'center'],['→',.94,.5,'right'],
+           ['↙',.06,.9,'left'],['↓',.5,.9,'center'],['↘',.94,.9,'right']];
+  box.innerHTML='';
+  P.forEach(([label,x,y,al])=>{
+    const b=document.createElement('button');b.className='btn';b.textContent=label;
+    b.onclick=()=>{const L=cvLayer();if(!L||L.type!=='text'||L.locked)return;
+      L.x=x;L.y=y;L.align=al;cvSync();};
+    box.appendChild(b);});
+}
+/* —— 画布尺寸/导出 —— */
+function cvApplyPreset(){
+  const v=$('cvPreset').value;if(v==='custom')return;
+  const[w,h]=v.split('x').map(Number);$('cvW').value=w;$('cvH').value=h;cvSetSize();
+}
+function cvSetSize(){
+  cover.w=Math.max(16,Math.min(8192,+$('cvW').value||1920));
+  cover.h=Math.max(16,Math.min(8192,+$('cvH').value||1080));
+  cvDraw();
+}
+function cvExport(){
+  if(!cover.layers.length){alert('先导入底图或添加文字层。');return;}
+  const fmt=$('cvFmt').value, cv=cvEl();
+  cvDraw(false); // 不带选中虚线框
+  let url;
+  if(fmt==='jpg'){ // JPG 无透明：无底图时垫白
+    const t=document.createElement('canvas');t.width=cover.w;t.height=cover.h;
+    const c=t.getContext('2d');c.fillStyle='#FFFFFF';c.fillRect(0,0,cover.w,cover.h);c.drawImage(cv,0,0);
+    url=t.toDataURL('image/jpeg',.92);
+  }else url=cv.toDataURL('image/png');
+  const a=document.createElement('a');a.href=url;a.download=`封面_${cover.w}x${cover.h}.${fmt}`;a.click();
+  cvDraw(); // 恢复选中框
+}
+/* —— 封面模板：尺寸+全部文字层（底图不入模板，换图即复刻排版） —— */
+function cvTpls(){try{return JSON.parse(localStorage.getItem('dubCoverTpl')||'{}');}catch(e){return {};}}
+function cvTplStore(o){localStorage.setItem('dubCoverTpl',JSON.stringify(o));}
+function cvTplList(){
+  const names=Object.keys(cvTpls());
+  fill('cvTplSel',names.length?names.map(n=>[n,n]):[['','（暂无模板）']]);
+}
+function cvTplSave(){
+  const texts=cover.layers.filter(l=>l.type==='text');
+  if(!texts.length){alert('还没有文字层，先设计再存模板。');return;}
+  const name=prompt('模板名称（例：主封面-黄字大标题）');if(!name||!name.trim())return;
+  const t=cvTpls();
+  t[name.trim()]={w:cover.w,h:cover.h,
+    layers:texts.map(l=>({name:l.name,visible:l.visible,locked:l.locked,text:l.text,x:l.x,y:l.y,
+      size:l.size,color:l.color,font:l.font,align:l.align,border:l.border,borderColor:l.borderColor,boxed:l.boxed}))};
+  cvTplStore(t);cvTplList();$('cvTplSel').value=name.trim();
+}
+function cvTplLoad(){
+  const s=cvTpls()[$('cvTplSel').value];if(!s){alert('请选择一个模板');return;}
+  $('cvW').value=s.w;$('cvH').value=s.h;cvSetSize();
+  cover.layers=cover.layers.filter(l=>l.type==='image'); // 保留当前底图，替换全部文字层
+  s.layers.forEach(l=>cover.layers.push({id:cover.nextId++,type:'text',...l}));
+  cover.sel=cover.layers.length-1;cvSync();
+}
+function cvTplRename(){
+  const old=$('cvTplSel').value,t=cvTpls();if(!t[old]){alert('请选择一个模板');return;}
+  const name=prompt('新名称',old);if(!name||!name.trim()||name.trim()===old)return;
+  t[name.trim()]=t[old];delete t[old];cvTplStore(t);cvTplList();$('cvTplSel').value=name.trim();
+}
+function cvTplDel(){
+  const n=$('cvTplSel').value,t=cvTpls();if(!t[n]){alert('请选择一个模板');return;}
+  if(!confirm('删除模板「'+n+'」？'))return;
+  delete t[n];cvTplStore(t);cvTplList();
+}
+function cvInit(){cvInitGrid9();cvTplList();cvSync();}
+
+renderMyColors();loadTpls();renderOverlays();loadState();loadComponents();loadSettings();loadFonts();loadClones();loadChunks();loadAssets();loadConfigs();cvInit();pollAll();  /* 载入时同步任务状态：刷新不丢日志/时间轴/下载进度 */
 </script>
 </body>
 </html>
