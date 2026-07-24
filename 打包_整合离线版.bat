@@ -19,6 +19,12 @@ for /f "usebackq delims=" %%i in (`python -c "import sys;print(sys.base_prefix)"
 if not defined PYHOME ( echo [错误] 未找到 python，请确认已装并在 PATH。& pause & exit /b 1 )
 echo [信息] 打包所用 Python：%PYHOME%
 
+rem [0.5] 打包前自检：用「将被拷进包的这个 Python」实测能否加载 dots.tts 运行时。
+rem 目的：避免把装错的环境（最常见 venv：依赖在 venv 里、base 里没有）打成一个用不了的大包。
+echo [自检] 校验打包 Python 是否具备 dots.tts 运行时（transformers==4.57.0 + torch + dots_tts）...
+"%PYHOME%\python.exe" -c "import transformers as t, torch, dots_tts.runtime; assert t.__version__=='4.57.0', t.__version__; print('[自检通过] transformers', t.__version__, 'torch', torch.__version__, 'cuda=', torch.cuda.is_available())"
+if errorlevel 1 goto :PREFAIL
+
 rem 读版本号用于命名
 set "VER=0.0.0"
 for /f "usebackq delims=" %%v in (`python -c "import sys;sys.path.insert(0,'source');from dub_align_studio.version import APP_VERSION;print(APP_VERSION)"`) do set "VER=%%v"
@@ -85,3 +91,17 @@ python -c "import shutil,os; p=shutil.make_archive(os.path.join('发布包','水
 echo.
 echo 全部完成。
 pause
+exit /b 0
+
+:PREFAIL
+echo.
+echo [自检失败] 将被打进包的 Python 是：%PYHOME%
+echo   它无法加载 dots.tts 运行时，或 transformers 不是 4.57.0 —— 打出来的包在目标机上照样报 Qwen2。
+echo   最常见原因：依赖装进了 venv/conda，而本脚本打包的是它的 base Python（base 里没有这些包）。
+echo   解决其一：
+echo     - 用「非 venv 的系统 Python」重新 pip 安装依赖后再运行本脚本；
+echo     - 或把 transformers==4.57.0 + CUDA 版 torch + dots.tts 直接装进 %PYHOME%。
+echo   校验命令（能打印[自检通过]即可打包）：
+echo     "%PYHOME%\python.exe" -c "import transformers,torch,dots_tts.runtime;print(transformers.__version__)"
+pause
+exit /b 1
