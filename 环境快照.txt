@@ -1,4 +1,4 @@
-水星配音对齐工作室 · 环境快照  2026-07-24 22:24:53
+水星配音对齐工作室 · 环境快照  2026-07-24 23:21:41
 
 ════════ Python 环境 ════════
   python: D:\Python\Python311\python.exe
@@ -23,15 +23,15 @@
 
 ════════ 仓库状态 ════════
   分支: release/v0.5-download-fix
-  HEAD: 8a652055 本次操作日志
+  HEAD: 18760eb8 环境快照：本机目录与环境状态
   近5次提交:
+    18760eb8 环境快照：本机目录与环境状态
     8a652055 本次操作日志
     19431505 新增「本次操作.bat」协作通道：远程下发本地操作，日志自动回传
     25b5b3b0 torch 源换 cu126 + 版本下限护栏 + torchvision 失配清理 (v0.7.24)
     abc3d3b0 环境快照：本机目录与环境状态
-    bda5bec3 打包 exe 桥接系统 Python + 环境快照工具 + 导出按钮溢出修复 (v0.7.23)
   未提交改动: 
-    ?? "source/dub_align_studio/\345\220\257\345\212\250\351\224\231\350\257\257.log"
+    D "\347\216\257\345\242\203\345\277\253\347\205\247.txt"
 
 ════════ 仓库根目录（深度1） ════════
   D:\GitHub\By\AU&PR\AU-PR
@@ -46,10 +46,9 @@
      打包说明.md  (0.0MB, 07-24 21:27)
      本次操作.bat  (0.0MB, 07-24 22:13)
      本次操作日志.txt  (0.0MB, 07-24 22:24)
-     水星配音对齐工作室.spec  (0.0MB, 07-24 21:58)
+     水星配音对齐工作室.spec  (0.0MB, 07-24 22:28)
      环境快照.bat  (0.0MB, 07-24 21:57)
      环境快照.py  (0.0MB, 07-24 21:57)
-     环境快照.txt  (0.0MB, 07-24 21:58)
 
 ════════ 父目录（检查散落的旧脚本副本） ════════
   D:\GitHub\By\AU&PR
@@ -61,7 +60,7 @@
   D:\GitHub\By\AU&PR\AU-PR\dist
   📁 水星配音对齐工作室/
     📁 _internal/
-       水星配音对齐工作室.exe  (111.2MB, 07-24 22:06)
+       水星配音对齐工作室.exe  (115.9MB, 07-24 22:34)
 
 ════════ 发布包 ════════
   （不存在）D:\GitHub\By\AU&PR\AU-PR\发布包
@@ -74,20 +73,33 @@
   D:\GitHub\By\AU&PR\水星配音数据
   📁 克隆音频/
     📁 试听缓存/
+         书单女生温情_dots_local_b9de669177.json  (0.0MB, 07-24 22:38)
+         书单女生温情_dots_local_b9de669177.wav  (0.4MB, 07-24 22:38)
          测试2_dots_local_2e6296564a.json  (0.0MB, 07-24 12:09)
          测试2_dots_local_2e6296564a.wav  (0.4MB, 07-24 12:09)
          测试5_dots_local_36c1aa8fc2.json  (0.0MB, 07-24 16:48)
          测试5_dots_local_36c1aa8fc2.wav  (0.4MB, 07-24 16:48)
          测试_dots_local_09438c7803.json  (0.0MB, 07-24 12:06)
          测试_dots_local_09438c7803.wav  (0.4MB, 07-24 12:06)
-       20260724_171706_dots_local_测试5.json  (0.0MB, 07-24 17:17)
-       20260724_171706_dots_local_测试5.wav  (12.9MB, 07-24 17:17)
+       20260724_230954_dots_local_书单女生温情.json  (0.0MB, 07-24 23:09)
+       20260724_230954_dots_local_书单女生温情.wav  (13.1MB, 07-24 23:09)
   📁 字体/
+       CactusClassicalSerif-Regular.ttf  (27.2MB, 07-24 22:39)
+       Huninn-Regular.ttf  (4.5MB, 07-24 22:39)
+       LXGWWenKai-Light.ttf  (27.0MB, 07-24 22:40)
+       LXGWWenKai-Medium.ttf  (17.9MB, 07-24 22:39)
+       LXGWWenKai-Regular.ttf  (18.4MB, 07-24 22:39)
+       LiuJianMaoCao-Regular.ttf  (4.7MB, 07-24 22:39)
+       LongCang-Regular.ttf  (4.9MB, 07-24 22:39)
+       MaShanZheng-Regular.ttf  (5.6MB, 07-24 22:39)
        NotoSansSC-Bold.otf  (8.1MB, 07-24 02:08)
        NotoSansSC-Regular.ttf  (7.9MB, 07-24 02:08)
+       NotoSerifSC-Regular.otf  (11.1MB, 07-24 22:39)
        SmileySans-Oblique.ttf  (2.5MB, 07-23 19:39)
+       ZCOOLKuaiLe-Regular.ttf  (1.4MB, 07-24 22:39)
        ZCOOLQingKeHuangYou-Regular.ttf  (7.9MB, 07-24 02:08)
        ZCOOLXiaoWei-Regular.ttf  (6.0MB, 07-24 02:08)
+       ZhiMangXing-Regular.ttf  (3.9MB, 07-24 22:39)
   📁 组件/
     📁 dots.tts/
       📁 dots.tts-soar/
@@ -165,8 +177,8 @@
        Anup Kushwaha-Helping Tech.mp3  (7.8MB, 07-24 02:02)
        悬疑-紧张-电子.m4a  (1.2MB, 07-24 02:05)
   📁 音色库/
-    📁 测试5/
-         参考音频.mp3  (0.5MB, 07-24 14:36)
-         转写.txt  (0.0MB, 07-24 14:36)
-         音色.json  (0.0MB, 07-24 14:36)
-     作品参数预设.json  (0.0MB, 07-24 02:07)
+    📁 书单女生温情/
+         参考音频.mp3  (0.5MB, 07-24 22:36)
+         转写.txt  (0.0MB, 07-24 22:36)
+         音色.json  (0.0MB, 07-24 22:36)
+     作品参数预设.json  (0.0MB, 07-24 22:41)
