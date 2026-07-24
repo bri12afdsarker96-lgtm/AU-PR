@@ -356,6 +356,16 @@ footer b{color:var(--muted);font-weight:600}
         </div>
       </div>
       <div class="console" id="mainlog"><span class="dim">—— 就绪 · 运行日志将在这里滚动 ——</span></div>
+
+      <!-- 配音分段：逐段试听 + 单段重配（避免整篇重来的死循环，用户反馈②） -->
+      <div id="chunkPanel" style="display:none;margin-top:16px">
+        <div class="row" style="justify-content:space-between;margin-bottom:8px">
+          <span class="f" style="margin:0;color:var(--gold)">🎬 配音分段（逐段试听 · 某段不满意只重配这一段）</span>
+          <button class="btn" style="padding:6px 12px;flex:none" onclick="loadChunks()">↻ 刷新</button>
+        </div>
+        <p class="mini" style="color:var(--faint);margin:-2px 0 8px">每段用同一音色参考克隆；重配某段后自动重拼整条 master，其余段不动、不用整篇重来。</p>
+        <div id="chunkList" class="vlist"></div>
+      </div>
     </div>
   </div>
 </section>
@@ -938,7 +948,7 @@ function onMainDone(main){
       $('filmBtn').style.display='';
     }
   }
-  if(['dub','run_all'].includes(main.action))loadClones();
+  if(['dub','run_all','rechunk'].includes(main.action)){loadClones();loadChunks();}
   // #7 渲染/成片完成后，把逐行字幕转成可二次编辑的文本框（文字/颜色/位置可改，再渲染重烧）
   if(['render','run_all'].includes(main.action)&&$('burn').checked&&main.timings&&main.timings.length){
     subtitlesToOverlays(main.timings);
@@ -1009,6 +1019,34 @@ function playUrl(url,btn){
   _player=new Audio(url);_playingBtn=btn;btn.textContent='⏸ 暂停';
   _player.onended=()=>{if(_playingBtn===btn){btn.textContent='▶ 试听';_playingBtn=null;}};
   _player.play().catch(e=>{btn.textContent='▶ 试听';_playingBtn=null;alert('播放失败：'+e.message);});
+}
+// 配音分段：逐段试听 + 单段重配（用户反馈②，避免整篇重来死循环）
+async function loadChunks(){
+  const out=$('outdir').value.trim();const panel=$('chunkPanel');if(!panel)return;
+  if(!out){panel.style.display='none';return;}
+  try{
+    const s=await (await fetch('/api/chunks?output_dir='+encodeURIComponent(out))).json();
+    const box=$('chunkList');
+    if(!s.chunks||!s.chunks.length){panel.style.display='none';return;}
+    panel.style.display='block';box.innerHTML='';
+    s.chunks.forEach(c=>{
+      const el=document.createElement('div');el.className='vcard';
+      el.innerHTML=`<b style="flex:none;color:var(--gold)">段${c.index}</b>
+        <div style="flex:1 1 120px;min-width:0"><small style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block">${esc(c.text.slice(0,30))}</small>
+          <small style="color:var(--faint)">${(+c.seconds||0).toFixed(1)}s</small></div>
+        <button class="btn" style="padding:7px 11px;flex:none" ${c.url?'':'disabled'}
+          onclick="playUrl('${c.url}',this)">▶ 试听</button>
+        <button class="btn line" style="padding:7px 11px;flex:none" onclick="rechunkOne(${c.index})">🔄 重配此段</button>`;
+      box.appendChild(el);
+    });
+  }catch(e){panel.style.display='none';}
+}
+async function rechunkOne(index){
+  if(!confirm('只重新配音第 '+index+' 段？（用当前引擎/音色/参数重合成这一段并重拼 master，其余段不动）'))return;
+  const payload={action:'rechunk',chunk_index:index,text:$('text').value,engine:$('engine').value,
+    voice_id:$('voice').value,output_dir:$('outdir').value.trim(),
+    speed:+$('speed').value,seed:+$('seed').value,max_pause:+$('pause').value};
+  if(await postRun(payload))pollAll();
 }
 async function loadClones(){
   const box=$('clList');if(!box)return;
@@ -1481,7 +1519,7 @@ async function delConfig(){
   window._presets=j.presets||{};loadConfigs();
 }
 
-renderMyColors();loadTpls();renderOverlays();loadState();loadComponents();loadSettings();loadFonts();loadClones();loadAssets();loadConfigs();pollAll();  /* 载入时同步任务状态：刷新不丢日志/时间轴/下载进度 */
+renderMyColors();loadTpls();renderOverlays();loadState();loadComponents();loadSettings();loadFonts();loadClones();loadChunks();loadAssets();loadConfigs();pollAll();  /* 载入时同步任务状态：刷新不丢日志/时间轴/下载进度 */
 </script>
 </body>
 </html>

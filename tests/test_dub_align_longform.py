@@ -63,6 +63,48 @@ class ConcatSynthTests(unittest.TestCase):
             shutil.rmtree(work, ignore_errors=True)
 
 
+class ManifestRedubTests(unittest.TestCase):
+    def test_manifest_written_and_redub_single_segment(self):
+        from dub_align_studio.engines.longform import read_manifest, redub_chunk, chunks_dir_for
+        work = Path(tempfile.mkdtemp(prefix="man_"))
+        try:
+            text = "\n".join(f"第{i}句台词内容。" for i in range(1, 6))  # 5 行
+            master = synthesize_long(MockEngine(), text, None, work / "master.wav",
+                                     SynthesisOptions(), max_chars=8)
+            man = read_manifest(master.path)
+            self.assertIsNotNone(man)
+            self.assertEqual(len(man["chunks"]), 5)
+            self.assertTrue(all("text" in c and "file" in c for c in man["chunks"]))
+            self.assertTrue((chunks_dir_for(master.path) / "分段清单.json").exists())
+            frames_before = wave.open(str(master.path), "rb").getnframes()
+            redub_chunk(MockEngine(), master.path, 3, None, SynthesisOptions())
+            frames_after = wave.open(str(master.path), "rb").getnframes()
+            self.assertEqual(frames_before, frames_after)  # 单段重配后总时长不变
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+    def test_redub_bad_index_raises(self):
+        from dub_align_studio.engines.longform import redub_chunk
+        work = Path(tempfile.mkdtemp(prefix="man2_"))
+        try:
+            master = synthesize_long(MockEngine(), "\n".join(["甲。", "乙。", "丙。"]),
+                                     None, work / "m.wav", SynthesisOptions(), max_chars=2)
+            with self.assertRaises(ValueError):
+                redub_chunk(MockEngine(), master.path, 99, None, SynthesisOptions())
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+
+class MockTimbreTests(unittest.TestCase):
+    def test_params_change_mock_timbre(self):
+        # 不同 seed/步数/引导 → 不同基频倍率（无 GPU 也能听出参数生效）
+        s1 = MockEngine._timbre_shift(None, SynthesisOptions(seed=1))
+        s2 = MockEngine._timbre_shift(None, SynthesisOptions(seed=2))
+        s3 = MockEngine._timbre_shift(None, SynthesisOptions(num_steps=30))
+        self.assertEqual(len({s1, s2, s3}), 3)
+        self.assertTrue(all(0.6 <= x <= 1.7 for x in (s1, s2, s3)))
+
+
 class EngineLimitTests(unittest.TestCase):
     def test_engines_declare_max_chars(self):
         from dub_align_studio.engines import DotsLocalEngine, FishLocalEngine

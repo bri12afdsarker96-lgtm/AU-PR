@@ -151,14 +151,20 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
         output_dir = Path(str(payload.get("output_dir") or "")) if payload.get("output_dir") else None
         engine_key = str(payload.get("engine") or "mock")
         aligner_key = str(payload.get("aligner") or "均分兜底")
-        options = SynthesisOptions(
-            speed=float(payload.get("speed") or 1.0),
-            max_pause_seconds=float(payload.get("max_pause") or 0.0),
-            seed=int(payload.get("seed") or 42),
-        )
         voice = None
+        vparams: dict = {}
         if payload.get("voice_id"):
-            voice = voice_library.get_voice(_vroot(), str(payload["voice_id"])).to_ref()
+            entry = voice_library.get_voice(_vroot(), str(payload["voice_id"]))
+            voice = entry.to_ref()
+            vparams = entry.params or {}
+        # 合成参数：所选音色设计的 num_steps/guidance 生效于成片；速度/种子/停顿以界面为准（界面有滑杆）
+        options = SynthesisOptions(
+            num_steps=int(payload.get("num_steps") or vparams.get("num_steps") or 10),
+            guidance_scale=float(payload.get("guidance_scale") or vparams.get("guidance_scale") or 1.2),
+            speed=float(payload.get("speed") or vparams.get("speed") or 1.0),
+            max_pause_seconds=float(payload.get("max_pause") or 0.0),
+            seed=int(payload.get("seed") or vparams.get("seed") or 42),
+        )
         style = None
         if payload.get("burn_subtitles", True):
             style = SubtitleStyle(
@@ -175,6 +181,14 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
         from .audio_mix import mix_from_payload
 
         audio_mix = mix_from_payload(payload.get("audio") or {}, _resolve_asset)
+
+        # 友好校验：目录留空时给明确提示，避免 Path(None) 抛 TypeError（用户反馈①）
+        if action in ("run_all", "dub", "timing", "render", "capcut", "rechunk") and output_dir is None:
+            raise ValueError("请先在下方选择「输出目录」（配音与成片都写到这里）。")
+        if action in ("run_all", "render") and not str(payload.get("shots_dir") or "").strip():
+            raise ValueError("请先选择「分镜目录」（放 1.mp4、2.mp4 … 的文件夹）。")
+        if action in ("run_all", "dub", "timing") and not text.strip():
+            raise ValueError("请先填写或导入「待合成文案」。")
 
         if action == "run_all":
             from integrated_workbench.semantic_match import parse_script
@@ -224,6 +238,15 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
         elif action == "dub":
             master = pipeline.step_dub(text, engine_key, output_dir, voice, options, log=log)
             log(f"✅ master：{master.path.name}（{master.seconds:.2f}s，引擎 {master.engine}）")
+            with JOB.lock:
+                JOB.ok = True
+        elif action == "rechunk":
+            # 只重配某一段（避免整篇重来的死循环）：重合成该段 → 重拼 master
+            from .engines.longform import redub_chunk
+
+            engine = pipeline.make_engine(engine_key)
+            index = int(payload.get("chunk_index") or 0)
+            redub_chunk(engine, output_dir / pipeline.MASTER_NAME, index, voice, options, log=log)
             with JOB.lock:
                 JOB.ok = True
         elif action == "timing":
@@ -410,6 +433,10 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if route == "/api/clones":
             self._json({"clones": _clones_payload()})
+            return
+        if route == "/api/chunks":
+            query = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+            self._json(_chunks_payload(str(query.get("output_dir") or "")))
             return
         if route == "/api/assets":
             self._json({"assets": _assets_payload(),
@@ -826,6 +853,27 @@ def _assets_payload() -> list[dict]:
                           "url": "/api/asset?file=" + quote(file.name),
                           "size_mb": round(file.stat().st_size / (1024 * 1024), 2)})
     return items
+
+
+def _chunks_payload(output_dir: str) -> dict:
+    """成片的配音分段清单（逐段试听/重配用）。每段给 text/seconds/音频 url。"""
+    if not output_dir.strip():
+        return {"chunks": []}
+    _allow_media_root(output_dir)  # 放行该输出目录，供 /api/audio 播放分段
+    master = Path(output_dir) / pipeline.MASTER_NAME
+    from .engines.longform import chunks_dir_for, read_manifest
+
+    manifest = read_manifest(master)
+    if not manifest:
+        return {"chunks": []}
+    cdir = chunks_dir_for(master)
+    out = []
+    for c in manifest.get("chunks", []):
+        fp = cdir / str(c.get("file") or "")
+        out.append({"index": c.get("index"), "text": c.get("text", ""),
+                    "seconds": c.get("seconds", 0),
+                    "url": "/api/audio?path=" + quote(str(fp)) if fp.is_file() else ""})
+    return {"chunks": out, "master_url": "/api/audio?path=" + quote(str(master)) if master.is_file() else ""}
 
 
 def _clones_payload() -> list[dict]:

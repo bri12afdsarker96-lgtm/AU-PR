@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import wave
 from pathlib import Path
@@ -88,13 +89,17 @@ def synthesize_long(engine, text: str, voice: VoiceRef | None, output: Path,
     tmp_dir = output.parent / f"{output.stem}_chunks"
     tmp_dir.mkdir(parents=True, exist_ok=True)
     parts: list[Path] = []
+    manifest_chunks: list[dict] = []
     for i, chunk in enumerate(chunks, start=1):
         part = tmp_dir / f"chunk_{i:03d}.wav"
         engine.synthesize_full(chunk, voice, part, options)
         parts.append(part)
+        manifest_chunks.append({"index": i, "text": chunk, "file": part.name,
+                                "seconds": round(wav_seconds(part), 3)})
         if log:
             log(f"  段 {i}/{len(chunks)} 完成（{len(chunk)} 字）")
     _concat_wavs(parts, output)
+    _write_manifest(tmp_dir, output, manifest_chunks)
 
     seconds = wav_seconds(output)
     with wave.open(str(parts[0]), "rb") as first:
@@ -111,6 +116,56 @@ def synthesize_long(engine, text: str, voice: VoiceRef | None, output: Path,
     )
     write_master_metadata(master)
     return master
+
+
+MANIFEST_NAME = "分段清单.json"
+
+
+def chunks_dir_for(master: Path) -> Path:
+    master = Path(master)
+    return master.parent / f"{master.stem}_chunks"
+
+
+def _write_manifest(tmp_dir: Path, master: Path, chunks: list[dict]) -> None:
+    (tmp_dir / MANIFEST_NAME).write_text(
+        json.dumps({"master": str(master), "chunks": chunks}, ensure_ascii=False, indent=2),
+        encoding="utf-8")
+
+
+def read_manifest(master: Path) -> dict | None:
+    """读回分段清单（供 UI 逐段试听/重配）；无分段（短文单次合成）时返回 None。"""
+    path = chunks_dir_for(master) / MANIFEST_NAME
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def redub_chunk(engine, master: Path, index: int, voice: VoiceRef | None,
+                options: SynthesisOptions | None, log=None) -> dict:
+    """只重配某一段：重合成该段 → 重拼整条 master → 更新清单（避免整篇重来的死循环）。"""
+    master = Path(master)
+    tmp_dir = chunks_dir_for(master)
+    manifest = read_manifest(master)
+    if not manifest:
+        raise ValueError("该成片没有分段清单（可能是短文单次合成，无需分段重配）。")
+    chunks = manifest["chunks"]
+    target = next((c for c in chunks if int(c["index"]) == int(index)), None)
+    if target is None:
+        raise ValueError(f"段号 {index} 不存在（共 {len(chunks)} 段）。")
+    part = tmp_dir / str(target["file"])
+    if log:
+        log(f"重配第 {index}/{len(chunks)} 段（{len(target['text'])} 字）…同一音色参考，其余段不动。")
+    engine.synthesize_full(str(target["text"]), voice, part, options)
+    target["seconds"] = round(wav_seconds(part), 3)
+    parts = [tmp_dir / str(c["file"]) for c in sorted(chunks, key=lambda x: int(x["index"]))]
+    _concat_wavs(parts, master)
+    _write_manifest(tmp_dir, master, chunks)
+    if log:
+        log(f"✅ 第 {index} 段已重配并重拼 master（{wav_seconds(master):.2f}s）。")
+    return manifest
 
 
 def _concat_wavs(parts: list[Path], output: Path) -> None:

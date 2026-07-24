@@ -53,7 +53,9 @@ class MockEngine:
 
         output = Path(output)
         output.parent.mkdir(parents=True, exist_ok=True)
-        self._write_wav(output, durations)
+        # 让 mock 预览随「参数 + 音色」变化：不同 seed/步数/引导/语速/音色 → 不同基频，
+        # 无 GPU 也能听出参数与音色是否生效（真引擎则由引擎自身按参数出声）。
+        self._write_wav(output, durations, self._timbre_shift(voice, options))
 
         master = MasterAudio(
             path=output,
@@ -68,13 +70,24 @@ class MockEngine:
         write_master_metadata(master)
         return master
 
-    def _write_wav(self, path: Path, durations: list[float]) -> None:
+    @staticmethod
+    def _timbre_shift(voice: VoiceRef | None, options: SynthesisOptions | None) -> float:
+        """由 音色 + 合成参数 派生一个基频倍率（0.6~1.7），使不同设定的 mock 预览可辨。"""
+        import hashlib
+
+        vid = voice.voice_id if voice else "默认声线"
+        opt = options.to_payload() if options else {}
+        key = f"{vid}|{opt.get('seed')}|{opt.get('num_steps')}|{opt.get('guidance_scale')}|{opt.get('speed')}"
+        h = int(hashlib.md5(key.encode("utf-8")).hexdigest()[:6], 16)  # noqa: S324 仅做可辨性映射
+        return 0.6 + (h % 1100) / 1000.0  # 0.60 ~ 1.70
+
+    def _write_wav(self, path: Path, durations: list[float], timbre: float = 1.0) -> None:
         with wave.open(str(path), "wb") as handle:
             handle.setnchannels(1)
             handle.setsampwidth(2)
             handle.setframerate(self.sample_rate)
             for index, seconds in enumerate(durations):
-                freq = _BASE_FREQ * (1.0 + 0.25 * index)
+                freq = _BASE_FREQ * timbre * (1.0 + 0.25 * index)
                 count = round(max(0.0, float(seconds)) * self.sample_rate)
                 samples = bytearray()
                 for n in range(count):
