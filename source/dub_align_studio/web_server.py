@@ -183,9 +183,9 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
         audio_mix = mix_from_payload(payload.get("audio") or {}, _resolve_asset)
 
         # 友好校验：目录留空时给明确提示，避免 Path(None) 抛 TypeError（用户反馈①）
-        if action in ("run_all", "dub", "timing", "render", "capcut", "rechunk") and output_dir is None:
+        if action in ("run_all", "dub", "timing", "render", "capcut", "rechunk", "finalize") and output_dir is None:
             raise ValueError("请先在下方选择「输出目录」（配音与成片都写到这里）。")
-        if action in ("run_all", "render") and not str(payload.get("shots_dir") or "").strip():
+        if action in ("run_all", "render", "finalize") and not str(payload.get("shots_dir") or "").strip():
             raise ValueError("请先选择「分镜目录」（放 1.mp4、2.mp4 … 的文件夹）。")
         if action in ("run_all", "dub", "timing") and not text.strip():
             raise ValueError("请先填写或导入「待合成文案」。")
@@ -283,6 +283,30 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             log(("✅ 成片完成：" if result.ok else "❌ 收口断言未通过：") + str(result.output_path))
             with JOB.lock:
                 JOB.result, JOB.ok = result, result.ok
+        elif action == "finalize":
+            # 文本框逐行校对后：用校对文字重烧字幕（overlays）+ 导出剪映草稿，一步到位（导出统一在文本框页触发）
+            master_path = output_dir / pipeline.MASTER_NAME
+            timings = JOB.timings or pipeline.load_timings(output_dir)
+            videos = pipeline.list_shot_videos(Path(str(payload.get("shots_dir") or "")))[: len(timings)]
+
+            def _fin_progress(done: int, total: int) -> None:
+                JOB.set_progress(f"重烧字幕 · 第 {done}/{total} 段", 8 + int(done / max(1, total) * 80))
+
+            JOB.set_progress("① 重烧字幕 · 逐行收口", 8)
+            log("① 用文本框校对后的逐行文字重烧字幕成片…")
+            result = pipeline.step_render(master_path, timings, videos, output_dir, style,
+                                          config=config, overlays=overlays, audio_mix=audio_mix,
+                                          progress=_fin_progress)
+            log(("  ✅ 成片：" if result.ok else "  ❌ 收口未过：") + str(result.output_path))
+            JOB.set_progress("② 导出剪映草稿", 92)
+            log("② 导出剪映草稿…")
+            package = pipeline.step_capcut(timings, result, master_path, output_dir,
+                                           style or SubtitleStyle(), canvas=canvas)
+            log(f"  ✅ {package.message}")
+            log(f"     交接包：{package.package_dir}")
+            JOB.set_progress("完成", 100)
+            with JOB.lock:
+                JOB.timings, JOB.result, JOB.ok = timings, result, result.ok
         elif action == "capcut":
             timings = JOB.timings or pipeline.load_timings(output_dir)
             # JOB.result 为 None（软件重启后）时由 step_capcut 从磁盘读回分镜段

@@ -113,7 +113,8 @@ class RunAllTests(unittest.TestCase):
         self.assertTrue((out / "配音计时表.csv").exists())
         self.assertTrue(run.result.output_path.exists())
         self.assertTrue(run.capcut and run.capcut.package_dir.exists())
-        self.assertTrue(any("均分兜底" in note for note in run.notes))
+        # 逐行分段成片：每行时长按该行音频精确对齐，优先于「均分兜底」尺子
+        self.assertTrue(any("逐行音频精确对齐" in note for note in run.notes), run.notes)
         # 分步恢复：load_timings 能读回
         loaded = pipeline.load_timings(out)
         self.assertEqual(len(loaded), 2)

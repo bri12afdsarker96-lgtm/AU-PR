@@ -121,7 +121,8 @@ class UiContractV10Tests(unittest.TestCase):
                   'id="subColor"', 'id="subSwatches"', 'id="subBorder"',      # #4 字幕颜色/描边
                   "setSfxVol", "mixGains",                                    # #2/#3 音效音量·独立增益
                   "subtitlesToOverlays", "_sub",                             # #7 字幕转文本框
-                  "④ 剪映导出", "最后一步"):                                  # #8 剪映位置
+                  "去文本框校对/导出", "最后一步",                            # #8 剪映位置（导出移至文本框页）
+                  "run('finalize')"):                                        # 文本框页校对后重烧+导出
             self.assertIn(m, html, m)
 
 
