@@ -110,9 +110,11 @@ class DotsAdapterCallSignatureTests(unittest.TestCase):
         # from_pretrained 传了检查点 + 精度
         self.assertEqual(_FakeRuntime.last_from_pretrained["model"], "rednote-hilab/dots.tts-soar")
         self.assertEqual(_FakeRuntime.last_from_pretrained["precision"], "bfloat16")
-        # generate 用的是上游参数名
+        # generate 用的是上游参数名；文本前置起音停顿（防丢字），真正文案在其后
+        from dub_align_studio.engines import dots_local
         g = _FakeRuntime.last_generate
-        self.assertEqual(g["text"], "要合成的整篇文案")
+        self.assertEqual(g["text"], dots_local._ONSET_LEAD_IN + "要合成的整篇文案")
+        self.assertTrue(g["text"].endswith("要合成的整篇文案"))
         self.assertEqual(g["prompt_audio_path"], "/ref.wav")   # 不是 prompt_audio
         self.assertEqual(g["prompt_text"], "参考句")
         self.assertEqual(g["num_steps"], 16)
@@ -151,6 +153,26 @@ class DotsAdapterCallSignatureTests(unittest.TestCase):
         engine = DotsLocalEngine()
         with self.assertRaises(EngineUnavailable):
             engine._save_result({"sample_rate": 48000}, Path(tempfile.mkdtemp()) / "x.wav")
+
+
+class OnsetTrimTests(unittest.TestCase):
+    """起音丢字兜底：句首停顿 + 落盘前裁掉开头静音的纯逻辑。"""
+
+    def test_trims_leading_silence_keeps_head(self):
+        from dub_align_studio.engines.dots_local import _leading_trim_index
+        # sr=1000：前 100 样本静音、之后有声；峰值 0.5 → 阈值 0.0075；保留 20ms=20 样本
+        seq = [0.0] * 100 + [0.5] * 50
+        self.assertEqual(_leading_trim_index(seq, 1000, 0.5), 80)  # 100 - 20 留头
+
+    def test_all_silent_not_trimmed(self):
+        from dub_align_studio.engines.dots_local import _leading_trim_index
+        self.assertEqual(_leading_trim_index([0.0] * 2000, 1000, 0.0), 0)
+
+    def test_trim_capped_to_avoid_over_cut(self):
+        from dub_align_studio.engines.dots_local import _leading_trim_index
+        # 首个过阈样本在 2s 处，但封顶 0.8s（=800 样本）内没找到 → 不裁
+        seq = [0.0] * 2000 + [0.6] * 10
+        self.assertEqual(_leading_trim_index(seq, 1000, 0.6), 0)
 
 
 class TnStubTests(unittest.TestCase):

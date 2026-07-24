@@ -47,6 +47,16 @@ _RUNTIME_MODULE = "dots_tts.runtime"   # DotsTtsRuntime 在此子模块
 EXPECTED_SAMPLE_RATE = 48000
 LOCAL_CHECKPOINT_DIR = "dots.tts-soar"
 
+# 起音丢字兜底：dots.tts（自回归）每段生成的最前端不稳，常把首字/首音吃掉（用户实测
+# 「文案开头几个字没声音」）。在句首加一个近乎无声的停顿（逗号），让被吃的落在这个停顿上，
+# 真正的首字后移一位、完整发出。留空则关闭。若仍偶发丢字，可加长为 "，，" 或改 "。"。
+_ONSET_LEAD_IN = "，"
+
+# 加了句首停顿会带来开场静默/气口，故落盘前裁掉开头静音：从第一个真实字音开始。
+_SILENCE_THRESHOLD = 0.015     # 归一化幅度阈值：低于视为静音
+_LEADING_KEEP_MS = 20          # 起音前保留一点，避免削掉首音上升沿
+_MAX_LEADING_TRIM_S = 0.8      # 最多裁这么长，避免误伤（开头本就轻的语音不至于被删）
+
 # 运行时缓存：{(checkpoint, precision, optimize): runtime}，跨多次合成复用已加载的大模型。
 _RUNTIME_CACHE: dict = {}
 
@@ -269,7 +279,7 @@ class DotsLocalEngine:
         """
         runtime = self._load_runtime()
         kwargs: dict = {
-            "text": text,
+            "text": (_ONSET_LEAD_IN + text) if _ONSET_LEAD_IN else text,
             "num_steps": int(options.num_steps),
             "guidance_scale": float(options.guidance_scale),
             # 当前 dots.tts 0.2.1 runtime.generate 不接收 seed。
@@ -312,7 +322,7 @@ class DotsLocalEngine:
             soundfile = importlib.import_module("soundfile")
         except ImportError as exc:
             raise EngineUnavailable("缺少 soundfile（pip install soundfile）用于落盘 dots.tts 音频。") from exc
-        array = _to_numpy(audio)
+        array = _trim_leading_silence(_to_numpy(audio), sample_rate)
         soundfile.write(str(output), array, sample_rate)
 
 
@@ -345,6 +355,53 @@ def _import_failure_hint(exc: Exception) -> str:
         "pip install \"transformers==4.57.0\" \"accelerate==1.12.0\" "
         "-i https://pypi.tuna.tsinghua.edu.cn/simple。"
     )
+
+
+def _leading_trim_index(abs_samples, sample_rate: int, peak: float) -> int:
+    """纯逻辑：给定单声道 |样本| 序列，返回应从第几个样本开始播放（裁掉开头静音）。
+
+    - 阈值 = 相对峰值的 _SILENCE_THRESHOLD；
+    - 只在前 _MAX_LEADING_TRIM_S 内找首个过阈样本（封顶，避免误伤）；
+    - 找到后回退 _LEADING_KEEP_MS 留出上升沿；前 cap 内全静音则不裁（返回 0）。
+    可脱离 numpy 单测。
+    """
+    thr = _SILENCE_THRESHOLD * (peak or 1.0)
+    cap = int(_MAX_LEADING_TRIM_S * sample_rate)
+    limit = min(len(abs_samples), cap)
+    first = -1
+    for i in range(limit):
+        if abs_samples[i] > thr:
+            first = i
+            break
+    if first < 0:
+        return 0
+    keep = int(_LEADING_KEEP_MS / 1000.0 * sample_rate)
+    return max(0, first - keep)
+
+
+def _trim_leading_silence(array, sample_rate: int):
+    """裁掉 dots.tts 段音频开头的静音/气口（含句首停顿留下的空白）。numpy 缺失时原样返回。"""
+    try:
+        import numpy as np
+    except Exception:
+        return array
+    a = np.asarray(array)
+    if a.ndim == 0 or a.size == 0:
+        return array
+    if a.ndim == 1:
+        mono = np.abs(a)
+        time_axis = 0
+    else:
+        time_axis = int(np.argmax(a.shape))  # 时间轴取最长的一维
+        other = tuple(ax for ax in range(a.ndim) if ax != time_axis)
+        mono = np.abs(a).mean(axis=other)
+    peak = float(np.max(mono)) if mono.size else 0.0
+    start = _leading_trim_index(mono, sample_rate, peak)
+    if start <= 0:
+        return a
+    if a.ndim == 1:
+        return a[start:]
+    return a[start:, ...] if time_axis == 0 else a[..., start:]
 
 
 def _to_numpy(audio):
