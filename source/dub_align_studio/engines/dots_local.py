@@ -130,15 +130,10 @@ class DotsLocalEngine:
         try:
             importlib.import_module(_RUNTIME_MODULE)
         except Exception as exc:
-            hint = ""
-            if "Qwen2" in str(exc) or "transformers" in str(exc).lower():
-                hint = ("（transformers 版本过旧，缺 Qwen2 支持）。请执行："
-                        "pip install \"transformers==4.57.0\" \"accelerate==1.12.0\" "
-                        "-i https://pypi.tuna.tsinghua.edu.cn/simple；或到工具箱重装 dots.tts。")
             return EngineStatus(
                 key=self.key,
                 available=False,
-                detail=f"dots.tts 已找到但导入失败：{exc}{hint}",
+                detail=f"dots.tts 已找到但导入失败：{exc}{_import_failure_hint(exc)}",
             )
         cuda_ok, cuda_detail = _cuda_detail()
         if not cuda_ok:
@@ -271,6 +266,37 @@ class DotsLocalEngine:
             raise EngineUnavailable("缺少 soundfile（pip install soundfile）用于落盘 dots.tts 音频。") from exc
         array = _to_numpy(audio)
         soundfile.write(str(output), array, sample_rate)
+
+
+def _transformers_diag() -> str:
+    """报出当前进程实际加载的 transformers 版本与路径，用于判断是否装到了另一个 Python。"""
+    try:
+        tf = importlib.import_module("transformers")
+    except Exception as exc:  # noqa: BLE001 — transformers 本身都导不进来
+        return f"transformers 无法导入（{exc}）"
+    ver = getattr(tf, "__version__", "?")
+    where = getattr(tf, "__file__", "?")
+    return f"transformers {ver}（{where}）"
+
+
+def _import_failure_hint(exc: Exception) -> str:
+    """dots.tts 导入失败时，把「装到了哪个环境」直接摆到用户面前——
+    多数不是没装，而是 pip 装进了另一个 Python，或跑的是看不到系统包的打包版。"""
+    text = str(exc)
+    if "Qwen2" not in text and "transformers" not in text.lower():
+        return ""
+    frozen = ""
+    if getattr(sys, "frozen", False):
+        frozen = ("；注意：本软件是打包版(frozen)，无法读取你另装到系统 Python 的包 —— "
+                  "dots.tts 请改用「整合离线版」或源码环境运行")
+    return (
+        f"。诊断：{_transformers_diag()}，运行环境 {sys.executable}{frozen}。"
+        "dots.tts 需要 transformers==4.57.0（5.x 过新同样缺 Qwen2）。"
+        "若你已 pip 安装 4.57.0 但这里仍显示别的版本/路径，说明装到了另一个 Python —— "
+        "请用「运行本软件的同一个 Python」重装，或到工具箱点 dots.tts「安装」。命令："
+        "pip install \"transformers==4.57.0\" \"accelerate==1.12.0\" "
+        "-i https://pypi.tuna.tsinghua.edu.cn/simple。"
+    )
 
 
 def _to_numpy(audio):
