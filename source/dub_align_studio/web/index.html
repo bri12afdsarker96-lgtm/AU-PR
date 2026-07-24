@@ -412,8 +412,8 @@ footer b{color:var(--muted);font-weight:600}
         <button class="btn" style="padding:8px 11px;flex:none" onclick="delTpl()">删除</button>
         <button class="btn gold" style="padding:8px 11px;flex:none" onclick="saveTpl()">存为模板</button>
       </div>
-      <div class="sp"><span class="f">文本内容</span>
-        <input type="text" id="edText" placeholder="下载知乎搜书名《…》看后续" oninput="syncPv()"></div>
+      <div class="sp"><span class="f">文本内容（<b>按回车换行 = 字幕分行位置</b>，烧录按此分行）</span>
+        <textarea id="edText" rows="2" style="width:100%;resize:vertical" placeholder="下载知乎搜书名《…》看后续" oninput="syncPv()"></textarea></div>
       <div class="grid g2e sp">
         <div><span class="f">位置</span><select id="edPos" onchange="syncPv()"></select></div>
         <div><span class="f">字号 <span class="val" id="edSizeV" style="padding:2px 8px">72</span></span>
@@ -440,6 +440,10 @@ footer b{color:var(--muted);font-weight:600}
         <div><span class="f">结束（秒 · 0 = 片尾）</span><input type="number" id="edEnd" value="0" step="0.5"></div>
       </div>
       <button class="btn gold" onclick="addOverlay()">＋ 添加到列表</button>
+      <div class="row" id="ovEditBar" style="display:none;gap:8px;margin-top:8px">
+        <button class="btn gold" id="ovUpdBtn" style="flex:1" onclick="updateOverlay()">✔ 更新此条</button>
+        <button class="btn line" style="flex:none" onclick="cancelOvEdit()">✖ 取消编辑</button>
+      </div>
     </div>
 
     <!-- 右列：字幕样式 + 已添加（窄列堆叠） -->
@@ -936,6 +940,7 @@ function pvNode(o,ghost,pvW){
   const el=document.createElement('div');
   el.className='ov'+(o.boxed?' boxed':'')+(ghost?' ghost':'');
   el.textContent=o.text||'（文本）';
+  el.style.whiteSpace='pre-line';  // 手动换行=字幕分行位置，预览同款呈现
   el.style.top=(POS_RATIO[o.position]??47)+'%';
   const fpx=Math.max(6,(o.font_size_px*pvW/pvCanvas()[0]));
   el.style.fontSize=fpx.toFixed(1)+'px';
@@ -962,7 +967,14 @@ function syncPv(fromInput){
   phone.style.aspectRatio=cw+'/'+ch;
   const info=$('pvInfo'); if(info)info.textContent=`实时预览 · ${cw} × ${ch}（${$('aspect')?.value||'9:16 竖屏'}）`;
   phone.querySelectorAll('.ov').forEach(x=>x.remove());
-  overlays.forEach(o=>phone.appendChild(pvNode(o,false,pvW)));
+  // 逐行字幕（_sub）有时间窗、成片按 enable 逐条显示——预览只画「当前选中的那一条」
+  // （点右侧列表行切换），不再无视时间轴全部堆叠；用户手加的文本框照常全显。
+  const subs=overlays.filter(o=>o._sub);
+  let showSub=null;
+  if(subs.length){
+    showSub=(ovEdit>=0&&overlays[ovEdit]&&overlays[ovEdit]._sub)?overlays[ovEdit]:subs[0];
+  }
+  overlays.forEach(o=>{ if(!o._sub||o===showSub) phone.appendChild(pvNode(o,false,pvW)); });
   phone.appendChild(pvNode(editorOverlay(),true,pvW));
   // 字幕位置示意（跟随一键成片页的字幕位置/字号设置）
   if($('burn')?.checked){
@@ -1001,15 +1013,49 @@ function addOverlay(){
   if(!o.text){alert('请先填写文本内容');return;}
   overlays.push(o);$('edText').value='';renderOverlays();syncPv();
 }
+/* ── 逐条编辑：点列表行载入编辑器（可改文字/手动换行分割/样式/时间窗），更新写回原条目 ── */
+let ovEdit=-1;
+function loadOverlay(i){
+  const o=overlays[i];if(!o)return;
+  ovEdit=i;
+  $('edText').value=o.text||'';
+  if(o.position)$('edPos').value=o.position;
+  $('edSize').value=o.font_size_px||72;$('edSizeV').textContent=$('edSize').value;
+  if($('edFont'))$('edFont').value=o.font_name||'';
+  $('edColor').value=o.color||'#FFFFFF';
+  $('edBorder').value=o.border_width??3;$('edBox').checked=!!o.boxed;
+  $('edStart').value=o.start||0;$('edEnd').value=o.end||0;
+  $('ovEditBar').style.display='flex';
+  $('ovUpdBtn').textContent='✔ 更新第 '+(i+1)+' 条';
+  renderOverlays();syncPv(true);
+}
+function updateOverlay(){
+  const o=overlays[ovEdit];if(!o){cancelOvEdit();return;}
+  const e=editorOverlay();
+  if(!e.text){alert('文本不能为空（不需要这条就点右侧 ✕ 删除）');return;}
+  // 保留 _sub 标记与原条目未编辑字段，覆盖编辑器里的全部可改项（含手动换行）
+  overlays[ovEdit]={...o,...e};
+  cancelOvEdit();
+}
+function cancelOvEdit(){
+  ovEdit=-1;$('ovEditBar').style.display='none';$('edText').value='';
+  renderOverlays();syncPv();
+}
 function renderOverlays(){
   $('ovN').textContent=overlays.length;
   const tb=$('ovList');tb.innerHTML='';
   if(!overlays.length){tb.innerHTML='<tr><td colspan="5" class="empty">还没有文本框 — 在左侧添加</td></tr>';return;}
   overlays.forEach((o,i)=>{
     const tr=document.createElement('tr');
-    tr.innerHTML=`<td>${esc(o.text.slice(0,12))}</td><td class="mut">${o.position}</td>
+    if(i===ovEdit)tr.style.background='rgba(228,185,99,.12)';
+    tr.style.cursor='pointer';tr.title='点击载入编辑（文本框中按回车=字幕分行位置）';
+    const shown=esc(o.text.replace(/\n/g,'⏎').slice(0,14));
+    tr.innerHTML=`<td>${shown}</td><td class="mut">${o.position}</td>
       <td class="mut">${o.font_size_px}</td><td><span style="color:${o.color}">${o.color}</span></td>
-      <td><span class="x" onclick="overlays.splice(${i},1);renderOverlays();syncPv()">✕</span></td>`;
+      <td><span class="x">✕</span></td>`;
+    tr.onclick=()=>loadOverlay(i);
+    tr.querySelector('.x').onclick=(ev)=>{ev.stopPropagation();
+      overlays.splice(i,1);if(ovEdit===i)cancelOvEdit();else{if(ovEdit>i)ovEdit--;renderOverlays();syncPv();}};
     tb.appendChild(tr);});
 }
 
