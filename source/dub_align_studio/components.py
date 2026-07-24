@@ -51,6 +51,11 @@ COMPONENTS: list[dict] = [
 
 # PyTorch GPU 版：官方 CUDA 12.1 wheel 源（RTX 20/30/40 系通用；不走 PyPI 镜像，torch 只在此源）
 TORCH_CUDA_INDEX = "https://download.pytorch.org/whl/cu121"
+# torch 与 torchaudio 必须同版本，否则 dots.tts 启动即报
+# "torch (x) and torchaudio (y) minor versions do not match"。
+# 不锁版本时 pip 会各取最新（torchaudio 常落后 torch 一个小版本）导致不匹配——
+# 这里锁到 dots.tts 官方 constraints/recommended.txt 的匹配对，二者永远一致。
+TORCH_PIN = "2.8.0"
 
 # fish-speech 一键安装的固定口径
 FISH_SOURCE_URLS = ["https://github.com/fishaudio/fish-speech/archive/refs/heads/main.zip"]
@@ -345,14 +350,15 @@ def _torch_status() -> tuple[bool, str]:
 
 def _install_torch_cuda(log: LogFn, key: str | None = None) -> None:
     """安装/换装 CUDA 12.1 版 torch + torchaudio（官方源，约 2.5GB）。"""
-    log("安装 PyTorch GPU 版（CUDA 12.1，官方源，约 2.5GB，请耐心）…")
-    # torch 与 torchaudio 同一命令、同一源一起装 → 保证版本匹配；
-    # --force-reinstall 覆盖此前分开装导致的版本不匹配（dots.tts 启动会校验一致）
-    cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "--force-reinstall",
-           "torch", "torchaudio", "--index-url", TORCH_CUDA_INDEX,
+    log(f"安装 PyTorch GPU 版（CUDA 12.1，torch=={TORCH_PIN} + torchaudio=={TORCH_PIN} 匹配对，官方源，约 2.5GB，请耐心）…")
+    # torch 与 torchaudio 锁到同一版本、同一源一起装 → 从根上杜绝小版本不匹配
+    # （不锁版本时 pip 会各取最新，torchaudio 常落后一个小版本，dots.tts 启动即报错）；
+    # --force-reinstall 覆盖此前分开装/漂移出的不匹配组合。
+    cmd = [sys.executable, "-m", "pip", "install", "--force-reinstall",
+           f"torch=={TORCH_PIN}", f"torchaudio=={TORCH_PIN}", "--index-url", TORCH_CUDA_INDEX,
            "--timeout", "60", "--retries", "3", "--progress-bar", "off"]
     _stream_command(cmd, log, key=key,
-                    error="PyTorch GPU 版安装失败。可手动执行：pip install --force-reinstall torch torchaudio --index-url " + TORCH_CUDA_INDEX)
+                    error=f"PyTorch GPU 版安装失败。可手动执行：pip install --force-reinstall torch=={TORCH_PIN} torchaudio=={TORCH_PIN} --index-url " + TORCH_CUDA_INDEX)
     ok, detail = _torch_status()
     if not ok:
         raise RuntimeError("安装完成但 CUDA 仍不可用：" + detail + " 请确认已装 NVIDIA 显卡驱动后重启软件。")
