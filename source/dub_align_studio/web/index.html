@@ -312,6 +312,14 @@ footer b{color:var(--muted);font-weight:600}
       <div class="sp"><span class="f">分镜目录</span>
         <div class="row"><input type="text" id="shots" placeholder="D:\素材\分镜（1.mp4、2.mp4 …）">
         <button class="btn" onclick="pickDir('shots')">📁 选择</button></div></div>
+      <div class="sp"><span class="f">素材模式（第 i 行文案用什么画面）</span>
+        <select id="matMode">
+          <option value="flat">平铺顺序 · 目录下 1.mp4、2.mp4…，第 i 行用第 i 个</option>
+          <option value="folder_order">文件夹顺序 · 第 i 行用第 i 个子文件夹（行多则从头循环）</option>
+          <option value="keyword">关键字匹配 · 子文件夹名↔每行文案打分选夹（无匹配按顺序兜底）</option>
+        </select>
+        <p class="mini" style="color:var(--faint);margin-top:5px">夹内按 Seed 确定性随机选片（换 Seed 同文案换一套画面，矩阵去重）；
+          选片结果写「输出目录\选片清单.csv」，重渲染复用同一份——删除该文件即重新选片。</p></div>
       <div class="sp"><span class="f">输出目录</span>
         <div class="row"><input type="text" id="outdir" placeholder="D:\输出\第01集">
         <button class="btn" onclick="pickDir('outdir')">📁 选择</button></div></div>
@@ -1051,6 +1059,7 @@ function applyVoiceDefaults(){
 async function run(action,target){
   logTarget=target||'mainlog';
   const payload={action,text:$('text').value,engine:$('engine').value,aligner:$('aligner').value,
+    material_mode:$('matMode')?$('matMode').value:'flat',
     voice_id:$('voice').value,shots_dir:$('shots').value.trim(),output_dir:$('outdir').value.trim(),
     max_pause:+$('pause').value,speed:+$('speed').value,seed:+$('seed').value,
     burn_subtitles:$('burn').checked,subtitle_size:+$('subsize').value||64,
@@ -1635,6 +1644,7 @@ function stopMixPreview(){
 /* ── 作品参数预设（存服务端总目录，可迁移；用户反馈②统一作品参数） ── */
 function collectConfig(){
   return {engine:$('engine').value,aligner:$('aligner').value,aspect:$('aspect').value,
+    matMode:$('matMode')?$('matMode').value:'flat',
     voice:$('voice').value,burn:$('burn').checked,seed:+$('seed').value,
     pause:+$('pause').value,speed:+$('speed').value,
     subPos:$('subPos').value,subsize:+$('subsize').value,subFont:$('subFont').value,
@@ -1644,6 +1654,7 @@ function applyConfigObj(c){
   if(!c)return;
   const set=(id,v)=>{const el=$(id);if(el!=null&&v!=null)el.value=v;};
   set('engine',c.engine);set('aligner',c.aligner);set('aspect',c.aspect);set('voice',c.voice);
+  set('matMode',c.matMode);
   if(c.burn!=null)$('burn').checked=c.burn;
   set('seed',c.seed);set('pause',c.pause);set('speed',c.speed);
   set('subPos',c.subPos);set('subsize',c.subsize);set('subFont',c.subFont);

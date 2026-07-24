@@ -190,15 +190,15 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
         if action in ("run_all", "dub", "timing") and not text.strip():
             raise ValueError("请先填写或导入「待合成文案」。")
 
+        material_mode = str(payload.get("material_mode") or "flat")
         if action == "run_all":
             from integrated_workbench.semantic_match import parse_script
 
             shots_dir = Path(str(payload.get("shots_dir") or ""))
             lines = parse_script(text)
-            videos = pipeline.list_shot_videos(shots_dir)
-            if len(videos) < len(lines):
-                raise ValueError(f"分镜视频不足：文案 {len(lines)} 行，目录里只有 {len(videos)} 个视频。")
-            videos = videos[: len(lines)]
+            log(f"素材模式：{ {'flat':'平铺顺序','folder_order':'文件夹顺序','keyword':'关键字匹配'}.get(material_mode, material_mode) }")
+            videos = pipeline.select_shot_videos(shots_dir, lines, material_mode,
+                                                 int(payload.get("seed") or 42), output_dir, log=log)
 
             JOB.set_progress("① 配音 · 逐行克隆", 6)
             log("① 配音 · 逐行克隆…")
@@ -271,7 +271,9 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                 JOB.timings, JOB.ok = timings, True
         elif action == "render":
             timings = JOB.timings or pipeline.load_timings(output_dir)
-            videos = pipeline.list_shot_videos(Path(str(payload.get("shots_dir") or "")))[: len(timings)]
+            videos = pipeline.select_shot_videos(Path(str(payload.get("shots_dir") or "")),
+                                                 [t.text for t in timings], material_mode,
+                                                 int(payload.get("seed") or 42), output_dir, log=log)
 
             def _render_progress(done: int, total: int) -> None:
                 JOB.set_progress(f"渲染成片 · 第 {done}/{total} 段", int(done / max(1, total) * 100))
@@ -287,7 +289,10 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             # 文本框逐行校对后：用校对文字重烧字幕（overlays）+ 导出剪映草稿，一步到位（导出统一在文本框页触发）
             master_path = output_dir / pipeline.MASTER_NAME
             timings = JOB.timings or pipeline.load_timings(output_dir)
-            videos = pipeline.list_shot_videos(Path(str(payload.get("shots_dir") or "")))[: len(timings)]
+            # 与首次成片同一份选片（选片清单.csv 复用）——重烧字幕不换画面
+            videos = pipeline.select_shot_videos(Path(str(payload.get("shots_dir") or "")),
+                                                 [t.text for t in timings], material_mode,
+                                                 int(payload.get("seed") or 42), output_dir, log=log)
 
             def _fin_progress(done: int, total: int) -> None:
                 JOB.set_progress(f"重烧字幕 · 第 {done}/{total} 段", 8 + int(done / max(1, total) * 80))
