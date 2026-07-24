@@ -47,6 +47,20 @@ class CoverStudioContractTests(unittest.TestCase):
                        'id="cvX"', 'id="cvY"'):  # 左中右对齐 + 百分比精确定位
             self.assertIn(marker, html, marker)
 
+    def test_ps_text_features(self):
+        html = _html()
+        for marker in (
+            'id="cvOpacity"', 'id="cvRot"',                  # 不透明度 / 旋转
+            'id="cvSpacing"', 'id="cvLineh"',                # 字间距 / 行距
+            'id="cvWeight"', 'id="cvItalic"',                # 字重 / 斜体
+            'id="cvShadow"', "shadowBlur",                   # 投影
+            'id="cvGrad"', "createLinearGradient",           # 渐变填充
+            "cvDupLayer", "Ctrl+J",                          # 复制图层
+            "cvHitAt", "ctx.rotate",                         # 旋转层命中/渲染
+            "letterSpacing",                                  # 字距渲染
+        ):
+            self.assertIn(marker, html, marker)
+
 
 if __name__ == "__main__":
     unittest.main()
