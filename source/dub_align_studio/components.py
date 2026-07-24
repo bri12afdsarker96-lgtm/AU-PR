@@ -373,10 +373,29 @@ def _install_torch_cuda(log: LogFn, key: str | None = None) -> None:
         _stream_command([sys.executable, "-m", "pip", "install", "--force-reinstall", f"torch=={ta_ver}"] + index,
                         log, key=key,
                         error=f"torch=={ta_ver} 安装失败。可手动执行：pip install --force-reinstall torch=={ta_ver} torchaudio=={ta_ver} --index-url " + TORCH_CUDA_INDEX)
+    _cleanup_torch_stragglers(log, key=key)
     ok, detail = _torch_status()
     if not ok:
         raise RuntimeError("安装完成但 CUDA 仍不可用：" + detail + " 请确认已装 NVIDIA 显卡驱动后重启软件。")
     log("✅ " + detail)
+
+
+# 与 torch 小版本 ABI 锁死的生态包：torch 换版本后其 DLL 立即失配，Windows 弹
+# 「无法定位程序输入点 aoti_torch_device_type_cuda」等错框（用户 2026-07-24 实测
+# torchcodec 按 torch 2.13 编译、torch 回 2.11 后弹窗）。本软件不用它们 → 装完直接清掉。
+_TORCH_ABI_STRAGGLERS = ["torchcodec"]
+
+
+def _cleanup_torch_stragglers(log: LogFn, key: str | None = None) -> None:
+    for package in _TORCH_ABI_STRAGGLERS:
+        if not _installed_dist_version(package):
+            continue
+        log(f"③ 清理 {package}（其 DLL 锁死旧 torch 版本，torch 换版后必弹「无法定位程序输入点」；本软件不需要它）…")
+        try:
+            _stream_command([sys.executable, "-m", "pip", "uninstall", "-y", package],
+                            log, key=key, error=f"{package} 卸载失败")
+        except RuntimeError as exc:
+            log(f"⚠ {exc} —— 可手动执行：pip uninstall -y {package}")
 
 
 def _pip_install(package: str, log: LogFn, key: str | None = None) -> None:
