@@ -364,7 +364,7 @@ footer b{color:var(--muted);font-weight:600}
           <span class="f" style="margin:0;color:var(--gold)">🎬 配音分段（逐段试听 · 某段不满意只重配这一段）</span>
           <button class="btn" style="padding:6px 12px;flex:none" onclick="loadChunks()">↻ 刷新</button>
         </div>
-        <p class="mini" style="color:var(--faint);margin:-2px 0 8px">每段用同一音色参考克隆；重配某段后自动重拼整条 master，其余段不动、不用整篇重来。</p>
+        <p class="mini" style="color:var(--faint);margin:-2px 0 8px"><b>配音进行中每完成一段就出现在这里</b>，可立即试听；重配某段后自动重拼整条 master，其余段不动、不用整篇重来（重配请等当前任务跑完再点）。</p>
         <div id="chunkList" class="vlist"></div>
       </div>
     </div>
@@ -1068,6 +1068,8 @@ async function pollAll(){
     paint(main.log);
     if(main.timings&&main.timings.length)renderLane(main.timings);
     updateProgress(main);
+    // 配音进行中：分段清单每段落盘即刷新 → 分段面板边配边出现，可立即试听/重配已完成段
+    if(main.running&&['run_all','dub','rechunk'].includes(main.action))loadChunks();
     if(_prevRun.main&&!main.running&&main.done)onMainDone(main);
     _prevRun.main=main.running;
   }

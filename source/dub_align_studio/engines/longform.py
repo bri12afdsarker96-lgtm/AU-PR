@@ -115,6 +115,8 @@ def synthesize_long(engine, text: str, voice: VoiceRef | None, output: Path,
         parts.append(part)
         manifest_chunks.append({"index": i, "line": i, "text": chunk, "file": part.name,
                                 "seconds": round(wav_seconds(part), 3)})
+        # 每段完成即刷新清单：UI 分段面板边配边出现，可立即试听/重配已完成段（不必等整篇）
+        _write_manifest(tmp_dir, output, manifest_chunks)
         if log:
             log(f"  段 {i}/{total} 完成（{len(chunk)} 字）")
         if progress:
