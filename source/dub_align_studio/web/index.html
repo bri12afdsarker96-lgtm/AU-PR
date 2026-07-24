@@ -352,9 +352,9 @@ footer b{color:var(--muted);font-weight:600}
         <button class="btn line" onclick="run('dub')">① 配音</button>
         <button class="btn line" onclick="run('timing')">② 量时长</button>
         <button class="btn line" onclick="run('render')">③ 渲染</button>
-        <button class="btn line" onclick="showPage('p2');syncPv()" title="成片后到文本框逐行校对再导出">④ 去文本框校对/导出 →</button>
+        <button class="btn line" onclick="showPage('p2');syncPv()" title="到文本框页调字幕样式/加文字层并导出">④ 去文本框调样式/导出 →</button>
       </div>
-      <p class="mini" style="color:var(--faint);margin-top:6px">生成成片后自动进入「文本框」页逐行校对字幕；<b>重烧字幕与剪映草稿导出统一在文本框页完成</b>（成片确认无误后的最后一步）。</p>
+      <p class="mini" style="color:var(--faint);margin-top:6px">字幕按<b>标点逐句、按时间轴</b>自动烧录（每行按字数占比排时）；样式调整与最终导出在「文本框」页完成。</p>
       <div id="progWrap" style="display:none;margin-top:12px">
         <div class="row" style="justify-content:space-between">
           <span class="mini" id="progStage" style="color:var(--gold)">准备中…</span>
@@ -478,10 +478,10 @@ footer b{color:var(--muted);font-weight:600}
 
       <!-- 校对后统一导出（成片+剪映草稿）：成片流程的最后一步都在此触发 -->
       <div class="card" style="margin-top:16px">
-        <h2>校对完成 · 导出</h2>
+        <h2>样式确认 · 导出</h2>
         <p class="mini" style="color:var(--faint);margin:-4px 0 10px">
-          上方逐行字幕即本条成片的每一行（生成成片后自动转入，可改文字/颜色/位置）。核对无误后点下方按钮：
-          <b>用校对后的文字重烧字幕成片 + 导出剪映草稿</b>，一步到位。</p>
+          字幕由渲染端<b>按标点逐句、按时间轴</b>自动烧录（本页只管字幕样式与手加文字层）。
+          调整样式/文字层后点下方按钮：<b>按当前样式重烧成片 + 导出剪映草稿</b>，一步到位。</p>
         <button class="btn gold big" style="white-space:normal;line-height:1.5;letter-spacing:2px" onclick="run('finalize')">✔ 重烧字幕并导出<br><span style="font-size:12px;font-weight:400">成片 ＋ 剪映草稿 · 一步到位</span></button>
         <div class="row" style="gap:10px;margin-top:10px">
           <a id="filmBtn2" class="btn line" style="display:none;flex:1" href="#" target="_blank">▶ 打开成片</a>
@@ -1170,30 +1170,8 @@ function onMainDone(main){
     }
   }
   if(['dub','run_all','rechunk','finalize'].includes(main.action)){loadClones();loadChunks();}
-  // #7 渲染/成片完成后，把逐行字幕转成可二次编辑的文本框（文字/颜色/位置可改，再渲染重烧）
-  if(['render','run_all'].includes(main.action)&&$('burn').checked&&main.timings&&main.timings.length){
-    subtitlesToOverlays(main.timings);
-    // 成片后自动进「文本框」页逐行校对（校对完在该页一键重烧+导出）
-    if(main.action==='run_all'){showPage('p2');syncPv();}
-  }
-}
-// 逐行字幕 → 文本框条目（累加时长得每行时间窗；位置/颜色取字幕样式设定）
-function subtitlesToOverlays(timings){
-  const pos=$('subPos').value||'底部';
-  const color=($('subColor')&&$('subColor').value.trim())||'#FFFFFF';
-  const font=$('subFont')?.value||'';
-  const size=+$('subsize').value||64;
-  let t=0; const rows=[];
-  timings.forEach(x=>{const start=t;t+=x.duration;rows.push({
-    text:x.text,position:pos,font_size_px:size,color:color,font_name:font,
-    border_width:+$('subBorder')?.value||3,boxed:false,start:+start.toFixed(2),end:+t.toFixed(2),_sub:true});});
-  // 移除上一批由字幕转入的条目（带 _sub 标记），保留用户手加的文本框
-  overlays=overlays.filter(o=>!o._sub).concat(rows);
-  renderOverlays();
-  // 字幕已变成逐行文本框，关掉自动烧录避免重复；提示用户去文本框页二次编辑
-  $('burn').checked=false;
-  if(!window._subNoticed){window._subNoticed=true;
-    alert('字幕已按行转入「文本框」页，可逐行修改文字/颜色/位置，改完再点「③ 渲染」重新烧录。\n（已自动关闭「烧录字幕」以免重复；剪映导出请在确认无误后作为最后一步。）');}
+  // 字幕已改为渲染端「标点逐句」按时间轴烧录（2026-07-25 定案）：
+  // 不再转入文本框页——文本框只负责字幕样式与用户手加的文字层。
 }
 function renderDlog(tasks){
   const el=$('dlog');if(!el)return;

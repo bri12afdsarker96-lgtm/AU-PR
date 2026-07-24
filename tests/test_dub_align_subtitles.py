@@ -217,3 +217,38 @@ class ManualBreakTests(unittest.TestCase):
         out = wrap_subtitle_text_fn("一\n二\n三", style)
         self.assertEqual(len(out.split("\n")), 2)
         self.assertTrue(out.endswith("…"))
+
+
+class PhraseTimelineTests(unittest.TestCase):
+    """标点逐句字幕（2026-07-25 定案）：切句/按字数排时/无缝衔接/行尾对齐。"""
+
+    def setUp(self):
+        from dub_align_studio.subtitles import SubtitleEntry, entries_to_phrases, split_line_phrases
+        self.E, self.expand, self.split = SubtitleEntry, entries_to_phrases, split_line_phrases
+
+    def test_user_example_split(self):
+        line = "命不好的人，真能翻盘吗？听完这个逆风局，你就明白了。假设有个叫沈砚的年轻人。"
+        self.assertEqual(self.split(line),
+                         ["命不好的人", "真能翻盘吗", "听完这个逆风局", "你就明白了", "假设有个叫沈砚的年轻人"])
+
+    def test_no_punct_line_is_single_phrase(self):
+        self.assertEqual(self.split("没有标点的一行"), ["没有标点的一行"])
+
+    def test_windows_seamless_and_end_aligned(self):
+        es = self.expand([self.E(index=1, start=2.0, end=8.0, text="第一句，第二句。第三句！")])
+        self.assertEqual(es[0].start, 2.0)
+        self.assertEqual(es[-1].end, 8.0)                     # 末句对齐行尾（不破坏行边界）
+        for a, b in zip(es, es[1:]):
+            self.assertEqual(a.end, b.start)                  # 无缝衔接
+        self.assertTrue(all(e.end > e.start for e in es))
+
+    def test_proportional_by_chars(self):
+        es = self.expand([self.E(index=1, start=0.0, end=9.0, text="三个字，六个字六个字。")])
+        self.assertLess(es[0].end - es[0].start, es[1].end - es[1].start)  # 短句时长更短
+
+    def test_multi_lines_counter_and_boundaries(self):
+        es = self.expand([self.E(index=1, start=0.0, end=4.0, text="甲句，乙句"),
+                          self.E(index=2, start=4.0, end=9.0, text="丙句。丁句")])
+        self.assertEqual([e.index for e in es], [1, 2, 3, 4])
+        self.assertEqual(es[1].end, 4.0)                      # 行边界不被跨越
+        self.assertEqual(es[2].start, 4.0)

@@ -215,8 +215,11 @@ def render_b(
     silent_full = work_dir / "_full_silent.mp4"
     _concat_copy(config, segment_files, silent_full)
 
-    # 字幕：行窗口来自帧量化结果，与画面严格同轴。有台词就导出 SRT；样式给定且有字体则烧录。
-    entries = entries_from_frame_windows([t.text for t in lines], frames, config.fps)
+    # 字幕：行窗口来自帧量化结果，与画面严格同轴；再按标点展开为逐句条目——
+    # 每个短句在行窗口内按字数占比拿到自己的显示窗，按时间轴一句句出现（2026-07-25 定案）。
+    from .subtitles import entries_to_phrases
+
+    entries = entries_to_phrases(entries_from_frame_windows([t.text for t in lines], frames, config.fps))
     has_text = any(entry.text for entry in entries)
     srt_path: Path | None = None
     burn_filters: list[str] = []

@@ -79,6 +79,46 @@ def entries_from_frame_windows(texts: list[str], frames: list[int], fps: float) 
     return entries
 
 
+# 标点逐句字幕（2026-07-25 用户定案）：一行文案按常用标点切成短句，每个短句在该行
+# 时间窗内按字数占比拿到自己的显示窗——字幕按时间轴一句句出现，且单条不再过长。
+_PHRASE_SPLIT = re.compile(r"[，。！？；：、,.!?;:…—]+")
+PHRASE_MIN_SECONDS = 0.4     # 每个短句最短显示时长（太短一闪而过）；不够分则退回按占比
+
+
+def split_line_phrases(text: str) -> list[str]:
+    """按常用标点把一行切成短句并剥掉标点；空片丢弃；无标点则整行一句。"""
+    phrases = [p.strip() for p in _PHRASE_SPLIT.split(str(text)) if p.strip()]
+    return phrases or ([str(text).strip()] if str(text).strip() else [])
+
+
+def entries_to_phrases(entries: list[SubtitleEntry]) -> list[SubtitleEntry]:
+    """把逐行字幕条目展开为标点逐句条目：短句在行窗口内按字数占比排时，
+    每句 ≥PHRASE_MIN_SECONDS（不够分则纯占比），末句对齐行尾（不破坏行边界=音画同步）。"""
+    result: list[SubtitleEntry] = []
+    counter = 0
+    for entry in entries:
+        phrases = split_line_phrases(entry.text)
+        span = max(0.0, entry.end - entry.start)
+        if not phrases or span <= 0:
+            continue
+        total_chars = sum(len(p) for p in phrases) or 1
+        durations = [span * len(p) / total_chars for p in phrases]
+        if len(phrases) * PHRASE_MIN_SECONDS <= span:  # 够分才抬底，防止总长溢出行窗
+            durations = [max(PHRASE_MIN_SECONDS, d) for d in durations]
+            overflow = sum(durations) - span
+            if overflow > 0:  # 抬底多出的时长从最长的句子里扣回
+                longest = max(range(len(durations)), key=lambda i: durations[i])
+                durations[longest] = max(PHRASE_MIN_SECONDS, durations[longest] - overflow)
+        cursor = entry.start
+        for i, (phrase, dur) in enumerate(zip(phrases, durations)):
+            counter += 1
+            end = entry.end if i == len(phrases) - 1 else min(entry.end, cursor + dur)
+            result.append(SubtitleEntry(index=counter, start=round(cursor, 3),
+                                        end=round(end, 3), text=phrase))
+            cursor = end
+    return result
+
+
 def find_cjk_font(candidates: list[Path] | None = None) -> Path | None:
     for candidate in candidates if candidates is not None else DEFAULT_FONT_CANDIDATES:
         if candidate.exists():

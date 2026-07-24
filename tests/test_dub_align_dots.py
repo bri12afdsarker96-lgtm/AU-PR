@@ -187,9 +187,16 @@ class FillerCutTests(unittest.TestCase):
 
     def test_no_gap_falls_back_to_silence_trim(self):
         from dub_align_studio.engines.dots_local import _onset_cut_index
-        # 正文无缝开讲（缺口出现在 0.9s 之后）→ 不切正文，回退普通裁静音（此处开头即有声 → 0）
+        # 首段发声 0.95s（> 0.6s 填充音上限）→ 不是「嗯」，不切正文，回退普通裁静音 → 0
         seq = [0.5]*950 + [0.0]*200 + [0.6]*300
         self.assertEqual(_onset_cut_index(seq, 1000, 0.6), 0)
+
+    def test_short_pause_after_filler_now_cuts(self):
+        from dub_align_studio.engines.dots_local import _onset_cut_index
+        # 用户实测：嗯后只停 60ms（旧 0.12s 门限不达标导致嗯泄漏）→ 现在必须能切
+        seq = [0.0]*50 + [0.5]*250 + [0.0]*60 + [0.6]*400
+        # 正文起点=样本360；回退 40ms → 320
+        self.assertEqual(_onset_cut_index(seq, 1000, 0.6), 320)
 
     def test_all_silent_untouched(self):
         from dub_align_studio.engines.dots_local import _onset_cut_index
