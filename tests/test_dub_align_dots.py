@@ -208,6 +208,33 @@ class FillerCutTests(unittest.TestCase):
         self.assertTrue(any('一' <= ch <= '鿿' for ch in dots_local._ONSET_LEAD_IN))
 
 
+class TailBurstTests(unittest.TestCase):
+    """尾部爆音净化：正文后孤立短爆音删除（余量不得越过爆音起点）；真实短尾字不误删。"""
+
+    def test_isolated_burst_removed_and_keep_capped(self):
+        from dub_align_studio.engines.dots_local import _tail_cut_index
+        # sr=1000：500 正文 + 90 静音 + 50 爆音 + 190 静音（复刻用户 chunk_003 形态）
+        seq = [0.5]*500 + [0.0]*90 + [0.5]*50 + [0.0]*190
+        # 正文止 500 + 余量 150 = 650，但封顶爆音起点 590 → 590
+        self.assertEqual(_tail_cut_index(seq, 1000, 0.5), 590)
+
+    def test_real_short_tail_word_kept(self):
+        from dub_align_studio.engines.dots_local import _tail_cut_index
+        # 尾字与正文只隔 40ms（< 60ms 门限）→ 是真话音，不删；止于尾字后+余量
+        seq = [0.5]*500 + [0.0]*40 + [0.5]*100 + [0.0]*200
+        self.assertEqual(_tail_cut_index(seq, 1000, 0.5), 640+150)
+
+    def test_multiple_bursts_all_removed(self):
+        from dub_align_studio.engines.dots_local import _tail_cut_index
+        seq = [0.5]*500 + [0.0]*80 + [0.4]*40 + [0.0]*80 + [0.4]*40 + [0.0]*100
+        self.assertEqual(_tail_cut_index(seq, 1000, 0.5), 580)  # 封顶最早爆音起点 580
+
+    def test_single_run_never_dropped(self):
+        from dub_align_studio.engines.dots_local import _tail_cut_index
+        seq = [0.0]*100 + [0.5]*50 + [0.0]*400   # 只有一段发声（哪怕短）→ 保留
+        self.assertEqual(_tail_cut_index(seq, 1000, 0.5), 150+150)
+
+
 class TnStubTests(unittest.TestCase):
     """dots.tts 在导入时硬 import `tn`（WeTextProcessing，靠 pynini，Windows 装不了）。
     缺 tn 时须注入原样返回的桩，让 dots.tts 能导入并出声。"""

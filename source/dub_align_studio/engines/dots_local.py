@@ -67,6 +67,17 @@ _FILLER_MAX_S = 0.9
 _FILLER_VOICED_MAX_S = 0.55
 _FILLER_KEEP_MS = 40           # 缺口后回退这点余量，保住正文首音上升沿
 
+# 尾部爆音净化（2026-07-24 实测：正文结束后隔 90ms 冒出 ~50ms、峰值 0.5 的孤立噪声脉冲，
+# 是 AR 模型生成收尾的垃圾音）：从后往前，凡「与前面发声隔 ≥_TAIL_GAP_MIN_S 静音、
+# 自身 ≤_TAIL_BURST_MAX_S 的孤立短发声」判为爆音删除（可连删多个）；真正文尾之后留
+# _TAIL_KEEP_S 余量截断。真实的短尾字与正文间隔通常 <60ms，不会被误删。
+_TAIL_BURST_MAX_S = 0.15
+_TAIL_GAP_MIN_S = 0.06
+_TAIL_KEEP_S = 0.15
+# 切口防爆响：起音切点加淡入、尾部切点加淡出（毫秒）
+_FADE_IN_MS = 8
+_FADE_OUT_MS = 15
+
 # 运行时缓存：{(checkpoint, precision, optimize): runtime}，跨多次合成复用已加载的大模型。
 _RUNTIME_CACHE: dict = {}
 
@@ -429,8 +440,52 @@ def _onset_cut_index(abs_samples, sample_rate: int, peak: float) -> int:
     return _leading_trim_index(abs_samples, sample_rate, peak)  # 无合格缺口 → 只裁开头静音
 
 
+def _voiced_runs(abs_samples, win: int, thr: float) -> list[tuple[int, int]]:
+    """10ms 窗发声段：返回 [(起窗, 止窗排他), …]。纯逻辑。"""
+    n = len(abs_samples) // win
+    runs: list[tuple[int, int]] = []
+    start = -1
+    for i in range(n):
+        seg = abs_samples[i * win:(i + 1) * win]
+        voiced = bool(len(seg)) and max(seg) > thr
+        if voiced and start < 0:
+            start = i
+        elif not voiced and start >= 0:
+            runs.append((start, i))
+            start = -1
+    if start >= 0:
+        runs.append((start, n))
+    return runs
+
+
+def _tail_cut_index(abs_samples, sample_rate: int, peak: float) -> int:
+    """纯逻辑：尾部爆音净化后的截止样本。孤立短爆音（隔≥gap、长≤burst）从后连删；
+    真正文尾后留 _TAIL_KEEP_S。无发声/无可删时只按末段收尾。"""
+    win = max(1, int(sample_rate * 0.010))
+    thr = _SILENCE_THRESHOLD * (peak or 1.0)
+    runs = _voiced_runs(abs_samples, win, thr)
+    if not runs:
+        return len(abs_samples)
+    burst_w = int(_TAIL_BURST_MAX_S / 0.010)
+    gap_w = max(1, int(_TAIL_GAP_MIN_S / 0.010))
+    dropped_start = None
+    while len(runs) > 1:
+        s, e = runs[-1]
+        prev_end = runs[-2][1]
+        if (e - s) <= burst_w and (s - prev_end) >= gap_w:
+            dropped_start = s   # 记录最早被删爆音的起点（从后往前删，最后记到的最早）
+            runs.pop()
+            continue
+        break
+    end = runs[-1][1] * win + int(_TAIL_KEEP_S * sample_rate)
+    if dropped_start is not None:
+        end = min(end, dropped_start * win)  # 余量不得越过被删爆音——否则等于没删
+    return min(len(abs_samples), end)
+
+
 def _trim_leading_silence(array, sample_rate: int):
-    """裁掉 dots.tts 段音频开头的「牺牲音节+停顿」（或纯静音）。numpy 缺失时原样返回。"""
+    """段音频两端净化：裁「牺牲音节+停顿」/开头静音 + 删尾部孤立爆音并截尾，
+    切口加淡入/淡出防爆响。numpy 缺失时原样返回。"""
     try:
         import numpy as np
     except Exception:
@@ -447,11 +502,23 @@ def _trim_leading_silence(array, sample_rate: int):
         mono = np.abs(a).mean(axis=other)
     peak = float(np.max(mono)) if mono.size else 0.0
     start = _onset_cut_index(mono, sample_rate, peak) if _ONSET_LEAD_IN else _leading_trim_index(mono, sample_rate, peak)
-    if start <= 0:
-        return a
+    end = _tail_cut_index(mono, sample_rate, peak)
+    if end <= start:
+        start, end = 0, len(mono)
     if a.ndim == 1:
-        return a[start:]
-    return a[start:, ...] if time_axis == 0 else a[..., start:]
+        a = a[start:end]
+    else:
+        a = a[start:end, ...] if time_axis == 0 else a[..., start:end]
+    # 切口淡入/淡出：保证边界从零起落，拼接/截断处零爆响
+    a = np.array(a, dtype=np.float32, copy=True)
+    n_in = min(a.shape[time_axis] if a.ndim > 1 else len(a), int(_FADE_IN_MS / 1000.0 * sample_rate))
+    n_out = min(a.shape[time_axis] if a.ndim > 1 else len(a), int(_FADE_OUT_MS / 1000.0 * sample_rate))
+    if a.ndim == 1:
+        if n_in > 1:
+            a[:n_in] *= np.linspace(0.0, 1.0, n_in, dtype=np.float32)
+        if n_out > 1:
+            a[-n_out:] *= np.linspace(1.0, 0.0, n_out, dtype=np.float32)
+    return a
 
 
 def _to_numpy(audio):
