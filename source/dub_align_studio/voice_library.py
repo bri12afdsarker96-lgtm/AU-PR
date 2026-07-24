@@ -60,6 +60,7 @@ class VoiceEntry:
     created: str
     engine: str = DEFAULT_ENGINE           # 该音色设计所用引擎/模型
     params: dict = field(default_factory=lambda: dict(DEFAULT_PARAMS))  # 可调合成参数
+    released: bool = False                 # 发行音色：已定稿投产，成片页置顶展示（2026-07-25）
 
     def to_ref(self) -> VoiceRef:
         return VoiceRef(
@@ -104,7 +105,7 @@ def register_voice(
     merged = merge_params(params)
     (voice_dir / META_NAME).write_text(
         json.dumps({"name": name.strip(), "created": created, "note": note,
-                    "engine": engine or DEFAULT_ENGINE, "params": merged},
+                    "engine": engine or DEFAULT_ENGINE, "params": merged, "released": False},
                    ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
@@ -171,7 +172,53 @@ def _load_entry(voice_dir: Path) -> VoiceEntry | None:
         created=str(meta.get("created") or ""),
         engine=str(meta.get("engine") or DEFAULT_ENGINE),
         params=merge_params(meta.get("params")),
+        released=bool(meta.get("released")),
     )
+
+
+def set_released(library_root: Path, voice_id: str, released: bool) -> None:
+    """发行/取消发行：只改元数据里的 released 标记（音频/转写不动）。"""
+    voice_dir = voices_root(library_root) / voice_id
+    meta_path = voice_dir / META_NAME
+    if not voice_dir.is_dir():
+        raise KeyError(f"音色不存在：{voice_id}")
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+    except Exception:
+        meta = {}
+    meta["released"] = bool(released)
+    meta.setdefault("name", voice_dir.name)
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+AUDIO_SUFFIXES = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".aac"}
+
+
+def batch_import_folder(library_root: Path, folder: Path,
+                        engine: str = DEFAULT_ENGINE) -> list[str]:
+    """文件夹批量建音色（2026-07-25：人工逐个录入太慢）。
+
+    文件夹里每个音频 = 一个音色（文件名即音色名）；同名 .txt 自动作为参考转写。
+    重名自动加序号（_unique_voice_id）。返回建好的音色名列表。"""
+    folder = Path(folder)
+    if not folder.is_dir():
+        raise FileNotFoundError(f"文件夹不存在：{folder}")
+    created: list[str] = []
+    for audio in sorted(p for p in folder.iterdir()
+                        if p.suffix.lower() in AUDIO_SUFFIXES and p.is_file()):
+        transcript = ""
+        txt = audio.with_suffix(".txt")
+        if txt.exists():
+            try:
+                transcript = txt.read_text(encoding="utf-8").strip()
+            except Exception:
+                transcript = ""
+        register_voice(library_root, name=audio.stem, reference_wav=audio,
+                       transcript=transcript, note="批量导入", engine=engine)
+        created.append(audio.stem)
+    if not created:
+        raise ValueError(f"文件夹里没有音频文件（支持 {'/'.join(sorted(AUDIO_SUFFIXES))}）：{folder}")
+    return created
 
 
 def export_voices_zip(library_root: Path) -> bytes:

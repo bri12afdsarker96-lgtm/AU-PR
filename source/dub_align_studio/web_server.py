@@ -183,7 +183,7 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
         audio_mix = mix_from_payload(payload.get("audio") or {}, _resolve_asset)
 
         # 友好校验：目录留空时给明确提示，避免 Path(None) 抛 TypeError（用户反馈①）
-        if action in ("run_all", "dub", "timing", "render", "capcut", "rechunk", "finalize") and output_dir is None:
+        if action in ("run_all", "dub", "timing", "render", "capcut", "rechunk", "finalize", "premiere") and output_dir is None:
             raise ValueError("请先在下方选择「输出目录」（配音与成片都写到这里）。")
         if action in ("run_all", "render", "finalize") and not str(payload.get("shots_dir") or "").strip():
             raise ValueError("请先选择「分镜目录」（放 1.mp4、2.mp4 … 的文件夹）。")
@@ -319,6 +319,40 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                                            output_dir, style or SubtitleStyle(), canvas=canvas)
             log(f"✅ {package.message}")
             log(f"   交接包：{package.package_dir}")
+            with JOB.lock:
+                JOB.ok = True
+        elif action == "voice_release":
+            vid = str(payload.get("voice_id") or "")
+            released = bool(payload.get("released"))
+            voice_library.set_released(_vroot(), vid, released)
+            log(("✅ 已发行音色：" if released else "✅ 已取消发行：") + vid +
+                ("（成片页音色下拉将置顶展示）" if released else ""))
+            with JOB.lock:
+                JOB.ok = True
+        elif action == "voice_batch":
+            folder = str(payload.get("folder") or "").strip()
+            if not folder:
+                raise ValueError("请先选择要批量导入的文件夹（每个音频=一个音色，文件名即音色名；同名 .txt 自动作为转写）。")
+            names = voice_library.batch_import_folder(_vroot(), Path(folder),
+                                                      engine=str(payload.get("engine") or "dots_local"))
+            for n in names:
+                log(f"  ✅ 已建音色：{n}")
+            log(f"✅ 批量导入完成，共 {len(names)} 个音色（默认为草稿，确认后到音色库点「发行」）。")
+            with JOB.lock:
+                JOB.ok = True
+        elif action == "premiere":
+            # Premiere 交接包：V1=逐行分镜段 A1=整轨配音；XML+SRT+素材全在输出目录
+            from .premiere_xml import export_premiere_project
+
+            timings = JOB.timings or pipeline.load_timings(output_dir)
+            segments = pipeline.segments_from_output(output_dir, len(timings))
+            frames = [max(1, round(t.duration * config.fps)) for t in timings]
+            xml_path = export_premiere_project(output_dir, segments,
+                                               output_dir / pipeline.MASTER_NAME, frames,
+                                               config.fps, config.width, config.height)
+            log(f"✅ Premiere 工程已导出：{xml_path}")
+            log("   Premiere Pro → 文件 → 导入 → 选该 XML 即得完整时间线（字幕另导入 成片.srt）。")
+            log("   整个输出目录即交接包；换电脑整目录拷贝后在 PR 里重新链接素材。")
             with JOB.lock:
                 JOB.ok = True
         elif action == "probe":
@@ -969,7 +1003,7 @@ def _state_payload() -> dict:
     from .version import full_version
 
     voices = [{"voice_id": v.voice_id, "name": v.name, "transcript": v.transcript[:40],
-               "engine": v.engine, "params": v.params}
+               "engine": v.engine, "params": v.params, "released": v.released}
               for v in voice_library.list_voices(_vroot())]
     return {
         "version": full_version(),

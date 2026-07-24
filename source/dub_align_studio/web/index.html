@@ -486,6 +486,7 @@ footer b{color:var(--muted);font-weight:600}
         <div class="row" style="gap:10px;margin-top:10px">
           <a id="filmBtn2" class="btn line" style="display:none;flex:1" href="#" target="_blank">▶ 打开成片</a>
           <button class="btn line" style="flex:none" onclick="run('capcut')" title="不重烧，仅按当前成片导出剪映草稿">仅导出剪映草稿</button>
+          <button class="btn line" style="flex:none" onclick="run('premiere')" title="导出 Premiere Pro 可直接导入的 XML 工程（V1 分镜段 + A1 整轨配音；字幕另导入成片.srt）">导出 Premiere 工程</button>
         </div>
       </div>
     </div>
@@ -682,6 +683,8 @@ footer b{color:var(--muted);font-weight:600}
       <div class="row" style="margin-bottom:12px">
         <a class="btn" href="/api/voices/export" download="音色包.zip" style="text-decoration:none">📦 导出音色包</a>
         <button class="btn" onclick="vPack.click()">📥 导入音色包</button>
+        <button class="btn gold" onclick="batchVoices()" title="选一个文件夹：每个音频=一个音色（文件名即名字，同名.txt自动作转写），一次拖放录入十几个">📂 批量导入文件夹</button>
+        <input type="hidden" id="vBatchDir">
         <input type="file" id="vPack" accept=".zip" style="display:none" onchange="importVoicePack(this)">
       </div>
       <div class="vlist" id="vList"></div>
@@ -829,7 +832,14 @@ async function loadState(){
   fill('aligner',s.aligners.map(k=>[k,k==='whisper'?'whisper（推荐）':k]));
   fill('aspect',s.aspects.map(k=>[k,k]));
   fill('edPos',s.positions.map(k=>[k,k]));
-  fill('voice',[['','默认声线（引擎自带）']].concat(s.voices.map(v=>[v.voice_id,v.voice_id+'｜'+v.name])));
+  {const rel=s.voices.filter(v=>v.released),draft=s.voices.filter(v=>!v.released);
+   const sel=$('voice');sel.innerHTML='';
+   const add=(v,t)=>{const o=document.createElement('option');o.value=v;o.textContent=t;return o;};
+   sel.appendChild(add('','默认声线（引擎自带）'));
+   if(rel.length){const g=document.createElement('optgroup');g.label='★ 发行音色';
+     rel.forEach(v=>g.appendChild(add(v.voice_id,'★ '+v.name)));sel.appendChild(g);}
+   if(draft.length){const g=document.createElement('optgroup');g.label='草稿';
+     draft.forEach(v=>g.appendChild(add(v.voice_id,v.name)));sel.appendChild(g);}}
   window._voices=s.voices;
   fill('vEngine',s.engines.map(k=>[k,ENGINE_LABEL[k]||k]));
   $('vEngine').value=s.engines.includes('dots_local')?'dots_local':s.engines[0];
@@ -841,18 +851,22 @@ async function loadState(){
   $('vCount').textContent=s.voices.length;
   const list=$('vList');list.innerHTML='';
   if(!s.voices.length)list.innerHTML='<p class="empty">还没有音色 — 在左侧登记</p>';
-  s.voices.forEach((v,k)=>{
+  [...s.voices].sort((a,b)=>(b.released?1:0)-(a.released?1:0)).forEach((v,k)=>{
     const el=document.createElement('div');el.className='vcard';
+    if(v.released)el.style.borderColor='var(--gold)';
     const eng=(ENGINE_LABEL[v.engine]||v.engine||'').split('（')[0];
     const pp=v.params||{};
     const meta=`${eng} · 步${pp.num_steps??'-'} · 引导${pp.guidance_scale??'-'} · 速${pp.speed??'-'}`;
-    el.innerHTML=`<div class="vwave"></div><div style="min-width:0;flex:1 1 120px"><b>${esc(v.name)}</b>
+    el.innerHTML=`<div class="vwave"></div><div style="min-width:0;flex:1 1 120px"><b>${v.released?'<span style="color:var(--gold)">★ </span>':''}${esc(v.name)}</b>
       <small>${v.transcript?'「'+esc(v.transcript)+'」':'（未填转写 · 纯音色克隆）'}</small>
       <small style="color:var(--gold)">${esc(meta)}</small></div>
       <button class="btn" style="padding:7px 11px;flex:none" title="试听参考音频"
         onclick="playUrl('/api/voices/${encodeURIComponent(v.voice_id)}/audio',this)">▶ 原声</button>
       <button class="btn line" style="padding:7px 11px;flex:none" title="用该音色引擎+参数合成一句试听"
         onclick="tryVoice('${encodeURIComponent(v.voice_id)}','${esc(v.engine||'')}',this)">🎧 合成试听</button>
+      <button class="btn ${v.released?'':'gold'}" style="padding:7px 11px;flex:none"
+        title="发行=已定稿投产，成片页置顶；未发行=草稿"
+        onclick="setReleased('${encodeURIComponent(v.voice_id)}',${v.released?'false':'true'})">${v.released?'↩ 取消发行':'★ 发行'}</button>
       <span class="x" style="flex:none" onclick="delVoice('${encodeURIComponent(v.voice_id)}')">✕</span>`;
     list.appendChild(el);
     const wv=el.querySelector('.vwave');let ss=13+k*7;const r=()=>{ss=(ss*16807)%2147483647;return ss/2147483647};
@@ -1074,6 +1088,13 @@ async function saveVoice(){
   loadState();
 }
 async function delVoice(id){if(confirm('删除该音色？')){await fetch('/api/voices/'+id,{method:'DELETE'});loadState();}}
+async function setReleased(id,val){ // 发行音色：定稿标记，成片页置顶（2026-07-25）
+  if(await postRun({action:'voice_release',voice_id:decodeURIComponent(id),released:val}))
+    setTimeout(loadState,600);
+}
+async function batchVoices(){ // 文件夹批量建音色：文件名=音色名，同名.txt=转写
+  await pickDir('vBatchDir');
+}
 // 用音色的引擎+参数合成一句试听（真实引擎；mock 无 GPU 也能走通）
 async function tryVoice(id,engine,btn){
   const vid=decodeURIComponent(id);
@@ -1308,6 +1329,9 @@ async function browseDir(path){
 function chooseDir(){
   if(dirTarget&&dirCurrent)$(dirTarget).value=dirCurrent;
   $('dirModal').classList.remove('on');
+  if(dirTarget==='vBatchDir'&&$('vBatchDir').value.trim()){ // 批量建音色：选完目录直接开跑
+    postRun({action:'voice_batch',folder:$('vBatchDir').value.trim(),engine:'dots_local'}).then(ok=>{if(ok){pollAll();setTimeout(loadState,1500);}});
+  }
 }
 
 /* ── 文案导入（xlsx / txt）── */
