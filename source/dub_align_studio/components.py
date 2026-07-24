@@ -551,7 +551,11 @@ def _install_fish_speech(log: LogFn) -> None:
         if not _fish_model_ready():
             raise RuntimeError("模型下载完成但未找到权重文件，请重试或手动核对 checkpoints 目录。")
         log("✅ 模型就绪。")
-    log("✅ fish-speech 安装完成 —— 点「启动服务」后即可在配音引擎里选用。")
+    log("✅ fish-speech 安装完成，正在自动启动本地服务（首次加载大模型较慢，请稍候）…")
+    try:
+        start_fish_server(log)  # 装完自动起服务并探活，直接嫁接进配音引擎，无需再手点「启动服务」
+    except Exception as exc:  # noqa: BLE001 —— 自动启动失败不算安装失败，给手动兜底
+        log(f"⚠ 自动启动未成功（{exc}）。可到工具箱点「启动服务」重试；装好的源码/依赖/模型不受影响。")
 
 
 _FISH_PROC: subprocess.Popen | None = None

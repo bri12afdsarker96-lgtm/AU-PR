@@ -324,7 +324,7 @@ footer b{color:var(--muted);font-weight:600}
         <label class="row mini" style="gap:7px"><input type="checkbox" id="burn" checked>烧录字幕</label>
         <span class="mini" style="color:var(--faint)">字幕位置/字号/字体 → 在「文本框」页设置并实时预览</span>
         <span class="row mini" style="gap:7px">Seed <input type="number" id="seed" value="42" style="width:92px"></span>
-        <label class="row mini" style="gap:7px"><input type="checkbox" id="capcut">完成后导出剪映草稿</label>
+        <span class="mini" style="color:var(--faint)">剪映草稿导出 → 成片后在「文本框」页校对完成时一并导出</span>
       </div>
       <div class="row" style="margin-top:14px;border-top:1px solid var(--line);padding-top:14px">
         <span class="f" style="margin:0;flex:none">💾 作品参数预设</span>
@@ -907,7 +907,7 @@ async function run(action,target){
     subtitle_position:$('subPos').value||'底部',subtitle_font:$('subFont')?.value||'',
     subtitle_color:($('subColor')&&$('subColor').value.trim())||'#FFFFFF',
     subtitle_border:+($('subBorder')&&$('subBorder').value)||0,
-    export_capcut:$('capcut').checked,aspect:$('aspect').value,overlays,audio:collectAudio()};
+    aspect:$('aspect').value,overlays,audio:collectAudio()};
   if(await postRun(payload))pollAll();
 }
 const _prevRun={};
@@ -1483,7 +1483,7 @@ function stopMixPreview(){
 /* ── 作品参数预设（存服务端总目录，可迁移；用户反馈②统一作品参数） ── */
 function collectConfig(){
   return {engine:$('engine').value,aligner:$('aligner').value,aspect:$('aspect').value,
-    voice:$('voice').value,burn:$('burn').checked,capcut:$('capcut').checked,seed:+$('seed').value,
+    voice:$('voice').value,burn:$('burn').checked,seed:+$('seed').value,
     pause:+$('pause').value,speed:+$('speed').value,
     subPos:$('subPos').value,subsize:+$('subsize').value,subFont:$('subFont').value,
     audio:collectAudio(),overlays:overlays};
@@ -1492,7 +1492,7 @@ function applyConfigObj(c){
   if(!c)return;
   const set=(id,v)=>{const el=$(id);if(el!=null&&v!=null)el.value=v;};
   set('engine',c.engine);set('aligner',c.aligner);set('aspect',c.aspect);set('voice',c.voice);
-  if(c.burn!=null)$('burn').checked=c.burn; if(c.capcut!=null)$('capcut').checked=c.capcut;
+  if(c.burn!=null)$('burn').checked=c.burn;
   set('seed',c.seed);set('pause',c.pause);set('speed',c.speed);
   set('subPos',c.subPos);set('subsize',c.subsize);set('subFont',c.subFont);
   if($('pv'))$('pv').textContent=(+$('pause').value).toFixed(2);

@@ -36,7 +36,20 @@ def _app_dir() -> Path:
 
 
 def default_data_root() -> Path:
-    return _app_dir() / "水星配音数据"
+    """默认数据总目录：exe/仓库旁「水星配音数据」；不存在时向上两级回退查找。
+
+    为什么要回退（用户 2026-07-24「重新打包把模型弄丢了」）：打包.bat 清理 dist 前
+    会把 dist 内的数据目录搬到仓库根保护；新 exe 在 dist\\软件名\\ 下、默认只看 exe 旁
+    → 找不到被保护的数据（模型/音色「丢失」）。向上（dist、仓库根）回退即可自动找回。
+    """
+    primary = _app_dir() / "水星配音数据"
+    if primary.is_dir():
+        return primary
+    for ancestor in (_app_dir().parent, _app_dir().parent.parent):
+        candidate = ancestor / "水星配音数据"
+        if candidate.is_dir():
+            return candidate
+    return primary
 
 
 def load_settings() -> dict:
