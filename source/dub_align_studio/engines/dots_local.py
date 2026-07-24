@@ -6,7 +6,7 @@
         rt = DotsTtsRuntime.from_pretrained("rednote-hilab/dots.tts-soar",
                                             precision="bfloat16", optimize=True)
         result = rt.generate(text=..., prompt_audio_path=..., prompt_text=...,
-                             num_steps=10, guidance_scale=1.2, seed=42)
+                             num_steps=10, guidance_scale=1.2)
         # result 为 dict：{"audio": torch.Tensor, "sample_rate": int(48000)}
         soundfile.write(out, result["audio"].float().cpu().squeeze().numpy(),
                         result["sample_rate"])
@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import inspect
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,6 +37,7 @@ from .base import (
     write_master_metadata,
 )
 from .voice_ref import VoiceRef
+from .. import settings as studio_settings
 
 
 # 检查点仓库（HuggingFace）：SOAR = 自纠偏对齐版，克隆相似度最好，默认选它。
@@ -42,16 +45,47 @@ DEFAULT_CHECKPOINT = "rednote-hilab/dots.tts-soar"
 _PACKAGE = "dots_tts"            # pip 名 dots.tts → 导入名 dots_tts
 _RUNTIME_MODULE = "dots_tts.runtime"   # DotsTtsRuntime 在此子模块
 EXPECTED_SAMPLE_RATE = 48000
+LOCAL_CHECKPOINT_DIR = "dots.tts-soar"
 
 # 运行时缓存：{(checkpoint, precision, optimize): runtime}，跨多次合成复用已加载的大模型。
 _RUNTIME_CACHE: dict = {}
 
 
+def _component_python_root() -> Path:
+    return studio_settings.components_root() / "dots.tts" / "python"
+
+
+def _torch_python_root() -> Path:
+    return studio_settings.components_root() / "torch" / "python"
+
+
+def _ensure_component_python_path() -> None:
+    for root in reversed([_torch_python_root(), _component_python_root()]):
+        if root.exists() and str(root) not in sys.path:
+            sys.path.insert(0, str(root))
+
+
 def _installed() -> bool:
+    _ensure_component_python_path()
     try:
         return importlib.util.find_spec(_PACKAGE) is not None
     except (ImportError, ValueError):
         return False
+
+
+def _local_checkpoint() -> Path | None:
+    candidate = studio_settings.components_root() / "dots.tts" / LOCAL_CHECKPOINT_DIR
+    required = ("model.safetensors", "vocoder.safetensors", "config.json")
+    if candidate.is_dir() and all((candidate / name).exists() for name in required):
+        return candidate
+    return None
+
+
+def _checkpoint_ref(checkpoint: str | None) -> str:
+    if checkpoint:
+        return checkpoint
+    local = _local_checkpoint()
+    return str(local) if local is not None else DEFAULT_CHECKPOINT
 
 
 def _cuda_detail() -> tuple[bool, str]:
@@ -75,9 +109,9 @@ _TORCH_CUDA_HINT = (
 
 @dataclass
 class DotsLocalEngine:
-    """dots.tts 本地引擎。checkpoint 可换（base/soar/mf），seed 固定以尽量可复现。"""
+    """dots.tts 本地引擎。checkpoint 可换（base/soar/mf）。"""
 
-    checkpoint: str = DEFAULT_CHECKPOINT
+    checkpoint: str | None = None
     seed: int = 42
     precision: str = "bfloat16"
     optimize: bool = False   # torch.compile 加速：首次编译慢且在部分 Windows 环境易失败，默认关
@@ -93,6 +127,14 @@ class DotsLocalEngine:
                 available=False,
                 detail="未安装 dots.tts（工具箱点「安装」，已内置国内镜像）；权重按需下载，不进安装包。",
             )
+        try:
+            importlib.import_module(_RUNTIME_MODULE)
+        except Exception as exc:
+            return EngineStatus(
+                key=self.key,
+                available=False,
+                detail=f"dots.tts 已找到但导入失败：{exc}",
+            )
         cuda_ok, cuda_detail = _cuda_detail()
         if not cuda_ok:
             return EngineStatus(key=self.key, available=False,
@@ -100,7 +142,7 @@ class DotsLocalEngine:
         return EngineStatus(
             key=self.key,
             available=True,
-            detail=f"dots.tts 可用（检查点 {self.checkpoint}）；{cuda_detail}",
+            detail=f"dots.tts 可用（检查点 {_checkpoint_ref(self.checkpoint)}）；{cuda_detail}",
         )
 
     def synthesize_full(
@@ -126,7 +168,7 @@ class DotsLocalEngine:
             path=output,
             engine=self.key,
             voice_id=voice.voice_id if voice else "",
-            model=self.checkpoint,
+            model=_checkpoint_ref(self.checkpoint),
             seed=options.seed,
             sample_rate=EXPECTED_SAMPLE_RATE,
             seconds=round(seconds, 3),
@@ -138,7 +180,8 @@ class DotsLocalEngine:
     # ------------------------------------------------------------------
     def _load_runtime(self):
         """加载（并缓存）DotsTtsRuntime。API：from dots_tts.runtime import DotsTtsRuntime。"""
-        cache_key = (self.checkpoint, self.precision, self.optimize)
+        checkpoint = _checkpoint_ref(self.checkpoint)
+        cache_key = (checkpoint, self.precision, self.optimize)
         cached = _RUNTIME_CACHE.get(cache_key)
         if cached is not None:
             return cached
@@ -165,7 +208,7 @@ class DotsLocalEngine:
                 f"{_RUNTIME_MODULE} 中未找到 DotsTtsRuntime。请核对 dots.tts 版本（本适配器按 0.2.x API）。"
             )
         runtime = runtime_cls.from_pretrained(
-            self.checkpoint, precision=self.precision, optimize=self.optimize)
+            checkpoint, precision=self.precision, optimize=self.optimize)
         _RUNTIME_CACHE[cache_key] = runtime
         return runtime
 
@@ -173,7 +216,7 @@ class DotsLocalEngine:
         """按 dots.tts 0.2.x 真实 API 整篇生成并落盘。
 
         generate() 接受 text / prompt_audio_path / prompt_text / num_steps /
-        guidance_scale / seed，返回 {"audio": tensor, "sample_rate": int}。
+        guidance_scale 等参数，返回 {"audio": tensor, "sample_rate": int}。
         只传上游支持的参数（speed/max_pause 等非其入参，避免 TypeError）。
         """
         runtime = self._load_runtime()
@@ -181,17 +224,21 @@ class DotsLocalEngine:
             "text": text,
             "num_steps": int(options.num_steps),
             "guidance_scale": float(options.guidance_scale),
+            # 当前 dots.tts 0.2.1 runtime.generate 不接收 seed。
+            # 先放入候选参数，再按真实签名过滤；若上游后续支持 seed，会自动传入。
             "seed": int(options.seed),
         }
+        if options.normalize_text:
+            kwargs["normalize_text"] = True
         if voice is not None:
-            kwargs["prompt_audio_path"] = str(voice.reference_wav)
+            kwargs["prompt_audio_path"] = Path(voice.reference_wav).as_posix()
             if voice.transcript.strip():
                 kwargs["prompt_text"] = voice.transcript.strip()  # 带转写：克隆相似度最高
         try:
-            result = runtime.generate(**kwargs)
+            result = runtime.generate(**_supported_generate_kwargs(runtime, kwargs))
         except TypeError as exc:
             raise EngineUnavailable(
-                f"dots.tts generate() 参数不匹配（{exc}）。请核对 dots.tts 版本（本适配器按 0.2.x）。"
+                f"dots.tts generate() 参数不匹配（{exc}）。请核对 dots.tts 版本或重新安装 dots.tts 组件。"
             ) from exc
         except Exception as exc:
             raise EngineUnavailable(f"dots.tts 整篇合成失败：{exc}") from exc
@@ -229,3 +276,17 @@ def _to_numpy(audio):
             audio = method()
     to_numpy = getattr(audio, "numpy", None)
     return to_numpy() if callable(to_numpy) else audio
+
+
+def _supported_generate_kwargs(runtime, kwargs: dict) -> dict:
+    """按 runtime.generate 的真实签名过滤参数，兼容 dots.tts 小版本差异。"""
+    try:
+        signature = inspect.signature(runtime.generate)
+    except (TypeError, ValueError):
+        safe = {"text", "prompt_audio_path", "prompt_text", "num_steps", "guidance_scale"}
+        return {key: value for key, value in kwargs.items() if key in safe}
+    params = signature.parameters
+    accepts_kwargs = any(param.kind is inspect.Parameter.VAR_KEYWORD for param in params.values())
+    if accepts_kwargs:
+        return kwargs
+    return {key: value for key, value in kwargs.items() if key in params}
