@@ -346,8 +346,9 @@ def _import_failure_hint(exc: Exception) -> str:
         return ""
     frozen = ""
     if getattr(sys, "frozen", False):
-        frozen = ("；注意：本软件是打包版(frozen)，无法读取你另装到系统 Python 的包 —— "
-                  "dots.tts 请改用「整合离线版」或源码环境运行")
+        frozen = ("；注意：本软件是打包版(frozen)，启动时会自动桥接本机同版本系统 Python 的依赖 —— "
+                  "请确认本机装有 Python 3.11 且其中已装好 dots.tts 全套（工具箱点「安装」即可装进去），"
+                  "或改用「整合离线版」")
     return (
         f"。诊断：{_transformers_diag()}，运行环境 {sys.executable}{frozen}。"
         "dots.tts 需要 transformers==4.57.0（5.x 过新同样缺 Qwen2）。"

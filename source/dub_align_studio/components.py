@@ -273,9 +273,22 @@ PIP_EXTRA = ["https://mirrors.aliyun.com/pypi/simple", "https://pypi.mirrors.ust
              "https://pypi.org/simple"]
 
 
+def _py() -> str:
+    """跑 pip/子进程用的 Python：源码运行=自身；打包 exe=桥接到的系统 Python。
+
+    exe 里的 sys.executable 是软件自己（没有 pip），直接用会静默失败——统一走这里。"""
+    if getattr(sys, "frozen", False):
+        from . import syspy
+
+        found = syspy.system_python()
+        if found is not None:
+            return str(found)
+    return sys.executable
+
+
 def _pip_base_cmd() -> list[str]:
     """pip 安装基础命令：国内镜像 + 超时/重试 + 关进度条（日志更干净）。"""
-    cmd = [sys.executable, "-m", "pip", "install",
+    cmd = [_py(), "-m", "pip", "install",
            "-i", PIP_INDEX, "--timeout", "30", "--retries", "3", "--progress-bar", "off"]
     for extra in PIP_EXTRA:
         cmd += ["--extra-index-url", extra]
@@ -347,7 +360,7 @@ def _installed_dist_version(package: str) -> str:
     """在子进程里读刚装好的版本（去掉 +cuXXX 本地标签），避开当前进程的导入缓存。"""
     try:
         out = subprocess.check_output(
-            [sys.executable, "-c", f"import importlib.metadata as m;print(m.version({package!r}))"],
+            [_py(), "-c", f"import importlib.metadata as m;print(m.version({package!r}))"],
             text=True, stderr=subprocess.DEVNULL).strip()
         return out.split("+")[0]
     except Exception:
@@ -365,12 +378,12 @@ def _install_torch_cuda(log: LogFn, key: str | None = None) -> None:
     index = ["--index-url", TORCH_CUDA_INDEX, "--timeout", "60", "--retries", "3", "--progress-bar", "off"]
     log("安装 PyTorch GPU 版（CUDA 12.1，官方源，约 2.5GB，请耐心）…")
     log("① 安装 torchaudio（它决定可匹配的 torch 版本）…")
-    _stream_command([sys.executable, "-m", "pip", "install", "--force-reinstall", "torchaudio"] + index,
+    _stream_command([_py(), "-m", "pip", "install", "--force-reinstall", "torchaudio"] + index,
                     log, key=key, error="torchaudio 安装失败")
     ta_ver = _installed_dist_version("torchaudio")
     if ta_ver:
         log(f"② 将 torch 锁到与 torchaudio 相同的版本 {ta_ver}（避免 torch 被拉高造成不匹配）…")
-        _stream_command([sys.executable, "-m", "pip", "install", "--force-reinstall", f"torch=={ta_ver}"] + index,
+        _stream_command([_py(), "-m", "pip", "install", "--force-reinstall", f"torch=={ta_ver}"] + index,
                         log, key=key,
                         error=f"torch=={ta_ver} 安装失败。可手动执行：pip install --force-reinstall torch=={ta_ver} torchaudio=={ta_ver} --index-url " + TORCH_CUDA_INDEX)
     _cleanup_torch_stragglers(log, key=key)
@@ -392,7 +405,7 @@ def _cleanup_torch_stragglers(log: LogFn, key: str | None = None) -> None:
             continue
         log(f"③ 清理 {package}（其 DLL 锁死旧 torch 版本，torch 换版后必弹「无法定位程序输入点」；本软件不需要它）…")
         try:
-            _stream_command([sys.executable, "-m", "pip", "uninstall", "-y", package],
+            _stream_command([_py(), "-m", "pip", "uninstall", "-y", package],
                             log, key=key, error=f"{package} 卸载失败")
         except RuntimeError as exc:
             log(f"⚠ {exc} —— 可手动执行：pip uninstall -y {package}")
@@ -560,7 +573,7 @@ def _install_fish_speech(log: LogFn) -> None:
             f"snapshot_download(repo_id={FISH_MODEL_REPO!r}, local_dir={str(fish_checkpoints_dir())!r})"
         )
         try:
-            _stream_command([sys.executable, "-c", script], log, env=env, key="fish_speech",
+            _stream_command([_py(), "-c", script], log, env=env, key="fish_speech",
                             error="模型下载失败")
         except RuntimeError as exc:
             raise RuntimeError(
@@ -598,7 +611,7 @@ def start_fish_server(log: LogFn, wait_seconds: float = 90.0) -> None:
     if stage in {"none", "source", "deps", "model"}:
         raise RuntimeError(f"还不能启动：{detail}")
     src = fish_source_dir()
-    python = fish_python_runtime() if fish_python_runtime().exists() else Path(sys.executable)
+    python = fish_python_runtime() if fish_python_runtime().exists() else Path(_py())
     cmd = [str(python), "-m", "tools.api_server", "--listen", FISH_SERVER_ADDR]
     ckpt = fish_checkpoints_dir()
     decoder = next((p for p in sorted(ckpt.glob("firefly*generator*.pth"))), None) if ckpt.is_dir() else None

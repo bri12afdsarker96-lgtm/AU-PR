@@ -31,6 +31,11 @@ def main() -> int:
     os.environ["PATH"] = str(app_dir) + os.pathsep + os.environ.get("PATH", "")
 
     try:
+        from dub_align_studio import syspy
+
+        note = syspy.bridge_site_packages()  # 打包 exe：桥接系统 Python 的依赖（dots.tts/torch）
+        if note:
+            print(note)
         from dub_align_studio.web_server import main as web_main
 
         return web_main()
