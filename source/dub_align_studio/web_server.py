@@ -200,9 +200,15 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                 raise ValueError(f"分镜视频不足：文案 {len(lines)} 行，目录里只有 {len(videos)} 个视频。")
             videos = videos[: len(lines)]
 
-            JOB.set_progress("① 配音 · 整篇克隆", 6)
-            log("① 配音 · 整篇克隆…")
-            master = pipeline.step_dub(text, engine_key, output_dir, voice, options, log=log)
+            JOB.set_progress("① 配音 · 逐行克隆", 6)
+            log("① 配音 · 逐行克隆…")
+
+            def _dub_progress(done: int, total: int) -> None:
+                pct = 6 + int(done / max(1, total) * 22)  # 配音占 6~28%，逐行推进
+                JOB.set_progress(f"① 配音 · 第 {done}/{total} 行", pct)
+
+            master = pipeline.step_dub(text, engine_key, output_dir, voice, options, log=log,
+                                       progress=_dub_progress)
             log(f"  ✅ master {master.seconds:.2f}s（引擎 {master.engine}）")
 
             JOB.set_progress("② 量时长 · 逐行对齐", 28)
@@ -236,7 +242,11 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             with JOB.lock:
                 JOB.timings, JOB.result, JOB.ok = timings, result, result.ok
         elif action == "dub":
-            master = pipeline.step_dub(text, engine_key, output_dir, voice, options, log=log)
+            def _dub_progress(done: int, total: int) -> None:
+                JOB.set_progress(f"配音 · 第 {done}/{total} 行", int(done / max(1, total) * 100))
+
+            master = pipeline.step_dub(text, engine_key, output_dir, voice, options, log=log,
+                                       progress=_dub_progress)
             log(f"✅ master：{master.path.name}（{master.seconds:.2f}s，引擎 {master.engine}）")
             with JOB.lock:
                 JOB.ok = True

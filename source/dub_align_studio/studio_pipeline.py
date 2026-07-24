@@ -126,18 +126,47 @@ def step_dub(
     voice: VoiceRef | None = None,
     options: SynthesisOptions | None = None,
     log=None,
+    per_line: bool = True,
+    progress=None,
 ) -> MasterAudio:
-    """① 整篇克隆 master。mock 引擎时按每行 5s 生成假音频（供无 GPU 环境走通全流程）。"""
+    """① 逐行克隆并拼接 master。per_line=True（默认）时一行一段，分镜时长按单行音频精确对齐。
+
+    progress(done, total)：每完成一行回调，供 UI 进度条实时前进（配音是最耗时一步）。
+    mock 引擎按每行 5s 生成假音频（供无 GPU 环境走通全流程）。
+    """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     engine = make_engine(engine_key)
     from .engines.longform import synthesize_long
 
-    # 长文分块合成 + 同音色拼接：超长整篇不再被引擎截断/漂移（超限才分块，否则单次合成）
+    # 逐行一段：一行=一段音频=一个分镜时长，精确对齐、避免截断/漂移；同一音色参考锚定音色。
     max_chars = int(getattr(engine, "max_chars", 1_000_000))
-    master = synthesize_long(engine, text, voice, output_dir / MASTER_NAME, options, max_chars, log=log)
+    master = synthesize_long(engine, text, voice, output_dir / MASTER_NAME, options, max_chars,
+                             log=log, per_line=per_line, progress=progress)
     _archive_clone(master, voice)
     return master
+
+
+def _timings_from_line_audio(master_wav: Path, lines: list[str]) -> list[LineTiming] | None:
+    """逐行分段成片时，直接用每段音频的真实时长做逐行计时（精确，无需 whisper 估边界）。
+
+    仅当分段清单与脚本行 1:1 对应时启用；否则返回 None，回退到 whisper/均分。
+    """
+    from .engines.longform import read_manifest
+
+    manifest = read_manifest(Path(master_wav))
+    if not manifest:
+        return None
+    chunks = sorted(manifest.get("chunks") or [], key=lambda c: int(c.get("index", 0)))
+    if len(chunks) != len(lines) or not chunks:
+        return None
+    timings = []
+    for i, (line, chunk) in enumerate(zip(lines, chunks), start=1):
+        seconds = float(chunk.get("seconds") or 0.0)
+        if seconds <= 0:
+            return None  # 某段时长缺失/异常 → 不用精确逐行，回退
+        timings.append(LineTiming(index=i, text=line, duration=round(seconds, 3)))
+    return timings
 
 
 def _archive_clone(master: MasterAudio, voice: VoiceRef | None) -> None:
@@ -168,6 +197,15 @@ def step_timing(
     if not lines:
         raise ValueError("整篇文案为空。")
     notes: list[str] = []
+    exact = _timings_from_line_audio(master_wav, lines)
+    if exact is not None:
+        # 逐行分段成片：每行时长=该行克隆音频真实时长，最精确，优先于任何估算尺子
+        write_timing_table(Path(output_dir) / TIMING_TABLE_NAME, exact)
+        low = floor_violations(exact)
+        if low:
+            notes.append(f"第 {low} 行时长低于 5s 业务下限，请检查文案或停顿设置。")
+        notes.append("逐行音频精确对齐：每个分镜时长按该行克隆音频实际时长。")
+        return exact, notes
     if aligner_key == "whisper":
         timings = WhisperAligner().measure(master_wav, lines)
     elif aligner_key == "均分兜底":

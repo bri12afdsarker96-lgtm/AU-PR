@@ -95,6 +95,52 @@ class ManifestRedubTests(unittest.TestCase):
             shutil.rmtree(work, ignore_errors=True)
 
 
+class PerLineTests(unittest.TestCase):
+    def test_per_line_one_segment_per_line_and_progress(self):
+        from dub_align_studio.engines.longform import read_manifest
+        work = Path(tempfile.mkdtemp(prefix="pl_"))
+        try:
+            text = "\n".join(f"第{i}句台词。" for i in range(1, 5))  # 4 行
+            seen: list = []
+            master = synthesize_long(MockEngine(), text, None, work / "master.wav",
+                                     SynthesisOptions(), max_chars=1_000_000,
+                                     per_line=True, progress=lambda d, t: seen.append((d, t)))
+            man = read_manifest(master.path)
+            self.assertEqual(len(man["chunks"]), 4)          # 一行一段（即便 max_chars 极大也逐行）
+            self.assertEqual([d for d, _ in seen], [1, 2, 3, 4])  # 进度逐行回调
+            self.assertEqual(seen[-1], (4, 4))
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+    def test_exact_timing_from_line_audio(self):
+        from dub_align_studio.studio_pipeline import _timings_from_line_audio
+        from dub_align_studio.engines.longform import read_manifest
+        work = Path(tempfile.mkdtemp(prefix="plt_"))
+        try:
+            lines = [f"第{i}句台词。" for i in range(1, 4)]
+            master = synthesize_long(MockEngine(), "\n".join(lines), None, work / "master.wav",
+                                     SynthesisOptions(), max_chars=1_000_000, per_line=True)
+            timings = _timings_from_line_audio(master.path, lines)
+            self.assertIsNotNone(timings)
+            self.assertEqual(len(timings), 3)
+            man = read_manifest(master.path)
+            for t, c in zip(timings, man["chunks"]):
+                self.assertAlmostEqual(t.duration, c["seconds"], places=2)  # 行时长=段音频真实时长
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+    def test_no_manifest_returns_none(self):
+        from dub_align_studio.studio_pipeline import _timings_from_line_audio
+        work = Path(tempfile.mkdtemp(prefix="pln_"))
+        try:
+            # 单句单次合成 → 无分段清单 → 精确逐行不可用，回退（返回 None）
+            master = synthesize_long(MockEngine(), "只有一句。", None, work / "m.wav",
+                                     SynthesisOptions(), max_chars=120)
+            self.assertIsNone(_timings_from_line_audio(master.path, ["只有一句。"]))
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+
 class MockTimbreTests(unittest.TestCase):
     def test_params_change_mock_timbre(self):
         # 不同 seed/步数/引导 → 不同基频倍率（无 GPU 也能听出参数生效）

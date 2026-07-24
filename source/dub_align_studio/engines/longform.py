@@ -75,29 +75,50 @@ def split_for_synthesis(text: str, max_chars: int) -> list[str]:
     return chunks
 
 
+def split_per_line(text: str) -> list[str]:
+    """逐行分段：每行脚本单独成段（一行=一段音频=一个分镜时长）。
+
+    这样每个分镜的时长 = 该行克隆音频的真实时长，精确对齐、无需 whisper 估边界
+    （多行合一段时 whisper 在段内切行会漂移）。行本身超长也不再拆，保持与脚本行 1:1。
+    """
+    return list(parse_script(text))
+
+
 def synthesize_long(engine, text: str, voice: VoiceRef | None, output: Path,
-                    options: SynthesisOptions | None, max_chars: int, log=None) -> MasterAudio:
-    """长文分块合成 + 拼接。文案不超限时直接单次合成（与原行为一致）。"""
+                    options: SynthesisOptions | None, max_chars: int, log=None,
+                    per_line: bool = False, progress=None) -> MasterAudio:
+    """长文分段合成 + 拼接。per_line=True 时逐行一段（一行=一段=一分镜时长，精确对齐）。
+
+    progress(done, total)：每完成一段回调一次，供 UI 进度条实时前进（配音是最耗时的一步）。
+    单段（短文且非逐行）直接单次合成，与原行为一致。
+    """
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    chunks = split_for_synthesis(text, max_chars)
+    chunks = split_per_line(text) if per_line else split_for_synthesis(text, max_chars)
     if len(chunks) <= 1:
-        return engine.synthesize_full(text, voice, output, options)
+        master = engine.synthesize_full(text, voice, output, options)
+        if progress:
+            progress(1, 1)
+        return master
 
     if log:
-        log(f"长文分块合成：共 {len(chunks)} 段（每段≤{max_chars}字，同一音色参考，拼接为连贯 master，避免截断/漂移）")
+        how = "逐行一段（精确对齐）" if per_line else f"每段≤{max_chars}字"
+        log(f"长文分段合成：共 {len(chunks)} 段（{how}，同一音色参考，拼接为连贯 master，避免截断/漂移）")
     tmp_dir = output.parent / f"{output.stem}_chunks"
     tmp_dir.mkdir(parents=True, exist_ok=True)
     parts: list[Path] = []
     manifest_chunks: list[dict] = []
+    total = len(chunks)
     for i, chunk in enumerate(chunks, start=1):
         part = tmp_dir / f"chunk_{i:03d}.wav"
         engine.synthesize_full(chunk, voice, part, options)
         parts.append(part)
-        manifest_chunks.append({"index": i, "text": chunk, "file": part.name,
+        manifest_chunks.append({"index": i, "line": i, "text": chunk, "file": part.name,
                                 "seconds": round(wav_seconds(part), 3)})
         if log:
-            log(f"  段 {i}/{len(chunks)} 完成（{len(chunk)} 字）")
+            log(f"  段 {i}/{total} 完成（{len(chunk)} 字）")
+        if progress:
+            progress(i, total)
     _concat_wavs(parts, output)
     _write_manifest(tmp_dir, output, manifest_chunks)
 
