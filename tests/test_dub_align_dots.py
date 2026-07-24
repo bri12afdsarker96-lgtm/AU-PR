@@ -153,5 +153,45 @@ class DotsAdapterCallSignatureTests(unittest.TestCase):
             engine._save_result({"sample_rate": 48000}, Path(tempfile.mkdtemp()) / "x.wav")
 
 
+class TnStubTests(unittest.TestCase):
+    """dots.tts 在导入时硬 import `tn`（WeTextProcessing，靠 pynini，Windows 装不了）。
+    缺 tn 时须注入原样返回的桩，让 dots.tts 能导入并出声。"""
+
+    def setUp(self):
+        from dub_align_studio.engines import dots_local
+        self.dots_local = dots_local
+        self._saved = {n: sys.modules.get(n) for n in
+                       ("tn", "tn.chinese", "tn.chinese.normalizer",
+                        "tn.english", "tn.english.normalizer")}
+        for name in self._saved:
+            sys.modules.pop(name, None)
+        dots_local._TN_STUB_ACTIVE = False
+
+    def tearDown(self):
+        for name in ("tn", "tn.chinese", "tn.chinese.normalizer",
+                     "tn.english", "tn.english.normalizer"):
+            sys.modules.pop(name, None)
+        for name, mod in self._saved.items():
+            if mod is not None:
+                sys.modules[name] = mod
+        self.dots_local._TN_STUB_ACTIVE = False
+
+    def test_stub_satisfies_dots_hard_import(self):
+        active = self.dots_local._ensure_tn_stub()
+        self.assertTrue(active)  # 本环境无真 tn → 应启用桩
+        # 复刻 dots_tts/utils/text.py 的硬导入，必须能成功
+        from tn.chinese.normalizer import Normalizer as Zh
+        from tn.english.normalizer import Normalizer as En
+        # 构造函数吃任意参数、normalize 原样返回（跳过正则化不改文本）
+        self.assertEqual(Zh(remove_erhua=True, cache_dir="x").normalize("测试123"), "测试123")
+        self.assertEqual(En().normalize("abc"), "abc")
+
+    def test_real_tn_not_overridden(self):
+        fake_tn = types.ModuleType("tn")
+        sys.modules["tn"] = fake_tn  # 冒充真 tn 已在
+        self.assertFalse(self.dots_local._ensure_tn_stub())  # 有真 tn → 不注入桩
+        self.assertIs(sys.modules["tn"], fake_tn)
+
+
 if __name__ == "__main__":
     unittest.main()

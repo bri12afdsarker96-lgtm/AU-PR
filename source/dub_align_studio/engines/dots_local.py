@@ -73,6 +73,50 @@ def _installed() -> bool:
         return False
 
 
+_TN_STUB_ACTIVE = False
+
+
+def _ensure_tn_stub() -> bool:
+    """dots.tts 的 dots_tts.utils.text 在导入时硬性 `from tn.chinese.normalizer import Normalizer`。
+
+    `tn` 来自 WeTextProcessing（中文文本正则化），依赖 pynini —— Windows 编译不了，我们
+    一贯跳过。真 `tn` 不在时，注入一个「原样返回」的桩模块，让 dots.tts 能正常导入并出声：
+    只跳过「数字/符号口语化」这一步预处理，不影响零样本克隆音色与逐行对齐。
+    返回 True 表示启用了桩（即真 tn 缺失）。真 tn 存在则不动，用它。
+    """
+    global _TN_STUB_ACTIVE
+    if "tn" in sys.modules:
+        return _TN_STUB_ACTIVE
+    try:
+        if importlib.util.find_spec("tn") is not None:
+            return False  # 真 WeTextProcessing 在，优先用它
+    except (ImportError, ValueError):
+        pass
+    import types
+
+    class _PassthroughNormalizer:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def normalize(self, text, *args, **kwargs):
+            return text
+
+    modules: dict = {}
+    tn = types.ModuleType("tn")
+    modules["tn"] = tn
+    for lang in ("chinese", "english"):
+        pkg = types.ModuleType(f"tn.{lang}")
+        norm = types.ModuleType(f"tn.{lang}.normalizer")
+        norm.Normalizer = _PassthroughNormalizer
+        pkg.normalizer = norm
+        setattr(tn, lang, pkg)
+        modules[f"tn.{lang}"] = pkg
+        modules[f"tn.{lang}.normalizer"] = norm
+    sys.modules.update(modules)
+    _TN_STUB_ACTIVE = True
+    return True
+
+
 def _local_checkpoint() -> Path | None:
     candidate = studio_settings.components_root() / "dots.tts" / LOCAL_CHECKPOINT_DIR
     required = ("model.safetensors", "vocoder.safetensors", "config.json")
@@ -127,6 +171,7 @@ class DotsLocalEngine:
                 available=False,
                 detail="未安装 dots.tts（工具箱点「安装」，已内置国内镜像）；权重按需下载，不进安装包。",
             )
+        _ensure_tn_stub()
         try:
             importlib.import_module(_RUNTIME_MODULE)
         except Exception as exc:
@@ -139,10 +184,12 @@ class DotsLocalEngine:
         if not cuda_ok:
             return EngineStatus(key=self.key, available=False,
                                 detail=f"dots.tts 已装；{cuda_detail} {_TORCH_CUDA_HINT}")
+        norm_note = ("；文本正则化用桩跳过（缺 WeTextProcessing/pynini，不影响出声，"
+                     "建议文案里数字写成中文）" if _TN_STUB_ACTIVE else "")
         return EngineStatus(
             key=self.key,
             available=True,
-            detail=f"dots.tts 可用（检查点 {_checkpoint_ref(self.checkpoint)}）；{cuda_detail}",
+            detail=f"dots.tts 可用（检查点 {_checkpoint_ref(self.checkpoint)}）；{cuda_detail}{norm_note}",
         )
 
     def synthesize_full(
@@ -185,6 +232,7 @@ class DotsLocalEngine:
         cached = _RUNTIME_CACHE.get(cache_key)
         if cached is not None:
             return cached
+        _ensure_tn_stub()
         try:
             runtime_mod = importlib.import_module(_RUNTIME_MODULE)
         except ModuleNotFoundError as exc:
