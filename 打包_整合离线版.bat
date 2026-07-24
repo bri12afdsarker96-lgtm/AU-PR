@@ -21,8 +21,8 @@ echo [信息] 打包所用 Python：%PYHOME%
 
 rem [0.5] 打包前自检：用「将被拷进包的这个 Python」实测能否加载 dots.tts 运行时。
 rem 目的：避免把装错的环境（最常见 venv：依赖在 venv 里、base 里没有）打成一个用不了的大包。
-echo [自检] 校验打包 Python 是否具备 dots.tts 运行时（transformers==4.57.0 + torch + dots_tts）...
-"%PYHOME%\python.exe" -c "import transformers as t, torch, dots_tts.runtime; assert t.__version__=='4.57.0', t.__version__; print('[自检通过] transformers', t.__version__, 'torch', torch.__version__, 'cuda=', torch.cuda.is_available())"
+echo [自检] 用引擎 probe 校验打包 Python 能否真正跑 dots.tts（含 tn 桩/版本匹配/CUDA）...
+"%PYHOME%\python.exe" -c "import sys;sys.path.insert(0,'source');from dub_align_studio.engines.dots_local import DotsLocalEngine as E;s=E().probe();print('[自检]',s.detail);sys.exit(0 if s.available else 1)"
 if errorlevel 1 goto :PREFAIL
 
 rem 读版本号用于命名
@@ -101,7 +101,7 @@ echo   最常见原因：依赖装进了 venv/conda，而本脚本打包的是�
 echo   解决其一：
 echo     - 用「非 venv 的系统 Python」重新 pip 安装依赖后再运行本脚本；
 echo     - 或把 transformers==4.57.0 + CUDA 版 torch + dots.tts 直接装进 %PYHOME%。
-echo   校验命令（能打印[自检通过]即可打包）：
-echo     "%PYHOME%\python.exe" -c "import transformers,torch,dots_tts.runtime;print(transformers.__version__)"
+echo   校验命令（能打印 available=True 即可打包）：
+echo     "%PYHOME%\python.exe" -c "import sys;sys.path.insert(0,'source');from dub_align_studio.engines.dots_local import DotsLocalEngine as E;print(E().probe())"
 pause
 exit /b 1
