@@ -312,6 +312,14 @@ footer b{color:var(--muted);font-weight:600}
       <div class="sp"><span class="f">分镜目录</span>
         <div class="row"><input type="text" id="shots" placeholder="D:\素材\分镜（1.mp4、2.mp4 …）">
         <button class="btn" onclick="pickDir('shots')">📁 选择</button></div></div>
+      <div class="sp"><span class="f">素材模式（第 i 行文案用什么画面）</span>
+        <select id="matMode">
+          <option value="flat">平铺顺序 · 目录下 1.mp4、2.mp4…，第 i 行用第 i 个</option>
+          <option value="folder_order">文件夹顺序 · 第 i 行用第 i 个子文件夹（行多则从头循环）</option>
+          <option value="keyword">关键字匹配 · 子文件夹名↔每行文案打分选夹（无匹配按顺序兜底）</option>
+        </select>
+        <p class="mini" style="color:var(--faint);margin-top:5px">夹内按 Seed 确定性随机选片（换 Seed 同文案换一套画面，矩阵去重）；
+          选片结果写「输出目录\选片清单.csv」，重渲染复用同一份——删除该文件即重新选片。</p></div>
       <div class="sp"><span class="f">输出目录</span>
         <div class="row"><input type="text" id="outdir" placeholder="D:\输出\第01集">
         <button class="btn" onclick="pickDir('outdir')">📁 选择</button></div></div>
@@ -364,7 +372,7 @@ footer b{color:var(--muted);font-weight:600}
           <span class="f" style="margin:0;color:var(--gold)">🎬 配音分段（逐段试听 · 某段不满意只重配这一段）</span>
           <button class="btn" style="padding:6px 12px;flex:none" onclick="loadChunks()">↻ 刷新</button>
         </div>
-        <p class="mini" style="color:var(--faint);margin:-2px 0 8px">每段用同一音色参考克隆；重配某段后自动重拼整条 master，其余段不动、不用整篇重来。</p>
+        <p class="mini" style="color:var(--faint);margin:-2px 0 8px"><b>配音进行中每完成一段就出现在这里</b>，可立即试听；重配某段后自动重拼整条 master，其余段不动、不用整篇重来（重配请等当前任务跑完再点）。</p>
         <div id="chunkList" class="vlist"></div>
       </div>
     </div>
@@ -404,8 +412,8 @@ footer b{color:var(--muted);font-weight:600}
         <button class="btn" style="padding:8px 11px;flex:none" onclick="delTpl()">删除</button>
         <button class="btn gold" style="padding:8px 11px;flex:none" onclick="saveTpl()">存为模板</button>
       </div>
-      <div class="sp"><span class="f">文本内容</span>
-        <input type="text" id="edText" placeholder="下载知乎搜书名《…》看后续" oninput="syncPv()"></div>
+      <div class="sp"><span class="f">文本内容（<b>按回车换行 = 字幕分行位置</b>，烧录按此分行）</span>
+        <textarea id="edText" rows="2" style="width:100%;resize:vertical" placeholder="下载知乎搜书名《…》看后续" oninput="syncPv()"></textarea></div>
       <div class="grid g2e sp">
         <div><span class="f">位置</span><select id="edPos" onchange="syncPv()"></select></div>
         <div><span class="f">字号 <span class="val" id="edSizeV" style="padding:2px 8px">72</span></span>
@@ -432,6 +440,10 @@ footer b{color:var(--muted);font-weight:600}
         <div><span class="f">结束（秒 · 0 = 片尾）</span><input type="number" id="edEnd" value="0" step="0.5"></div>
       </div>
       <button class="btn gold" onclick="addOverlay()">＋ 添加到列表</button>
+      <div class="row" id="ovEditBar" style="display:none;gap:8px;margin-top:8px">
+        <button class="btn gold" id="ovUpdBtn" style="flex:1" onclick="updateOverlay()">✔ 更新此条</button>
+        <button class="btn line" style="flex:none" onclick="cancelOvEdit()">✖ 取消编辑</button>
+      </div>
     </div>
 
     <!-- 右列：字幕样式 + 已添加（窄列堆叠） -->
@@ -928,6 +940,7 @@ function pvNode(o,ghost,pvW){
   const el=document.createElement('div');
   el.className='ov'+(o.boxed?' boxed':'')+(ghost?' ghost':'');
   el.textContent=o.text||'（文本）';
+  el.style.whiteSpace='pre-line';  // 手动换行=字幕分行位置，预览同款呈现
   el.style.top=(POS_RATIO[o.position]??47)+'%';
   const fpx=Math.max(6,(o.font_size_px*pvW/pvCanvas()[0]));
   el.style.fontSize=fpx.toFixed(1)+'px';
@@ -954,7 +967,14 @@ function syncPv(fromInput){
   phone.style.aspectRatio=cw+'/'+ch;
   const info=$('pvInfo'); if(info)info.textContent=`实时预览 · ${cw} × ${ch}（${$('aspect')?.value||'9:16 竖屏'}）`;
   phone.querySelectorAll('.ov').forEach(x=>x.remove());
-  overlays.forEach(o=>phone.appendChild(pvNode(o,false,pvW)));
+  // 逐行字幕（_sub）有时间窗、成片按 enable 逐条显示——预览只画「当前选中的那一条」
+  // （点右侧列表行切换），不再无视时间轴全部堆叠；用户手加的文本框照常全显。
+  const subs=overlays.filter(o=>o._sub);
+  let showSub=null;
+  if(subs.length){
+    showSub=(ovEdit>=0&&overlays[ovEdit]&&overlays[ovEdit]._sub)?overlays[ovEdit]:subs[0];
+  }
+  overlays.forEach(o=>{ if(!o._sub||o===showSub) phone.appendChild(pvNode(o,false,pvW)); });
   phone.appendChild(pvNode(editorOverlay(),true,pvW));
   // 字幕位置示意（跟随一键成片页的字幕位置/字号设置）
   if($('burn')?.checked){
@@ -993,15 +1013,49 @@ function addOverlay(){
   if(!o.text){alert('请先填写文本内容');return;}
   overlays.push(o);$('edText').value='';renderOverlays();syncPv();
 }
+/* ── 逐条编辑：点列表行载入编辑器（可改文字/手动换行分割/样式/时间窗），更新写回原条目 ── */
+let ovEdit=-1;
+function loadOverlay(i){
+  const o=overlays[i];if(!o)return;
+  ovEdit=i;
+  $('edText').value=o.text||'';
+  if(o.position)$('edPos').value=o.position;
+  $('edSize').value=o.font_size_px||72;$('edSizeV').textContent=$('edSize').value;
+  if($('edFont'))$('edFont').value=o.font_name||'';
+  $('edColor').value=o.color||'#FFFFFF';
+  $('edBorder').value=o.border_width??3;$('edBox').checked=!!o.boxed;
+  $('edStart').value=o.start||0;$('edEnd').value=o.end||0;
+  $('ovEditBar').style.display='flex';
+  $('ovUpdBtn').textContent='✔ 更新第 '+(i+1)+' 条';
+  renderOverlays();syncPv(true);
+}
+function updateOverlay(){
+  const o=overlays[ovEdit];if(!o){cancelOvEdit();return;}
+  const e=editorOverlay();
+  if(!e.text){alert('文本不能为空（不需要这条就点右侧 ✕ 删除）');return;}
+  // 保留 _sub 标记与原条目未编辑字段，覆盖编辑器里的全部可改项（含手动换行）
+  overlays[ovEdit]={...o,...e};
+  cancelOvEdit();
+}
+function cancelOvEdit(){
+  ovEdit=-1;$('ovEditBar').style.display='none';$('edText').value='';
+  renderOverlays();syncPv();
+}
 function renderOverlays(){
   $('ovN').textContent=overlays.length;
   const tb=$('ovList');tb.innerHTML='';
   if(!overlays.length){tb.innerHTML='<tr><td colspan="5" class="empty">还没有文本框 — 在左侧添加</td></tr>';return;}
   overlays.forEach((o,i)=>{
     const tr=document.createElement('tr');
-    tr.innerHTML=`<td>${esc(o.text.slice(0,12))}</td><td class="mut">${o.position}</td>
+    if(i===ovEdit)tr.style.background='rgba(228,185,99,.12)';
+    tr.style.cursor='pointer';tr.title='点击载入编辑（文本框中按回车=字幕分行位置）';
+    const shown=esc(o.text.replace(/\n/g,'⏎').slice(0,14));
+    tr.innerHTML=`<td>${shown}</td><td class="mut">${o.position}</td>
       <td class="mut">${o.font_size_px}</td><td><span style="color:${o.color}">${o.color}</span></td>
-      <td><span class="x" onclick="overlays.splice(${i},1);renderOverlays();syncPv()">✕</span></td>`;
+      <td><span class="x">✕</span></td>`;
+    tr.onclick=()=>loadOverlay(i);
+    tr.querySelector('.x').onclick=(ev)=>{ev.stopPropagation();
+      overlays.splice(i,1);if(ovEdit===i)cancelOvEdit();else{if(ovEdit>i)ovEdit--;renderOverlays();syncPv();}};
     tb.appendChild(tr);});
 }
 
@@ -1051,6 +1105,7 @@ function applyVoiceDefaults(){
 async function run(action,target){
   logTarget=target||'mainlog';
   const payload={action,text:$('text').value,engine:$('engine').value,aligner:$('aligner').value,
+    material_mode:$('matMode')?$('matMode').value:'flat',
     voice_id:$('voice').value,shots_dir:$('shots').value.trim(),output_dir:$('outdir').value.trim(),
     max_pause:+$('pause').value,speed:+$('speed').value,seed:+$('seed').value,
     burn_subtitles:$('burn').checked,subtitle_size:+$('subsize').value||64,
@@ -1068,6 +1123,8 @@ async function pollAll(){
     paint(main.log);
     if(main.timings&&main.timings.length)renderLane(main.timings);
     updateProgress(main);
+    // 配音进行中：分段清单每段落盘即刷新 → 分段面板边配边出现，可立即试听/重配已完成段
+    if(main.running&&['run_all','dub','rechunk'].includes(main.action))loadChunks();
     if(_prevRun.main&&!main.running&&main.done)onMainDone(main);
     _prevRun.main=main.running;
   }
@@ -1633,6 +1690,7 @@ function stopMixPreview(){
 /* ── 作品参数预设（存服务端总目录，可迁移；用户反馈②统一作品参数） ── */
 function collectConfig(){
   return {engine:$('engine').value,aligner:$('aligner').value,aspect:$('aspect').value,
+    matMode:$('matMode')?$('matMode').value:'flat',
     voice:$('voice').value,burn:$('burn').checked,seed:+$('seed').value,
     pause:+$('pause').value,speed:+$('speed').value,
     subPos:$('subPos').value,subsize:+$('subsize').value,subFont:$('subFont').value,
@@ -1642,6 +1700,7 @@ function applyConfigObj(c){
   if(!c)return;
   const set=(id,v)=>{const el=$(id);if(el!=null&&v!=null)el.value=v;};
   set('engine',c.engine);set('aligner',c.aligner);set('aspect',c.aspect);set('voice',c.voice);
+  set('matMode',c.matMode);
   if(c.burn!=null)$('burn').checked=c.burn;
   set('seed',c.seed);set('pause',c.pause);set('speed',c.speed);
   set('subPos',c.subPos);set('subsize',c.subsize);set('subFont',c.subFont);

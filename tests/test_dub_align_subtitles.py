@@ -191,3 +191,29 @@ class BurnSubtitleRenderTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ManualBreakTests(unittest.TestCase):
+    """手动换行=分行位置（2026-07-24）：烧录折行必须尊重用户回车。"""
+
+    def setUp(self):
+        from dub_align_studio.subtitles import wrap_subtitle_text
+        global wrap_subtitle_text_fn
+        wrap_subtitle_text_fn = wrap_subtitle_text
+
+    def test_manual_breaks_preserved(self):
+        style = SubtitleStyle(max_chars_per_line=10, max_lines=3)
+        self.assertEqual(wrap_subtitle_text_fn("命不好的人\n真能翻盘吗", style),
+                         "命不好的人\n真能翻盘吗")
+
+    def test_manual_line_overflow_rewraps_that_line(self):
+        style = SubtitleStyle(max_chars_per_line=5, max_lines=3)
+        out = wrap_subtitle_text_fn("短行\n这一行超过五个字了", style)
+        self.assertEqual(out.split("\n")[0], "短行")
+        self.assertTrue(all(len(l) <= 5 for l in out.split("\n")))
+
+    def test_manual_lines_capped_with_ellipsis(self):
+        style = SubtitleStyle(max_chars_per_line=10, max_lines=2)
+        out = wrap_subtitle_text_fn("一\n二\n三", style)
+        self.assertEqual(len(out.split("\n")), 2)
+        self.assertTrue(out.endswith("…"))

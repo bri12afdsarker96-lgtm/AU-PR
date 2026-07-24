@@ -109,8 +109,20 @@ def effective_chars_per_line(style: SubtitleStyle, canvas_width: int | None) -> 
 
 
 def wrap_subtitle_text(text: str, style: SubtitleStyle, canvas_width: int | None = None) -> str:
-    """紧凑折行：按画布自适应的每行字数折行，最多 max_lines 行（超出截断加省略号）。"""
+    """折行：**手动换行优先**（用户在文本框里回车的位置即分行位置，2026-07-24 需求），
+    每个手动行超宽时再按画布自适应字数续折；无手动换行则整段自动折。
+    总行数封顶 max_lines（超出截断，末行加省略号）。"""
     per_line = effective_chars_per_line(style, canvas_width)
+    manual = [ln for ln in (seg.strip() for seg in str(text).splitlines()) if ln]
+    if len(manual) > 1:
+        lines: list[str] = []
+        for segment in manual:
+            compact = " ".join(segment.split())
+            lines.extend(compact[o: o + per_line] for o in range(0, len(compact), per_line))
+        if len(lines) > style.max_lines:
+            lines = lines[: style.max_lines]
+            lines[-1] = lines[-1][: max(1, per_line - 1)] + "…"
+        return "\n".join(lines)
     compact = " ".join(str(text).strip().split())
     limit = per_line * style.max_lines
     if len(compact) > limit:

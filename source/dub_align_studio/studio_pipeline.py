@@ -81,6 +81,32 @@ def segments_from_output(output_dir: Path, count: int) -> list[Path]:
     return segments[:count]
 
 
+def select_shot_videos(shots_dir: Path, lines: list[str], material_mode: str,
+                       seed: int, output_dir: Path, log=None) -> list[Path]:
+    """按素材模式取每行的视频。flat=平铺旧口径；folder_order/keyword 走 material_select，
+    选片结果落 选片清单.csv（重渲染复用同一份，删除该文件即重新选片）。"""
+    from . import material_select as ms
+
+    if material_mode in ("", "flat"):
+        videos = list_shot_videos(shots_dir)
+        if len(videos) < len(lines):
+            raise ValueError(f"分镜视频不足：文案 {len(lines)} 行，目录里只有 {len(videos)} 个视频。")
+        return videos[: len(lines)]
+    reused = ms.read_selection(Path(output_dir), len(lines))
+    if reused is not None:
+        if log:
+            log(f"  复用现有选片清单（{ms.SELECTION_CSV}）；想重新选片就删除该文件再跑。")
+        return reused
+    shots = ms.select_videos(Path(shots_dir), lines, material_mode, seed)
+    ms.write_selection(Path(output_dir), shots)
+    if log:
+        for s in shots:
+            extra = f"（{s.note}）" if s.note else ""
+            log(f"  行{s.index} →「{s.folder}」→ {s.file.name}{extra}")
+        log(f"  选片清单已写入输出目录（{ms.SELECTION_CSV}），重渲染将复用。")
+    return [s.file for s in shots]
+
+
 def make_engine(key: str) -> DubEngine:
     if key == "mock":
         return MockEngine()
