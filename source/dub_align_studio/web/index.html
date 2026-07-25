@@ -865,8 +865,9 @@ async function loadState(){
   if(s.version){$('verFlag').textContent=s.version.split(' · ')[0];$('verFlag').title=s.version;
     $('verFoot').textContent='· '+s.version+' ';document.title='水星配音对齐工作室 '+s.version.split(' · ')[0];
     const vi=$('verInfo');if(vi)vi.textContent=s.version;}
-  fill('engine',s.engines.map(k=>[k,ENGINE_LABEL[k]||k]));
-  $('engine').value=s.engines.includes('dots_local')?'dots_local':s.engines[0];
+  const engs=s.engines.filter(k=>k!=='fish_local');  // 隐藏 fish-speech（会顶掉 dots.tts 的 CUDA torch）
+  fill('engine',engs.map(k=>[k,ENGINE_LABEL[k]||k]));
+  $('engine').value=engs.includes('dots_local')?'dots_local':engs[0];
   fill('aligner',s.aligners.map(k=>[k,k==='whisper'?'whisper（推荐）':k]));
   fill('aspect',s.aspects.map(k=>[k,k]));
   fill('edPos',s.positions.map(k=>[k,k]));
@@ -879,8 +880,8 @@ async function loadState(){
    if(draft.length){const g=document.createElement('optgroup');g.label='草稿';
      draft.forEach(v=>g.appendChild(add(v.voice_id,v.name)));sel.appendChild(g);}}
   window._voices=s.voices;
-  fill('vEngine',s.engines.map(k=>[k,ENGINE_LABEL[k]||k]));
-  $('vEngine').value=s.engines.includes('dots_local')?'dots_local':s.engines[0];
+  fill('vEngine',engs.map(k=>[k,ENGINE_LABEL[k]||k]));
+  $('vEngine').value=engs.includes('dots_local')?'dots_local':engs[0];
   $('voice').onchange=applyVoiceDefaults;
   fill('subPos', Object.keys(SUB_POS_RATIO).map(k=>[k,k])); $('subPos').value='底部';
   fill('xlsxCol', 'ABCDEFGH'.split('').map(c=>[c,c+' 列'])); $('xlsxCol').value='B';
@@ -920,18 +921,10 @@ async function loadComponents(){
     const s=await (await fetch('/api/components')).json();
     const box=$('compList');box.innerHTML='';
     s.components.forEach(c=>{
+      if(c.key==='fish_speech')return;  // 隐藏 fish-speech：它会顶掉 dots.tts 的 CUDA torch；dots.tts 已够用（2026-07-26）
       const el=document.createElement('div');el.className='check';el.dataset.key=c.key;
       let action='';
-      if(c.key==='fish_speech'){
-        if(c.installed){
-          action=`<span class="pill ok">服务在线</span>
-            <button class="btn" style="padding:8px 13px" onclick="runFish('fish_server_stop')">⏹ 停止</button>`;
-        }else if(c.fish_stage==='startable'){
-          action=`<button class="btn gold" style="padding:8px 15px" onclick="runFish('fish_server')">▶ 启动服务</button>`;
-        }else{
-          action=`<button class="btn line" style="padding:8px 16px" onclick="installComponent('${c.key}')">安装</button>`;
-        }
-      }else if(c.installed){
+      if(c.installed){
         action='<span class="pill ok">已就绪</span>';
       }else{
         const label=c.kind==='download'?'下载':'安装';

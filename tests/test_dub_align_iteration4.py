@@ -270,9 +270,12 @@ class UiContractTests(unittest.TestCase):
 
     def test_index_wires_new_features(self):
         html = (Path(web_server.__file__).parent / "web" / "index.html").read_text(encoding="utf-8")
+        # 注：fish-speech 已从 UI 隐藏（2026-07-26：它会顶掉 dots.tts 的 CUDA torch），
+        # 故不再断言 fish_server 按钮存在；后端 fish 组件与引擎仍保留（见 test_statuses_expose_fish_stage）。
         for marker in ("/api/jobs", "id=\"dlog\"", "id=\"masterAudio\"", "id=\"clList\"",
-                       "fish_server", "/api/clones", "playUrl", "open_folder", "id=\"mediaRow\""):
+                       "/api/clones", "playUrl", "open_folder", "id=\"mediaRow\""):
             self.assertIn(marker, html, marker)
+        self.assertNotIn("runFish('fish_server')", html)  # fish 安装/启动入口已从 UI 隐藏
 
 
 if __name__ == "__main__":
