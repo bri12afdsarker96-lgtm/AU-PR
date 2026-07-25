@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 APP_NAME = "水星配音对齐工作室"
-APP_VERSION = "0.7.37"
+APP_VERSION = "0.7.38"
 
 
 def build_stamp() -> str:
