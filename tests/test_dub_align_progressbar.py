@@ -31,6 +31,15 @@ class ProgressBarFilterTests(unittest.TestCase):
         self.assertIn("w=iw*min(1\\,t/12.500)", fill)      # 随 t 增长、片尾满；逗号已转义
         self.assertIn("t=fill", fill)
 
+    def test_fill_is_full_height_layer_over_track(self):
+        # 进度是「半透明整条高图层从左往右扫」，不是底边细线：fill 的 y/h 必须与底色条带一致
+        fs = progressbar_filters(ProgressBar(text="x"), self.font, self.work, 1080, 1920, 10.0)
+        def geo(f):  # 取 drawbox 的 y 与 h
+            y = f.split("y=")[1].split(":")[0]
+            h = f.split("h=")[1].split(":")[0]
+            return y, h
+        self.assertEqual(geo(fs[0]), geo(fs[1]))           # 底色与进度图层同 y、同高（整条覆盖）
+
     def test_no_text_skips_drawtext(self):
         bar = ProgressBar(text="   ")                       # 空白文字
         fs = progressbar_filters(bar, self.font, self.work, 1080, 1920, 10.0)
