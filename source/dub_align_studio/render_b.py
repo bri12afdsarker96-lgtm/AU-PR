@@ -14,6 +14,9 @@
 
 from __future__ import annotations
 
+import os
+import shutil
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -34,6 +37,42 @@ from .timing import LineTiming
 
 
 DEFAULT_MODE = "裁剪多余画面"  # 画面比音频长→裁；短→放慢/克隆末帧补足（复用内核语义）
+
+
+def _staged_font(font: Path, work_dir: Path) -> Path:
+    """把字体复制到一条**纯 ASCII、不含 &** 的路径再交给 ffmpeg drawtext。
+
+    根因（2026-07-25 用户实测字幕烧成 □□□）：Windows 版 ffmpeg 的 drawtext 用系统
+    ANSI 代码页打开 fontfile，字体若在含 `&` / 非 ASCII 的目录（本机字体在
+    `D:\\GitHub\\By\\AU&PR\\水星配音数据\\字体\\`）就加载失败 → 回退到无中文字形的默认
+    字体 → 满屏方块。文本框叠层用的是 `C:\\Windows\\Fonts`（纯 ASCII）所以正常，唯独
+    字幕字体在坏路径上——正是「字幕 □□□、文本框正常」的现象。
+    复制到 ASCII 落点即可规避；复制失败或找不到 ASCII 落点则原样返回（不比现状更差）。
+    """
+    src = Path(font)
+    try:
+        if str(src.resolve()).isascii() and "&" not in str(src.resolve()):
+            return src  # 本就安全（如 C:\\Windows\\Fonts）——不复制
+    except Exception:
+        return src
+    name = "subfont" + src.suffix.lower()
+    drive = os.path.splitdrive(str(Path(work_dir).resolve()))[0]  # 例 'D:'
+    candidates = []
+    if drive:
+        candidates.append(Path(drive + os.sep) / ".mercury_cache" / "fonts")
+    candidates.append(Path(tempfile.gettempdir()) / "mercury_fonts")
+    for base in candidates:
+        target = base / name
+        if not str(target).isascii() or "&" in str(target):
+            continue  # 落点本身不安全（用户名含中文的 %TEMP% 等）→ 换下一个
+        try:
+            base.mkdir(parents=True, exist_ok=True)
+            if not target.exists() or target.stat().st_size != src.stat().st_size:
+                shutil.copy2(src, target)
+            return target
+        except Exception:
+            continue
+    return src  # 无安全落点 → 原样（保持现状，不引入新失败）
 
 
 @dataclass
@@ -231,7 +270,8 @@ def render_b(
 
             font = pick_font(subtitle_style.font_name)
             if font:
-                burn_filters = drawtext_filters(entries, subtitle_style, font, work_dir, config.width)
+                safe_font = _staged_font(font, work_dir)  # 规避 Windows drawtext 坏路径→□□□
+                burn_filters = drawtext_filters(entries, subtitle_style, safe_font, work_dir, config.width)
                 subtitle_note = f"已烧录字幕（字号 {subtitle_style.font_size_px}px，字体 {font.name}）"
             else:
                 subtitle_note = "字体缺失，未烧字幕（SRT 已导出，可导入剪映）"
@@ -242,6 +282,7 @@ def render_b(
     if overlays:
         font = find_cjk_font()
         if font:
+            font = _staged_font(font, work_dir)  # 同样规避坏路径（文本框叠层字体）
             burn_filters += overlay_filters(overlays, font, work_dir, config.width, master_seconds)
             subtitle_note = (subtitle_note + "；" if subtitle_note else "") + f"已叠加 {len(overlays)} 个文本框"
         else:

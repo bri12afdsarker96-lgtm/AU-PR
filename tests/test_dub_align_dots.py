@@ -198,6 +198,14 @@ class FillerCutTests(unittest.TestCase):
         # 正文起点=样本360；回退 40ms → 320
         self.assertEqual(_onset_cut_index(seq, 1000, 0.6), 320)
 
+    def test_tiny_pause_after_filler_still_cuts(self):
+        from dub_align_studio.engines.dots_local import _onset_cut_index
+        # 2026-07-25 根因：模型读完「嗯」常只停几十毫秒，旧 50ms 门限漏切 → 嗯泄漏。
+        # 现在与停顿长短无关：哪怕只停 30ms（3 个静音窗）也切到正文起点。
+        seq = [0.0]*50 + [0.5]*250 + [0.0]*30 + [0.6]*400
+        # 正文起点=样本330（第33窗）；回退 40ms → 290
+        self.assertEqual(_onset_cut_index(seq, 1000, 0.6), 290)
+
     def test_all_silent_untouched(self):
         from dub_align_studio.engines.dots_local import _onset_cut_index
         self.assertEqual(_onset_cut_index([0.0]*2000, 1000, 0.0), 0)

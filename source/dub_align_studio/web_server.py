@@ -200,18 +200,20 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             videos = pipeline.select_shot_videos(shots_dir, lines, material_mode,
                                                  int(payload.get("seed") or 42), output_dir, log=log)
 
-            JOB.set_progress("① 配音 · 逐行克隆", 6)
+            JOB.set_progress("① 配音 · 逐行克隆", 5)
             log("① 配音 · 逐行克隆…")
 
+            # 进度配比按真实耗时：配音（逐行 GPU 克隆，每行数十秒）是全程最久的一步，
+            # 给它最大区段 5→78%，否则「18/20 行只走到 25%」看着像卡死（用户反馈）。
             def _dub_progress(done: int, total: int) -> None:
-                pct = 6 + int(done / max(1, total) * 22)  # 配音占 6~28%，逐行推进
+                pct = 5 + int(done / max(1, total) * 73)  # 配音占 5~78%
                 JOB.set_progress(f"① 配音 · 第 {done}/{total} 行", pct)
 
             master = pipeline.step_dub(text, engine_key, output_dir, voice, options, log=log,
                                        progress=_dub_progress)
             log(f"  ✅ master {master.seconds:.2f}s（引擎 {master.engine}）")
 
-            JOB.set_progress("② 量时长 · 逐行对齐", 28)
+            JOB.set_progress("② 量时长 · 逐行对齐", 78)
             log("② 量时长 · 逐行对齐…")
             timings, notes = pipeline.step_timing(text, master.path, aligner_key, output_dir)
             for note in notes:
@@ -219,11 +221,11 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             with JOB.lock:
                 JOB.timings = timings
 
-            JOB.set_progress("③ 渲染成片 · 逐行收口", 38)
+            JOB.set_progress("③ 渲染成片 · 逐行收口", 80)
             log("③ 渲染成片 · 逐行裁剪/变速 + 整轨叠加…")
 
             def _render_progress(done: int, total: int) -> None:
-                pct = 38 + int(done / max(1, total) * 52)
+                pct = 80 + int(done / max(1, total) * 15)  # 渲染占 80~95%（比配音快很多）
                 JOB.set_progress(f"③ 渲染成片 · 第 {done}/{total} 段", pct)
 
             result = pipeline.step_render(master.path, timings, videos, output_dir, style,
@@ -232,7 +234,7 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             log(f"  字幕/文本框：{result.subtitle_note or '未启用'}")
             capcut = None
             if payload.get("export_capcut"):
-                JOB.set_progress("④ 导出剪映草稿", 93)
+                JOB.set_progress("④ 导出剪映草稿", 96)
                 log("④ 导出剪映草稿…")
                 capcut = pipeline.step_capcut(timings, result, master.path, output_dir, style,
                                               canvas=canvas)

@@ -6,7 +6,33 @@ import unittest
 from pathlib import Path
 
 from dub_align_studio import frames, timing
-from dub_align_studio.render_b import shot_video_filter
+from dub_align_studio.render_b import _staged_font, shot_video_filter
+
+
+class StagedFontTests(unittest.TestCase):
+    """字幕字体落到含 & / 非 ASCII 的路径时，Windows drawtext 加载失败→□□□。
+    _staged_font 应把它复制到一条纯 ASCII、不含 & 的路径再交给 ffmpeg。"""
+
+    def test_ascii_font_returned_asis(self):
+        base = Path(tempfile.mkdtemp())
+        f = base / "font.ttf"
+        f.write_bytes(b"FONTDATA")
+        # 纯 ASCII 且无 & → 原样返回，不复制
+        self.assertEqual(_staged_font(f, base), f)
+
+    def test_ampersand_path_is_restaged_to_safe_path(self):
+        root = Path(tempfile.mkdtemp())
+        bad = root / "AU&PR" / "字体"
+        bad.mkdir(parents=True)
+        src = bad / "SmileySans.ttf"
+        src.write_bytes(b"FONTDATA123")
+        work = root / "out" / "成片_segments"
+        work.mkdir(parents=True)
+        staged = _staged_font(src, work)
+        self.assertNotEqual(staged, src)
+        self.assertNotIn("&", str(staged))     # 关键：坏字符已去除
+        self.assertTrue(str(staged).isascii())  # 关键：落点纯 ASCII
+        self.assertEqual(staged.read_bytes(), b"FONTDATA123")  # 内容一致
 
 
 class QuantizeToFramesTests(unittest.TestCase):

@@ -57,18 +57,16 @@ _ONSET_LEAD_IN = "嗯。"
 _SILENCE_THRESHOLD = 0.015     # 归一化幅度阈值（相对峰值）：低于视为静音
 _LEADING_KEEP_MS = 20          # 兜底裁静音时起音前保留的余量
 _MAX_LEADING_TRIM_S = 0.8      # 兜底裁静音的封顶
-# 牺牲音节判定（三条同时满足才切，防误切正文）：
-#   ① 缺口 ≥ _FILLER_GAP_MIN_S；② 缺口在 _FILLER_MAX_S 之前开始；
-#   ③ 缺口前的发声段 ≤ _FILLER_VOICED_MAX_S ——「嗯」很短，真实首句普遍更长
-#     （实测用户音频首句 0.79s 即有句间停顿，仅靠①②会误切，③把它排除）。
-# 任一不满足 → 视为「填充音未产生/正文无缝开讲」，回退普通裁静音，绝不切正文。
-# 2026-07-25 用户实测「嗯」大量泄漏进成品：模型读完「嗯。」后实际只停 50~90ms，
-# 原 0.12s 缺口门限几乎永远不达标 → 全部走兜底、嗯被保留。门限放宽到 0.05s；
-# 防误切主力换成③（缺口前发声段 ≤0.6s）——真实首句普遍更长，不会被当成填充音。
-_FILLER_GAP_MIN_S = 0.05
+# 牺牲音节判定（_onset_cut_index）：把第一段发声当「嗯」切掉，切到其后第二段发声（正文）起点。
+#   · _FILLER_MAX_S：第二段发声（正文首字）须在此之前出现，否则回退（不切正文）；
+#   · _FILLER_VOICED_MAX_S：第一段发声 ≤ 此值才当「嗯」——「嗯」很短，真实首句普遍更长
+#     （实测用户音频首句 0.79s > 0.6s，不会被误当填充音切掉）。
+# 2026-07-25：与停顿多长无关——旧方案要求「嗯」后停顿 ≥50ms 才切，模型实际常只停几十毫秒
+# → 门限不达标、「嗯」大量泄漏。现在只要「嗯」与正文之间有任何停顿边界（≥1 个整静音窗）就切。
+_FILLER_GAP_MIN_S = 0.05       # 保留常量（不再作切割门限，_voiced_runs 的整窗断段即边界）
 _FILLER_MAX_S = 1.0
 _FILLER_VOICED_MAX_S = 0.6
-_FILLER_KEEP_MS = 40           # 缺口后回退这点余量，保住正文首音上升沿
+_FILLER_KEEP_MS = 40           # 切到正文起点前回退这点余量，保住正文首音上升沿
 
 # 尾部爆音净化（2026-07-24 实测：正文结束后隔 90ms 冒出 ~50ms、峰值 0.5 的孤立噪声脉冲，
 # 是 AR 模型生成收尾的垃圾音）：从后往前，凡「与前面发声隔 ≥_TAIL_GAP_MIN_S 静音、
@@ -406,41 +404,32 @@ def _leading_trim_index(abs_samples, sample_rate: int, peak: float) -> int:
 
 
 def _onset_cut_index(abs_samples, sample_rate: int, peak: float) -> int:
-    """纯逻辑：牺牲音节切点。返回应从第几个样本开始播放。
+    """纯逻辑：牺牲音节「嗯」切点。返回应从第几个样本开始播放。
 
-    以 10ms 窗扫描：找到首个有声窗（填充音「嗯」起点）→ 在 _FILLER_MAX_S 之前寻找
-    其后的第一个 ≥_FILLER_GAP_MIN_S 的静音缺口 → 切到缺口结束（正文起点）前
-    _FILLER_KEEP_MS 处。找不到合格缺口（填充音未产生/正文无缝开讲）则回退
-    _leading_trim_index（只裁开头纯静音，绝不切正文）。
+    2026-07-25 重写（用户实测「嗯」仍大量泄漏）：**与停顿多长无关**。
+    我们总在正文前注入「嗯。」→ 它必是第一段发声。策略：
+      ① 定位第一段发声（10ms 窗，任何一个整静音窗即断段）；
+      ② 若它靠开头（≤_MAX_LEADING_TRIM_S）且够短（≤_FILLER_VOICED_MAX_S，确是「嗯」而非正文），
+         且其后还有第二段发声（=正文首字）在 _FILLER_MAX_S 内 → 切到正文起点前 _FILLER_KEEP_MS；
+      ③ 否则（「嗯」与正文黏连成一长段 / 其后无正文）→ 回退只裁开头静音，绝不切正文。
+    旧方案要求「嗯」后停顿 ≥_FILLER_GAP_MIN_S(50ms) 才切，而模型实际常只停几十毫秒
+    → 门限不达标、全部走兜底、「嗯」被保留。现在只要「嗯」与正文之间有**任何**停顿边界就切。
     """
     win = max(1, int(sample_rate * 0.010))
     thr = _SILENCE_THRESHOLD * (peak or 1.0)
-    n_windows = min(len(abs_samples) // win, int((_FILLER_MAX_S + 1.0) / 0.010))
-    if n_windows <= 0:
-        return 0
-    voiced = []
-    for i in range(n_windows):
-        seg = abs_samples[i * win:(i + 1) * win]
-        voiced.append(max(seg) > thr if len(seg) else False)
-    try:
-        first_voiced = voiced.index(True)
-    except ValueError:
+    scan = abs_samples[: int((_FILLER_MAX_S + 1.0) * sample_rate)]
+    runs = _voiced_runs(scan, win, thr)
+    if not runs:
         return 0  # 全静音，不动
-    gap_need = max(1, int(_FILLER_GAP_MIN_S / 0.010))
-    filler_deadline = int(_FILLER_MAX_S / 0.010)
-    voiced_max = int(_FILLER_VOICED_MAX_S / 0.010)
-    run = 0
-    for i in range(first_voiced + 1, n_windows):
-        if not voiced[i]:
-            run += 1
-            continue
-        gap_start = i - run
-        if (run >= gap_need and gap_start <= filler_deadline
-                and (gap_start - first_voiced) <= voiced_max):  # 缺口前发声段短 → 确是「嗯」
-            # i 是缺口后第一个有声窗 = 正文起点；回退保留正文起音余量
-            return max(0, i * win - int(_FILLER_KEEP_MS / 1000.0 * sample_rate))
-        run = 0
-    return _leading_trim_index(abs_samples, sample_rate, peak)  # 无合格缺口 → 只裁开头静音
+    r0_start, r0_end = runs[0]
+    early = int(_MAX_LEADING_TRIM_S / 0.010)      # 「嗯」必须靠开头
+    short = int(_FILLER_VOICED_MAX_S / 0.010)     # 「嗯」很短；正文首句普遍更长
+    deadline = int(_FILLER_MAX_S / 0.010)
+    if r0_start <= early and (r0_end - r0_start) <= short and len(runs) >= 2:
+        body_start = runs[1][0]                    # 第二段发声 = 正文首字
+        if body_start <= deadline:
+            return max(0, body_start * win - int(_FILLER_KEEP_MS / 1000.0 * sample_rate))
+    return _leading_trim_index(abs_samples, sample_rate, peak)  # 无第二段/首段过长 → 只裁开头静音
 
 
 def _voiced_runs(abs_samples, win: int, thr: float) -> list[tuple[int, int]]:
