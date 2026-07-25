@@ -364,7 +364,18 @@ def _import_failure_hint(exc: Exception) -> str:
     """dots.tts 导入失败时，把「装到了哪个环境」直接摆到用户面前——
     多数不是没装，而是 pip 装进了另一个 Python，或跑的是看不到系统包的打包版。"""
     text = str(exc)
-    if "Qwen2" not in text and "transformers" not in text.lower():
+    low = text.lower()
+    # torch/torchaudio 缺失或不匹配（本机换新电脑最常见：只装了 torch、漏了 torchaudio）
+    if "torchaudio" in low or ("torch" in low and "no module" in low):
+        return (
+            "。torchaudio 缺失或与 torch 版本不匹配 —— dots.tts 需要 torch 与 torchaudio "
+            "**同一小版本的 CUDA 版**。最省事：到工具箱点 torch/dots.tts「安装」自动补齐匹配版。"
+            "手动两步（务必用运行本软件的同一个 Python）："
+            "① pip install --force-reinstall torchaudio --index-url https://download.pytorch.org/whl/cu126 ；"
+            "② 记下上一步装的 torchaudio 版本 X，再 "
+            "pip install --force-reinstall torch==X --index-url https://download.pytorch.org/whl/cu126 。"
+        )
+    if "Qwen2" not in text and "transformers" not in low:
         return ""
     frozen = ""
     if getattr(sys, "frozen", False):
