@@ -486,7 +486,7 @@ footer b{color:var(--muted);font-weight:600}
         <div class="row" style="gap:10px;margin-top:10px">
           <a id="filmBtn2" class="btn line" style="display:none;flex:1" href="#" target="_blank">▶ 打开成片</a>
           <button class="btn line" style="flex:none" onclick="run('capcut')" title="按当前成片导出剪映草稿（自包含，素材已复制进草稿包）">导出剪映草稿</button>
-          <button class="btn line" style="flex:none" onclick="run('premiere')" title="导出 Premiere Pro 可直接导入的 XML 工程（自包含素材；字幕另导入成片.srt）">导出 Premiere 工程</button>
+          <button class="btn line" style="flex:none" onclick="run('premiere')" title="导出 Premiere 可导入的 XML 交换工程（自包含素材）。用 PR「文件→导入」选该 XML，不是「打开项目」；导入后可另存为 .prproj。字幕另导入成片.srt">导出 Premiere 工程</button>
         </div>
         <div class="row" style="gap:10px;margin-top:10px">
           <button class="btn line" style="flex:1;border-color:#7a5a2a" onclick="cleanupCache()" title="删掉生成过程中的中间产物（master_chunks / 成片_segments），保留成片与各交接包">🧹 清理缓存（删中间产物）</button>

@@ -114,6 +114,21 @@ class PremiereXmlTests(unittest.TestCase):
         self.master.unlink()
         self.assertTrue((mat / "001.mp4").exists() and (mat / "master.wav").exists())
 
+    def test_import_robustness_fields_present(self):
+        # Premiere 严格导入所需字段：缺了会判「格式不正确」而拒收（用户反馈）
+        xml = build_fcp7_xml("测试成片", self.segs, self.master, [150, 210, 180], 30, 1080, 1920)
+        root = ET.fromstring(xml)
+        seq = root.find("sequence")
+        self.assertIsNotNone(seq.find("timecode"))                  # 序列时间码
+        self.assertIsNotNone(seq.find("./media/video/format/samplecharacteristics/pixelaspectratio"))
+        v0 = seq.find("./media/video/track/clipitem")
+        self.assertEqual(v0.findtext("masterclipid"), "masterclip-v1")   # 主素材 id
+        self.assertEqual(v0.findtext("pproTicksIn"), "0")           # ppro ticks
+        self.assertTrue(int(v0.findtext("pproTicksOut")) > 0)
+        self.assertIsNotNone(v0.find("./file/media/video/samplecharacteristics/width"))
+        a0 = seq.find("./media/audio/track/clipitem")
+        self.assertEqual(a0.findtext("./sourcetrack/mediatype"), "audio")
+
     def test_mismatched_counts_raise(self):
         with self.assertRaises(ValueError):
             build_fcp7_xml("x", self.segs, self.master, [100, 100], 30, 1080, 1920)

@@ -347,9 +347,10 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             xml_path = export_premiere_project(output_dir, segments,
                                                output_dir / pipeline.MASTER_NAME, frames,
                                                config.fps, config.width, config.height)
-            log(f"✅ Premiere 工程已导出：{xml_path}")
-            log("   Premiere Pro → 文件 → 导入 → 选该 XML 即得完整时间线（字幕另导入 成片.srt）。")
-            log("   整个输出目录即交接包；换电脑整目录拷贝后在 PR 里重新链接素材。")
+            log(f"✅ Premiere 交换工程已导出：{xml_path}")
+            log("   ⚠ 用 Premiere「文件 → 导入」选该 .xml（不是「打开项目」——打开只认 .prproj，会提示格式不正确）。")
+            log("   导入后即得完整时间线（V1 分镜段 + A1 整轨配音）；想要 .prproj 就在 PR 里「另存为」。字幕另导入 成片.srt。")
+            log("   素材已复制进「Premiere工程_素材/」，工程自包含、可整体拷走，清理缓存后仍可导入。")
             with JOB.lock:
                 JOB.ok = True
         elif action == "cleanup":
