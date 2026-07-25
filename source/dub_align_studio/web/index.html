@@ -476,6 +476,35 @@ footer b{color:var(--muted);font-weight:600}
         <p style="font-size:11px;color:var(--faint);margin-top:12px;letter-spacing:.5px">渲染「③ / 生成成片」时全部烧入。</p>
       </div>
 
+      <!-- 视频进度条（短剧风格）：随播放增长、片尾走满；文字自定义 -->
+      <div class="card" style="margin-top:16px">
+        <h2>视频进度条 <label class="mini" style="float:right;font-weight:400;cursor:pointer"><input type="checkbox" id="pbEnable"> 启用</label></h2>
+        <p class="mini" style="color:var(--faint);margin:-4px 0 10px">
+          画面顶部/底部一条<b>随播放增长的进度条</b>（片尾正好走满）＋<b>自定义文字</b>（可用「 | 」分段）。生成成片 / 重烧成片时烧入。</p>
+        <div class="sp"><span class="f">进度条文字（自定义内容）</span>
+          <input type="text" id="pbText" placeholder="例：全文在哪里看？ | 完整版《负面天道》 | 追更不迷路" style="width:100%"></div>
+        <div class="row sp" style="gap:10px">
+          <div style="flex:1"><span class="f">位置</span>
+            <select id="pbPos" style="width:100%"><option value="顶部">顶部</option><option value="底部">底部</option></select></div>
+          <div style="flex:none"><span class="f">字号</span>
+            <input type="number" id="pbSize" value="40" min="20" max="120" style="width:82px"></div>
+          <div style="flex:none"><span class="f">条带高</span>
+            <input type="number" id="pbStripH" value="0" min="0" max="400" style="width:82px" title="0=按字号自动"></div>
+        </div>
+        <div class="row sp" style="gap:10px;flex-wrap:wrap">
+          <div style="flex:none"><span class="f">文字色</span>
+            <input type="text" id="pbColor" value="#FFFFFF" style="width:100px"></div>
+          <div style="flex:none"><span class="f">条带色</span>
+            <input type="text" id="pbTrack" value="#000000" style="width:100px"></div>
+          <div style="flex:none"><span class="f">条带透明 <span class="val" id="pbTrackOpV" style="padding:1px 6px">0.45</span></span>
+            <input type="range" id="pbTrackOp" min="0" max="1" step="0.05" value="0.45" style="width:120px" oninput="$('pbTrackOpV').textContent=(+this.value).toFixed(2)"></div>
+          <div style="flex:none"><span class="f">进度色</span>
+            <input type="text" id="pbFill" value="#FFC24B" style="width:100px"></div>
+          <div style="flex:none"><span class="f">进度透明 <span class="val" id="pbFillOpV" style="padding:1px 6px">0.95</span></span>
+            <input type="range" id="pbFillOp" min="0" max="1" step="0.05" value="0.95" style="width:120px" oninput="$('pbFillOpV').textContent=(+this.value).toFixed(2)"></div>
+        </div>
+      </div>
+
       <!-- 校对后：重烧成片（不自动导草稿）；草稿/工程/清理各自独立按钮 -->
       <div class="card" style="margin-top:16px">
         <h2>样式确认 · 导出</h2>
@@ -1136,8 +1165,22 @@ async function run(action,target){
     subtitle_position:$('subPos').value||'底部',subtitle_font:$('subFont')?.value||'',
     subtitle_color:($('subColor')&&$('subColor').value.trim())||'#FFFFFF',
     subtitle_border:+($('subBorder')&&$('subBorder').value)||0,
-    aspect:$('aspect').value,overlays,audio:collectAudio()};
+    aspect:$('aspect').value,overlays,audio:collectAudio(),progressbar:collectProgressBar()};
   if(await postRun(payload))pollAll();
+}
+// 视频进度条配置（未启用 → enabled:false，后端返回 None 不烧）
+function collectProgressBar(){
+  if(!$('pbEnable')||!$('pbEnable').checked)return{enabled:false};
+  return {enabled:true,
+    text:$('pbText').value||'',
+    position:$('pbPos').value||'顶部',
+    font_size_px:+$('pbSize').value||40,
+    text_color:($('pbColor').value||'#FFFFFF').trim(),
+    track_color:($('pbTrack').value||'#000000').trim(),
+    track_opacity:+$('pbTrackOp').value,
+    fill_color:($('pbFill').value||'#FFC24B').trim(),
+    fill_opacity:+$('pbFillOp').value,
+    strip_height_px:+$('pbStripH').value||0};
 }
 // 清理缓存：二次确认后删掉生成过程中的中间产物（成片与交接包保留）
 function cleanupCache(){

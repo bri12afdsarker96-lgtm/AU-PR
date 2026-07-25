@@ -26,6 +26,7 @@ from integrated_workbench.proc import run_silent
 from .audio_mix import AudioMix, build_audio_filtergraph, build_audio_inputs
 from .frames import quantize_to_frames
 from .overlays import OverlayText, overlay_filters
+from .progressbar import ProgressBar, progressbar_filters
 from .subtitles import (
     SubtitleStyle,
     drawtext_filters,
@@ -199,11 +200,13 @@ def render_b(
     overlays: list[OverlayText] | None = None,
     audio_mix: AudioMix | None = None,
     progress=None,
+    progress_bar: ProgressBar | None = None,
 ) -> DubBResult:
     """整条 master 叠加 + 逐行画面收口渲染，返回带断言结果的 DubBResult。
 
     subtitle_style 给定时烧录字幕（字号等自定义；字体缺失自动降级为只出 SRT）。
     overlays 为用户自定义文本框（书名/旁白/引导语等），绘制在字幕之上。
+    progress_bar 给定时烧录短剧风格视频进度条（随播放增长，片尾走满），绘制在最上层。
     audio_mix 给定 BGM/音效/总音量时混流（BGM 循环到片尾，音效定点，各自可调音量）。
     有台词的行始终导出 .srt（剪映可直接导入）。
     """
@@ -287,6 +290,15 @@ def render_b(
             subtitle_note = (subtitle_note + "；" if subtitle_note else "") + f"已叠加 {len(overlays)} 个文本框"
         else:
             subtitle_note = (subtitle_note + "；" if subtitle_note else "") + "字体缺失，文本框未叠加"
+
+    # 视频进度条（短剧风格）：随播放增长、片尾走满；绘制在字幕/文本框之上（最上层）。
+    if progress_bar is not None:
+        pb_font = find_cjk_font()
+        if pb_font:
+            pb_font = _staged_font(pb_font, work_dir)
+        burn_filters += progressbar_filters(progress_bar, pb_font, work_dir,
+                                            config.width, config.height, master_seconds)
+        subtitle_note = (subtitle_note + "；" if subtitle_note else "") + "已加视频进度条"
 
     _overlay_master(config, silent_full, master_wav, output_path, burn_filters, audio_mix)
 

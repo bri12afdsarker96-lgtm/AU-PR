@@ -175,6 +175,9 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                 border_width=int(payload.get("subtitle_border", 3)),
             )
         overlays = overlays_from_dicts(payload.get("overlays") or [])
+        from .progressbar import progressbar_from_payload
+
+        progress_bar = progressbar_from_payload(payload)  # 未启用返回 None
         aspect = str(payload.get("aspect") or pipeline.DEFAULT_ASPECT)
         config = pipeline.make_render_config(aspect)
         canvas = (config.width, config.height)
@@ -230,7 +233,7 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
 
             result = pipeline.step_render(master.path, timings, videos, output_dir, style,
                                           config=config, overlays=overlays, audio_mix=audio_mix,
-                                          progress=_render_progress)
+                                          progress=_render_progress, progress_bar=progress_bar)
             log(f"  字幕/文本框：{result.subtitle_note or '未启用'}")
             capcut = None
             if payload.get("export_capcut"):
@@ -282,7 +285,8 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
 
             result = pipeline.step_render(output_dir / pipeline.MASTER_NAME, timings, videos,
                                           output_dir, style, config=config, overlays=overlays,
-                                          audio_mix=audio_mix, progress=_render_progress)
+                                          audio_mix=audio_mix, progress=_render_progress,
+                                          progress_bar=progress_bar)
             log(f"字幕/文本框：{result.subtitle_note or '未启用'}")
             log(("✅ 成片完成：" if result.ok else "❌ 收口断言未通过：") + str(result.output_path))
             with JOB.lock:
@@ -304,7 +308,7 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             log("按当前样式重烧字幕成片…（未点「导出剪映草稿」不会生成草稿包）")
             result = pipeline.step_render(master_path, timings, videos, output_dir, style,
                                           config=config, overlays=overlays, audio_mix=audio_mix,
-                                          progress=_fin_progress)
+                                          progress=_fin_progress, progress_bar=progress_bar)
             log(("✅ 成片：" if result.ok else "❌ 收口未过：") + str(result.output_path))
             JOB.set_progress("完成", 100)
             with JOB.lock:
