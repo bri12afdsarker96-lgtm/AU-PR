@@ -7,9 +7,9 @@
     **自定义文字在进度条内**居中显示（可含「 | 」分段）。
     位置（顶部/底部）、字号、文字色、底色/不透明度、进度色/不透明度、条高、边距均可自定义。
 
-实现：进度图层宽用 ffmpeg drawbox 的宽度表达式 `iw*min(1,t/时长)`——按帧时间戳 t 增长、
-与画面同轴（不依赖播放器，等价于逐帧关键帧）。track/fill 用 drawbox（fill 半透明整条高、
-底色透出），文字用 drawtext 叠在最上层（textfile 走同一转义）。
+实现：进度用 N 段固定宽 drawbox + enable 时间窗逐段推进（不依赖 drawbox 几何表达式里的 t，
+部分 ffmpeg 版本不认 t 会导致进度条静止；enable 时间轴与字幕同机制、兼容性最好）。
+track/fill 用 drawbox（fill 半透明整条高、底色透出），文字用 drawtext 叠在最上层。
 """
 
 from __future__ import annotations
@@ -72,9 +72,9 @@ def progressbar_filters(
     """生成进度条烧录滤镜（自下而上叠放）：
        [① 底色条带 drawbox, ② 已播进度图层 drawbox(半透明整条高、时间驱动), (可选)③ 文字 drawtext]。
 
-    进度图层宽 = iw*min(1,t/时长)——随帧时间戳从左往右扫、片尾满宽（total_seconds<=0 兜底按 0.1s，
-    避免除零；此时进度在 0.1s 处即扫满）。
-    font 为 None（找不到中文字体）时仅画条带+进度图层、跳过文字（降级不报错）。
+    进度用 N（20~60）段固定宽 drawbox + enable 时间窗逐段推进，片尾满宽
+    （total_seconds<=0 兜底按 0.1s，避免除零）。font 为 None（找不到中文字体）时
+    仅画条带+进度、跳过文字（降级不报错）。
     """
     textfile_dir = Path(textfile_dir)
     textfile_dir.mkdir(parents=True, exist_ok=True)
@@ -90,12 +90,22 @@ def progressbar_filters(
         f"drawbox=x=0:y={strip_y}:w=iw:h={strip_h}:"
         f"color={normalize_color(bar.track_color)}@{track_op:.2f}:t=fill"
     )
-    # ② 已播进度图层（半透明、覆盖整条高度，宽度随时间从左往右扫、片尾满）
-    #    ——底色透出形成「已播/未播」对比；min 里的逗号需转义，避免被当滤镜分隔符
-    filters.append(
-        f"drawbox=x=0:y={strip_y}:w=iw*min(1\\,t/{dur:.3f}):h={strip_h}:"
-        f"color={normalize_color(bar.fill_color)}@{fill_op:.2f}:t=fill"
-    )
+    # ② 已播进度图层（半透明、覆盖整条高度，随播放从左往右扫、片尾满）。
+    #    用 N 段固定宽 drawbox + enable 时间窗推进，**不依赖 drawbox 几何表达式里的 t**
+    #    （部分 ffmpeg 版本 drawbox 的 w= 表达式不认 t，会导致进度条静止；enable 时间轴是
+    #     ffmpeg 通用能力、与字幕同机制，兼容性最好）。每段只在自己时间窗显示，逐段=进度前进。
+    fill_hex = normalize_color(bar.fill_color)
+    steps = max(20, min(60, int(round(dur))))
+    seg = dur / steps
+    for k in range(steps):
+        a = k * seg
+        w_px = max(1, round(int(canvas_width) * (k + 1) / steps))
+        enable = (f"gte(t,{a:.3f})" if k == steps - 1          # 末段：到片尾一直满
+                  else f"between(t,{a:.3f},{(k + 1) * seg:.3f})")
+        filters.append(
+            f"drawbox=x=0:y={strip_y}:w={w_px}:h={strip_h}:"
+            f"color={fill_hex}@{fill_op:.2f}:t=fill:enable='{enable}'"
+        )
     # ③ 自定义文字（条带内垂直居中、水平居中；单行不折；叠在最上层保证可读）
     text = " ".join(str(bar.text or "").split())
     if text and font is not None:

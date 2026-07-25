@@ -348,13 +348,16 @@ footer b{color:var(--muted);font-weight:600}
     <div class="card">
       <h2>执行</h2>
       <button class="btn gold big" onclick="run('run_all')">▶&nbsp;&nbsp;生 成 成 片</button>
-      <div class="steps">
+      <label class="row mini" style="gap:7px;margin-top:8px;cursor:pointer;color:var(--faint)">
+        <input type="checkbox" id="reuseDub">
+        <span>复用已有配音（改<b>音量 / BGM / 字幕 / 进度条</b>后再点「生成成片」，<b>跳过克隆</b>只重渲染，秒出）</span></label>
+      <div class="steps" style="margin-top:8px">
         <button class="btn line" onclick="run('dub')">① 配音</button>
         <button class="btn line" onclick="run('timing')">② 量时长</button>
-        <button class="btn line" onclick="run('render')">③ 渲染</button>
+        <button class="btn line" onclick="run('render')" title="只重渲染：套用新音量/BGM/字幕/进度条，不重新克隆">③ 渲染</button>
         <button class="btn line" onclick="showPage('p2');syncPv()" title="到文本框页调字幕样式/加文字层并导出">④ 去文本框调样式/导出 →</button>
       </div>
-      <p class="mini" style="color:var(--faint);margin-top:6px">字幕按<b>标点逐句、按时间轴</b>自动烧录（每行按字数占比排时）；样式调整与最终导出在「文本框」页完成。</p>
+      <p class="mini" style="color:var(--faint);margin-top:6px">字幕按<b>标点逐句、按时间轴</b>自动烧录（每行按字数占比排时）；样式调整与最终导出在「文本框」页完成。只改音量/BGM/字幕/进度条不想重配音时，勾上方「复用已有配音」或直接点「③ 渲染」。</p>
       <div id="progWrap" style="display:none;margin-top:12px">
         <div class="row" style="justify-content:space-between">
           <span class="mini" id="progStage" style="color:var(--gold)">准备中…</span>
@@ -476,57 +479,54 @@ footer b{color:var(--muted);font-weight:600}
         <p style="font-size:11px;color:var(--faint);margin-top:12px;letter-spacing:.5px">渲染「③ / 生成成片」时全部烧入。</p>
       </div>
 
-      <!-- 视频进度条（短剧风格）：随播放增长、片尾走满；文字自定义 -->
-      <div class="card" style="margin-top:16px">
-        <h2>视频进度条 <label class="mini" style="float:right;font-weight:400;cursor:pointer"><input type="checkbox" id="pbEnable"> 启用</label></h2>
-        <p class="mini" style="color:var(--faint);margin:-4px 0 10px">
-          原理：先铺一层<b>底色条带</b>，再叠一层<b>半透明进度图层从左往右扫</b>（片尾正好扫满）；<b>自定义文字在进度条内</b>显示（可用「 | 」分段）。生成成片 / 重烧成片时烧入。</p>
-        <div class="sp"><span class="f">进度条文字（自定义内容）</span>
-          <input type="text" id="pbText" placeholder="例：全文在哪里看？ | 完整版《负面天道》 | 追更不迷路" style="width:100%"></div>
-        <div class="row sp" style="gap:10px">
-          <div style="flex:1"><span class="f">位置</span>
-            <select id="pbPos" style="width:100%"><option value="顶部">顶部</option><option value="底部">底部</option></select></div>
-          <div style="flex:none"><span class="f">字号</span>
-            <input type="number" id="pbSize" value="40" min="20" max="120" style="width:82px"></div>
-          <div style="flex:none"><span class="f">条带高</span>
-            <input type="number" id="pbStripH" value="0" min="0" max="400" style="width:82px" title="0=按字号自动"></div>
-        </div>
-        <div class="row sp" style="gap:14px;flex-wrap:wrap;align-items:flex-end">
-          <div style="flex:none"><span class="f">条带底色</span>
-            <div class="row" style="gap:6px">
-              <input type="color" id="pbTrack" value="#000000" style="width:44px;height:30px;padding:2px;flex:none" oninput="$('pbTrackHex').value=this.value" title="点击选底色">
-              <input type="text" id="pbTrackHex" value="#000000" style="width:88px" oninput="if(/^#[0-9a-fA-F]{6}$/.test(this.value))$('pbTrack').value=this.value" title="或直接填十六进制色值"></div></div>
-          <div style="flex:none"><span class="f">条带透明 <span class="val" id="pbTrackOpV" style="padding:1px 6px">0.45</span></span>
-            <input type="range" id="pbTrackOp" min="0" max="1" step="0.05" value="0.45" style="width:120px" oninput="$('pbTrackOpV').textContent=(+this.value).toFixed(2)"></div>
-          <div style="flex:none"><span class="f">进度条颜色</span>
-            <div class="row" style="gap:6px">
-              <input type="color" id="pbFill" value="#FFC24B" style="width:44px;height:30px;padding:2px;flex:none" oninput="$('pbFillHex').value=this.value" title="点击选进度色">
-              <input type="text" id="pbFillHex" value="#FFC24B" style="width:88px" oninput="if(/^#[0-9a-fA-F]{6}$/.test(this.value))$('pbFill').value=this.value" title="或直接填十六进制色值"></div></div>
-          <div style="flex:none"><span class="f">进度透明 <span class="val" id="pbFillOpV" style="padding:1px 6px">0.38</span></span>
-            <input type="range" id="pbFillOp" min="0" max="1" step="0.05" value="0.38" style="width:120px" oninput="$('pbFillOpV').textContent=(+this.value).toFixed(2)"></div>
-          <div style="flex:none"><span class="f">文字颜色</span>
-            <div class="row" style="gap:6px">
-              <input type="color" id="pbColor" value="#FFFFFF" style="width:44px;height:30px;padding:2px;flex:none" oninput="$('pbColorHex').value=this.value" title="点击选文字色">
-              <input type="text" id="pbColorHex" value="#FFFFFF" style="width:88px" oninput="if(/^#[0-9a-fA-F]{6}$/.test(this.value))$('pbColor').value=this.value" title="或直接填十六进制色值"></div></div>
-        </div>
-      </div>
+    </div>
+  </div>
 
-      <!-- 校对后：重烧成片（不自动导草稿）；草稿/工程/清理各自独立按钮 -->
-      <div class="card" style="margin-top:16px">
-        <h2>样式确认 · 导出</h2>
-        <p class="mini" style="color:var(--faint);margin:-4px 0 10px">
-          字幕由渲染端<b>按标点逐句、按时间轴</b>自动烧录（本页只管字幕样式与手加文字层）。
-          调整样式/文字层后点下方按钮<b>按当前样式重烧成片</b>。剪映草稿 / Premiere 工程<b>只在你点对应按钮时才导出</b>，不再自动生成。</p>
-        <button class="btn gold big" style="white-space:normal;line-height:1.5;letter-spacing:2px" onclick="run('finalize')">✔ 按当前样式重烧成片<br><span style="font-size:12px;font-weight:400">只出成片 · 不自动导草稿</span></button>
-        <div class="row" style="gap:10px;margin-top:10px">
-          <a id="filmBtn2" class="btn line" style="display:none;flex:1" href="#" target="_blank">▶ 打开成片</a>
-          <button class="btn line" style="flex:none" onclick="run('capcut')" title="按当前成片导出剪映草稿（自包含，素材已复制进草稿包）">导出剪映草稿</button>
-          <button class="btn line" style="flex:none" onclick="run('premiere')" title="导出 Premiere 可导入的 XML 交换工程（自包含素材）。用 PR「文件→导入」选该 XML，不是「打开项目」；导入后可另存为 .prproj。字幕另导入成片.srt">导出 Premiere 工程</button>
-        </div>
-        <div class="row" style="gap:10px;margin-top:10px">
-          <button class="btn line" style="flex:1;border-color:#7a5a2a" onclick="cleanupCache()" title="删掉生成过程中的中间产物（master_chunks / 成片_segments），保留成片与各交接包">🧹 清理缓存（删中间产物）</button>
-        </div>
-      </div>
+  <!-- 视频进度条（满宽一行：控件横向铺开，不再挤在窄列）-->
+  <div class="card" style="margin-top:16px">
+    <h2>视频进度条 <label class="mini" style="float:right;font-weight:400;cursor:pointer"><input type="checkbox" id="pbEnable"> 启用</label></h2>
+    <p class="mini" style="color:var(--faint);margin:-4px 0 12px">
+      原理：先铺一层<b>底色条带</b>，再叠一层<b>半透明进度图层从左往右扫</b>（片尾正好扫满）；<b>自定义文字在进度条内</b>显示（可用「 | 」分段）。生成成片 / 重烧成片时烧入。<b>进度条在最上层</b>：若和「文本框」都放顶部、字号又大可能相叠，把文本框改到「中上/中部」即可错开。</p>
+    <div class="sp"><span class="f">进度条文字（自定义内容）</span>
+      <input type="text" id="pbText" placeholder="例：全文在哪里看？ | 完整版《负面天道》 | 追更不迷路" style="width:100%"></div>
+    <div class="row sp" style="gap:20px;flex-wrap:wrap;align-items:flex-end">
+      <div style="flex:none"><span class="f">位置</span>
+        <select id="pbPos" style="width:120px"><option value="顶部">顶部</option><option value="底部">底部</option></select></div>
+      <div style="flex:none"><span class="f">字号</span>
+        <input type="number" id="pbSize" value="40" min="20" max="120" style="width:82px"></div>
+      <div style="flex:none"><span class="f">条带高（0=自动）</span>
+        <input type="number" id="pbStripH" value="0" min="0" max="400" style="width:82px" title="0=按字号自动"></div>
+      <div style="flex:none"><span class="f">条带底色</span>
+        <div class="row" style="gap:6px">
+          <input type="color" id="pbTrack" value="#000000" style="width:44px;height:30px;padding:2px;flex:none" oninput="$('pbTrackHex').value=this.value" title="点击选底色">
+          <input type="text" id="pbTrackHex" value="#000000" style="width:88px" oninput="if(/^#[0-9a-fA-F]{6}$/.test(this.value))$('pbTrack').value=this.value" title="或直接填十六进制色值"></div></div>
+      <div style="flex:none"><span class="f">条带透明 <span class="val" id="pbTrackOpV" style="padding:1px 6px">0.45</span></span>
+        <input type="range" id="pbTrackOp" min="0" max="1" step="0.05" value="0.45" style="width:120px" oninput="$('pbTrackOpV').textContent=(+this.value).toFixed(2)"></div>
+      <div style="flex:none"><span class="f">进度条颜色</span>
+        <div class="row" style="gap:6px">
+          <input type="color" id="pbFill" value="#FFC24B" style="width:44px;height:30px;padding:2px;flex:none" oninput="$('pbFillHex').value=this.value" title="点击选进度色">
+          <input type="text" id="pbFillHex" value="#FFC24B" style="width:88px" oninput="if(/^#[0-9a-fA-F]{6}$/.test(this.value))$('pbFill').value=this.value" title="或直接填十六进制色值"></div></div>
+      <div style="flex:none"><span class="f">进度透明 <span class="val" id="pbFillOpV" style="padding:1px 6px">0.38</span></span>
+        <input type="range" id="pbFillOp" min="0" max="1" step="0.05" value="0.38" style="width:120px" oninput="$('pbFillOpV').textContent=(+this.value).toFixed(2)"></div>
+      <div style="flex:none"><span class="f">文字颜色</span>
+        <div class="row" style="gap:6px">
+          <input type="color" id="pbColor" value="#FFFFFF" style="width:44px;height:30px;padding:2px;flex:none" oninput="$('pbColorHex').value=this.value" title="点击选文字色">
+          <input type="text" id="pbColorHex" value="#FFFFFF" style="width:88px" oninput="if(/^#[0-9a-fA-F]{6}$/.test(this.value))$('pbColor').value=this.value" title="或直接填十六进制色值"></div></div>
+    </div>
+  </div>
+
+  <!-- 样式确认·导出（满宽一行）-->
+  <div class="card" style="margin-top:16px">
+    <h2>样式确认 · 导出</h2>
+    <p class="mini" style="color:var(--faint);margin:-4px 0 10px">
+      字幕由渲染端<b>按标点逐句、按时间轴</b>自动烧录（本页只管字幕样式与手加文字层）。
+      调整样式/文字层后点下方按钮<b>按当前样式重烧成片</b>。剪映草稿 / Premiere 工程<b>只在你点对应按钮时才导出</b>，不再自动生成。</p>
+    <div class="row" style="gap:12px;flex-wrap:wrap;align-items:stretch">
+      <button class="btn gold big" style="flex:2 1 260px;white-space:normal;line-height:1.5;letter-spacing:2px" onclick="run('finalize')">✔ 按当前样式重烧成片<br><span style="font-size:12px;font-weight:400">只出成片 · 不自动导草稿</span></button>
+      <a id="filmBtn2" class="btn line" style="display:none;flex:1 1 120px;align-items:center;justify-content:center" href="#" target="_blank">▶ 打开成片</a>
+      <button class="btn line" style="flex:1 1 140px" onclick="run('capcut')" title="按当前成片导出剪映草稿（自包含，素材已复制进草稿包）">导出剪映草稿</button>
+      <button class="btn line" style="flex:1 1 150px" onclick="run('premiere')" title="导出 Premiere 可导入的 XML 交换工程（自包含素材）。用 PR「文件→导入」选该 XML，不是「打开项目」；导入后可另存为 .prproj。字幕另导入成片.srt">导出 Premiere 工程</button>
+      <button class="btn line" style="flex:1 1 150px;border-color:#7a5a2a" onclick="cleanupCache()" title="删掉生成过程中的中间产物（master_chunks / 成片_segments），保留成片与各交接包">🧹 清理缓存</button>
     </div>
   </div>
 </section>
@@ -1171,7 +1171,8 @@ async function run(action,target){
     subtitle_position:$('subPos').value||'底部',subtitle_font:$('subFont')?.value||'',
     subtitle_color:($('subColor')&&$('subColor').value.trim())||'#FFFFFF',
     subtitle_border:+($('subBorder')&&$('subBorder').value)||0,
-    aspect:$('aspect').value,overlays,audio:collectAudio(),progressbar:collectProgressBar()};
+    aspect:$('aspect').value,overlays,audio:collectAudio(),progressbar:collectProgressBar(),
+    reuse_dub:$('reuseDub')?$('reuseDub').checked:false};
   if(await postRun(payload))pollAll();
 }
 // 视频进度条配置（未启用 → enabled:false，后端返回 None 不烧）
@@ -1553,12 +1554,17 @@ function loadTpls(){
   const names=Object.keys(tpls());
   fill('tplSel',names.length?names.map(n=>[n,n]):[['','（暂无模板）']]);
 }
-function curStyle(){return {position:$('edPos').value,font_size_px:+$('edSize').value,font_name:$('edFont').value,
-  color:$('edColor').value.trim(),border_width:+$('edBorder').value||0,boxed:$('edBox').checked};}
+// 模板=整个「文本框」页设置：编辑器默认样式 + 字幕样式 + 视频进度条（2026-07-25 用户定案）
+function curStyle(){return {
+  position:$('edPos').value,font_size_px:+$('edSize').value,font_name:$('edFont').value,
+  color:$('edColor').value.trim(),border_width:+$('edBorder').value||0,boxed:$('edBox').checked,
+  sub:{size:+$('subsize').value||64,pos:$('subPos').value,font:$('subFont')?.value||'',
+       color:($('subColor')?.value||'#FFFFFF').trim(),border:+($('subBorder')?.value)||0},
+  pb:collectProgressBar()};}
 function saveTpl(){
-  const name=prompt('模板名（例：顶部书名·金色描边）：');if(!name||!name.trim())return;
+  const name=prompt('模板名（例：书单女生·顶部导流）：');if(!name||!name.trim())return;
   const t=tpls();t[name.trim()]=curStyle();saveTplStore(t);loadTpls();$('tplSel').value=name.trim();
-  alert('已存文本框样式模板：'+name.trim()+'（位置/字号/字体/颜色/描边/背景框）');
+  alert('已存模板：'+name.trim()+'\n（含 文本框默认样式 + 字幕样式 + 视频进度条 全部设置）');
 }
 function applyTpl(){
   const s=tpls()[$('tplSel').value];if(!s){alert('请选择一个模板');return;}
@@ -1568,6 +1574,26 @@ function applyTpl(){
   if(s.color!=null)$('edColor').value=s.color;
   if(s.border_width!=null)$('edBorder').value=s.border_width;
   if(s.boxed!=null)$('edBox').checked=s.boxed;
+  // 字幕样式（旧模板无 sub 字段时跳过，向后兼容）
+  if(s.sub){const u=s.sub;
+    if(u.size!=null){$('subsize').value=u.size;if($('subSizeV'))$('subSizeV').textContent=u.size;}
+    if(u.pos!=null&&$('subPos'))$('subPos').value=u.pos;
+    if(u.font!=null&&$('subFont')&&[...$('subFont').options].some(o=>o.value===u.font))$('subFont').value=u.font;
+    if(u.color!=null&&$('subColor'))$('subColor').value=u.color;
+    if(u.border!=null&&$('subBorder'))$('subBorder').value=u.border;
+  }
+  // 视频进度条（旧模板无 pb 字段时跳过）
+  if(s.pb){const p=s.pb;
+    if($('pbEnable'))$('pbEnable').checked=!!p.enabled;
+    if(p.text!=null)$('pbText').value=p.text;
+    if(p.position!=null)$('pbPos').value=p.position;
+    if(p.font_size_px!=null)$('pbSize').value=p.font_size_px;
+    if(p.strip_height_px!=null)$('pbStripH').value=p.strip_height_px;
+    const setC=(id,v)=>{if(v!=null){$(id).value=v;const h=$(id+'Hex');if(h)h.value=v;}};
+    setC('pbColor',p.text_color);setC('pbTrack',p.track_color);setC('pbFill',p.fill_color);
+    if(p.track_opacity!=null){$('pbTrackOp').value=p.track_opacity;$('pbTrackOpV').textContent=(+p.track_opacity).toFixed(2);}
+    if(p.fill_opacity!=null){$('pbFillOp').value=p.fill_opacity;$('pbFillOpV').textContent=(+p.fill_opacity).toFixed(2);}
+  }
   syncPv(true);
 }
 function renameTpl(){

@@ -203,22 +203,31 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             videos = pipeline.select_shot_videos(shots_dir, lines, material_mode,
                                                  int(payload.get("seed") or 42), output_dir, log=log)
 
-            JOB.set_progress("① 配音 · 逐行克隆", 5)
-            log("① 配音 · 逐行克隆…")
+            master_path = output_dir / pipeline.MASTER_NAME
+            reuse_dub = bool(payload.get("reuse_dub")) and master_path.is_file()
+            if reuse_dub:
+                # 复用已有配音：只改了音量/BGM/字幕/进度条时，跳过整段克隆，直接量时长+重渲染（秒出）
+                from .engines.base import wav_seconds
 
-            # 进度配比按真实耗时：配音（逐行 GPU 克隆，每行数十秒）是全程最久的一步，
-            # 给它最大区段 5→78%，否则「18/20 行只走到 25%」看着像卡死（用户反馈）。
-            def _dub_progress(done: int, total: int) -> None:
-                pct = 5 + int(done / max(1, total) * 73)  # 配音占 5~78%
-                JOB.set_progress(f"① 配音 · 第 {done}/{total} 行", pct)
+                JOB.set_progress("① 复用已有配音（跳过克隆）", 76)
+                log(f"① 复用已有配音：master.wav 已存在（{wav_seconds(master_path):.2f}s），跳过克隆，仅重渲染。")
+            else:
+                JOB.set_progress("① 配音 · 逐行克隆", 5)
+                log("① 配音 · 逐行克隆…")
 
-            master = pipeline.step_dub(text, engine_key, output_dir, voice, options, log=log,
-                                       progress=_dub_progress)
-            log(f"  ✅ master {master.seconds:.2f}s（引擎 {master.engine}）")
+                # 进度配比按真实耗时：配音（逐行 GPU 克隆，每行数十秒）是全程最久的一步，
+                # 给它最大区段 5→78%，否则「18/20 行只走到 25%」看着像卡死（用户反馈）。
+                def _dub_progress(done: int, total: int) -> None:
+                    pct = 5 + int(done / max(1, total) * 73)  # 配音占 5~78%
+                    JOB.set_progress(f"① 配音 · 第 {done}/{total} 行", pct)
+
+                master = pipeline.step_dub(text, engine_key, output_dir, voice, options, log=log,
+                                           progress=_dub_progress)
+                log(f"  ✅ master {master.seconds:.2f}s（引擎 {master.engine}）")
 
             JOB.set_progress("② 量时长 · 逐行对齐", 78)
             log("② 量时长 · 逐行对齐…")
-            timings, notes = pipeline.step_timing(text, master.path, aligner_key, output_dir)
+            timings, notes = pipeline.step_timing(text, master_path, aligner_key, output_dir)
             for note in notes:
                 log(f"  ⚠ {note}")
             with JOB.lock:
@@ -231,7 +240,7 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                 pct = 80 + int(done / max(1, total) * 15)  # 渲染占 80~95%（比配音快很多）
                 JOB.set_progress(f"③ 渲染成片 · 第 {done}/{total} 段", pct)
 
-            result = pipeline.step_render(master.path, timings, videos, output_dir, style,
+            result = pipeline.step_render(master_path, timings, videos, output_dir, style,
                                           config=config, overlays=overlays, audio_mix=audio_mix,
                                           progress=_render_progress, progress_bar=progress_bar)
             log(f"  字幕/文本框：{result.subtitle_note or '未启用'}")
@@ -239,7 +248,7 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             if payload.get("export_capcut"):
                 JOB.set_progress("④ 导出剪映草稿", 96)
                 log("④ 导出剪映草稿…")
-                capcut = pipeline.step_capcut(timings, result, master.path, output_dir, style,
+                capcut = pipeline.step_capcut(timings, result, master_path, output_dir, style,
                                               canvas=canvas)
                 log(f"  剪映：{capcut.message}")
             JOB.set_progress("完成", 100)
