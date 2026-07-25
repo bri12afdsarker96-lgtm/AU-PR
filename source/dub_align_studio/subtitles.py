@@ -103,12 +103,16 @@ def entries_to_phrases(entries: list[SubtitleEntry]) -> list[SubtitleEntry]:
             continue
         total_chars = sum(len(p) for p in phrases) or 1
         durations = [span * len(p) / total_chars for p in phrases]
-        if len(phrases) * PHRASE_MIN_SECONDS <= span:  # 够分才抬底，防止总长溢出行窗
+        if len(phrases) * PHRASE_MIN_SECONDS <= span + 1e-9:  # 够分才抬底（+eps 防 6*0.4 浮点略大于 span）
             durations = [max(PHRASE_MIN_SECONDS, d) for d in durations]
             overflow = sum(durations) - span
-            if overflow > 0:  # 抬底多出的时长从最长的句子里扣回
-                longest = max(range(len(durations)), key=lambda i: durations[i])
-                durations[longest] = max(PHRASE_MIN_SECONDS, durations[longest] - overflow)
+            if overflow > 1e-9:
+                # 抬底多出的时长，按各句「高于底线的富余」比例扣回：保证每句仍 ≥ 底线且总和 = span。
+                # （旧版只从最长一句扣，扣不完时后续句会被 cursor 夹成过短甚至零时长——已修 2026-07-25）
+                slack_total = sum(d - PHRASE_MIN_SECONDS for d in durations)
+                if slack_total > 1e-9:  # guard 保证 slack_total ≥ overflow，故每句扣后仍 ≥ 底线
+                    durations = [d - overflow * (d - PHRASE_MIN_SECONDS) / slack_total
+                                 for d in durations]
         cursor = entry.start
         for i, (phrase, dur) in enumerate(zip(phrases, durations)):
             counter += 1

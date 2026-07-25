@@ -172,7 +172,7 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                 position=str(payload.get("subtitle_position") or "底部"),
                 font_name=str(payload.get("subtitle_font") or ""),
                 color=str(payload.get("subtitle_color") or "white"),
-                border_width=int(payload.get("subtitle_border", 3)),
+                border_width=int(payload.get("subtitle_border") if payload.get("subtitle_border") not in (None, "") else 3),  # 容 null/""，但保留 0（无描边）
             )
         overlays = overlays_from_dicts(payload.get("overlays") or [])
         from .progressbar import progressbar_from_payload
@@ -344,12 +344,17 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
         elif action == "premiere":
             # Premiere 交接包：V1=逐行分镜段 A1=整轨配音；XML+SRT+素材全在输出目录
             from .premiere_xml import export_premiere_project
+            from .frames import quantize_to_frames
+            from .engines.base import wav_seconds
 
             timings = JOB.timings or pipeline.load_timings(output_dir)
             segments = pipeline.segments_from_output(output_dir, len(timings))
-            frames = [max(1, round(t.duration * config.fps)) for t in timings]
-            xml_path = export_premiere_project(output_dir, segments,
-                                               output_dir / pipeline.MASTER_NAME, frames,
+            master_path = output_dir / pipeline.MASTER_NAME
+            # 帧数必须与渲染时完全一致：quantize_to_frames 把逐行舍入残差并入末段，Σ帧=round(master*fps)。
+            # 若像旧版那样各行独立 round(dur*fps)，声明帧数会与真实分镜段/音频错位（尾部漂移几帧）。
+            frames = quantize_to_frames([t.duration for t in timings], config.fps,
+                                        wav_seconds(master_path))
+            xml_path = export_premiere_project(output_dir, segments, master_path, frames,
                                                config.fps, config.width, config.height)
             log(f"✅ Premiere 交换工程已导出：{xml_path}")
             log("   ⚠ 用 Premiere「文件 → 导入」选该 .xml（不是「打开项目」——打开只认 .prproj，会提示格式不正确）。")
@@ -370,6 +375,7 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                 log("没有可清理的中间产物（master_chunks / 成片_segments 均不存在）。")
             with JOB.lock:
                 JOB.ok = True
+                JOB.result = None  # 分镜段已删，作废内存结果 → 后续导出走磁盘回读并给出友好提示
         elif action == "probe":
             for status in (MockEngine().probe(), DotsLocalEngine().probe(), FishLocalEngine().probe()):
                 log(("✅ " if status.available else "⛔ ") + f"{status.key}：{status.detail}")

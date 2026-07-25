@@ -261,3 +261,16 @@ class PhraseTimelineTests(unittest.TestCase):
         self.assertEqual([e.index for e in es], [1, 2, 3, 4])
         self.assertEqual(es[1].end, 4.0)                      # 行边界不被跨越
         self.assertEqual(es[2].start, 4.0)
+
+    def test_min_duration_floor_holds_for_all_phrases(self):
+        # 回归（2026-07-25 自检）：两长句+四短句，span 恰够每句 0.4s 底线。
+        # 旧版只从最长一句扣抬底溢出，扣不完导致后续短句被夹到 0.1s（甚至末句零时长）。
+        from dub_align_studio.subtitles import PHRASE_MIN_SECONDS
+        line = "，".join(["甲" * 10, "乙" * 10, "丙", "丁", "戊", "己"])  # 字数 [10,10,1,1,1,1]
+        es = self.expand([self.E(index=1, start=0.0, end=2.4, text=line)])
+        self.assertEqual(len(es), 6)
+        for e in es:
+            self.assertGreaterEqual(round(e.end - e.start, 6), PHRASE_MIN_SECONDS - 1e-6)  # 每句都 ≥ 底线
+        self.assertEqual(es[-1].end, 2.4)                     # 末句仍对齐行尾
+        for a, b in zip(es, es[1:]):
+            self.assertAlmostEqual(a.end, b.start)            # 仍无缝衔接

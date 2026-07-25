@@ -72,7 +72,8 @@ def progressbar_filters(
     """生成进度条烧录滤镜（自下而上叠放）：
        [① 底色条带 drawbox, ② 已播进度图层 drawbox(半透明整条高、时间驱动), (可选)③ 文字 drawtext]。
 
-    进度图层宽 = iw*min(1,t/时长)——随帧时间戳从左往右扫、片尾满宽（total_seconds<=0 按满宽画，不报错）。
+    进度图层宽 = iw*min(1,t/时长)——随帧时间戳从左往右扫、片尾满宽（total_seconds<=0 兜底按 0.1s，
+    避免除零；此时进度在 0.1s 处即扫满）。
     font 为 None（找不到中文字体）时仅画条带+进度图层、跳过文字（降级不报错）。
     """
     textfile_dir = Path(textfile_dir)
