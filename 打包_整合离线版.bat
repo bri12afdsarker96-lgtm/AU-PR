@@ -19,6 +19,10 @@ for /f "usebackq delims=" %%i in (`python -c "import sys;print(sys.base_prefix)"
 if not defined PYHOME ( echo [错误] 未找到 python，请确认已装并在 PATH。& pause & exit /b 1 )
 echo [信息] 打包所用 Python：%PYHOME%
 
+rem [0.1] 拒绝 Microsoft Store 版 Python：它在 WindowsApps 受系统保护，无法整目录拷贝/跨机运行，
+rem       打出来的整合包在别的电脑上双击「启动.bat」会一闪而过、无任何报错（正是本次现象）。
+echo %PYHOME% | findstr /i "WindowsApps" >nul && goto :STOREPY
+
 rem [0.5] 打包前自检：用「将被拷进包的这个 Python」实测能否加载 dots.tts 运行时。
 rem 目的：避免把装错的环境（最常见 venv：依赖在 venv 里、base 里没有）打成一个用不了的大包。
 echo [自检] 用引擎 probe 校验打包 Python 能否真正跑 dots.tts（含 tn 桩/版本匹配/CUDA）...
@@ -39,6 +43,12 @@ rem [1] 拷贝整个 Python 环境（含 site-packages 里的 torch/dots.tts/tra
 echo [1/5] 拷贝 Python 环境（含全部依赖/插件，体量大请耐心）...
 robocopy "%PYHOME%" "%PKG%\python" /e /nfl /ndl /njh /njs /nc /ns >nul
 if errorlevel 8 ( echo [错误] 拷贝 Python 失败。& pause & exit /b 1 )
+
+rem [1.5] 校验「包内 Python」能独立运行——用它自己（脱离 PATH）跑一句，跑不起来说明源 Python
+rem       不可重定位/复制不全，此时打出来的包到别的机器必然起不来，直接拦下并说明原因。
+"%PKG%\python\python.exe" -c "import sys;print(sys.version)" >nul 2>&1
+if errorlevel 1 goto :PYCOPYBAD
+echo [1/5] 包内 Python 复制校验通过（可独立运行）。
 
 rem [2] 拷贝软件源码
 echo [2/5] 拷贝软件源码 ...
@@ -70,8 +80,22 @@ echo [5/5] 生成启动脚本 启动.bat ...
 >> "%PKG%\启动.bat" echo title 水星配音对齐工作室
 >> "%PKG%\启动.bat" echo set "PYTHONPATH=source"
 >> "%PKG%\启动.bat" echo if exist "hf_cache" set "HF_HOME=%%~dp0hf_cache"
+>> "%PKG%\启动.bat" echo if not exist "%%~dp0python\python.exe" goto NOPY
 >> "%PKG%\启动.bat" echo echo 正在启动 水星配音对齐工作室（整合离线版）...浏览器将自动打开，勿关本窗口。
 >> "%PKG%\启动.bat" echo "%%~dp0python\python.exe" source\dub_align_studio\launcher.py
+>> "%PKG%\启动.bat" echo if errorlevel 1 goto FAIL
+>> "%PKG%\启动.bat" echo goto END
+>> "%PKG%\启动.bat" echo :NOPY
+>> "%PKG%\启动.bat" echo echo [错误] 缺少 python\python.exe —— 整合包不完整，请把整个文件夹重新完整拷贝。
+>> "%PKG%\启动.bat" echo goto END
+>> "%PKG%\启动.bat" echo :FAIL
+>> "%PKG%\启动.bat" echo echo.
+>> "%PKG%\启动.bat" echo echo [启动失败] Python 异常退出，详情如下：
+>> "%PKG%\启动.bat" echo if exist "source\dub_align_studio\启动错误.log" type "source\dub_align_studio\启动错误.log"
+>> "%PKG%\启动.bat" echo echo 若窗口一闪、上面没有 Python 报错：多为「包内 Python 无法在本机运行」——
+>> "%PKG%\启动.bat" echo echo 源机若用的是 Microsoft Store 版 Python（不可跨机），请改用 python.org 版重装依赖后重新打包。
+>> "%PKG%\启动.bat" echo echo 另一可能：本机缺 Visual C++ 运行库 —— 装一个「Microsoft Visual C++ 2015-2022 Redistributable (x64)」再试。
+>> "%PKG%\启动.bat" echo :END
 >> "%PKG%\启动.bat" echo pause
 
 rem 版本文件
@@ -103,5 +127,26 @@ echo     - 用「非 venv 的系统 Python」重新 pip 安装依赖后再运行
 echo     - 或把 transformers==4.57.0 + CUDA 版 torch + dots.tts 直接装进 %PYHOME%。
 echo   校验命令（能打印 available=True 即可打包）：
 echo     "%PYHOME%\python.exe" -c "import sys;sys.path.insert(0,'source');from dub_align_studio.engines.dots_local import DotsLocalEngine as E;print(E().probe())"
+pause
+exit /b 1
+
+:STOREPY
+echo.
+echo [错误] 检测到打包用的是 Microsoft Store 版 Python：
+echo        %PYHOME%
+echo   Store 版 Python 位于受保护的 WindowsApps，无法整目录拷贝、也不能在别的电脑运行，
+echo   打出来的整合包到别的机器上双击「启动.bat」会一闪而过、且没有任何报错（正是你遇到的现象）。
+echo   解决：到 python.org 下载安装 Python 3.11（安装时勾 Add python.exe to PATH，
+echo        不要用 Microsoft Store 那个），在它里面装好 CUDA 版 torch + dots.tts + whisper，
+echo        确认能正常配音后，再运行本脚本打包。
+pause
+exit /b 1
+
+:PYCOPYBAD
+echo.
+echo [错误] 已把源 Python 拷进包内，但「包内 Python」无法独立运行：
+echo        %PKG%\python\python.exe
+echo   说明源 Python 不可重定位或复制不完整（常见于 Store 版 / 精简版 / 依赖系统级运行库的环境）。
+echo   请改用 python.org 安装的独立 Python 重新打包；若仍不行，把本窗口内容发给开发。
 pause
 exit /b 1
