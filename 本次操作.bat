@@ -1,53 +1,53 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
-title 本次操作 · 迁移收尾：修 CUDA torch + 重指数据目录
+title 本次操作 · 清理旧的两个冗余文件夹（保留 D:\Mercury）
 setlocal
 rem ════════════════════════════════════════════════════════════════
-rem 放到 D:\Mercury\AU-PR 里双击（迁移后的新仓库根目录）。做两件事：
-rem  1) 把 torch 换回 CUDA 版 2.11.0+cu126（fish-speech 把它降成了 2.8.0 CPU，dots.tts 用不了）；
-rem  2) 把软件「数据总目录」重新指向 D:\Mercury\水星配音数据（旧设置还指着已删的旧路径）。
-rem 然后验证 cuda / dots.tts / data_root。不删任何东西。
+rem 不用合并：只保留 D:\Mercury（新代码 + 数据/模型），删掉旧的 D:\GitHub\By\AU&PR
+rem （里面是「3060 拷贝」+「嵌套克隆」两个冗余，数据/模型早已搬到 D:\Mercury）。
+rem 安全闸：先确认 D:\Mercury 的模型/音色/字体都在，才允许删；否则中止、不删任何东西。
 rem ════════════════════════════════════════════════════════════════
-set "IDX=https://download.pytorch.org/whl/cu126"
-set "PYTHONPATH=source"
-for %%i in ("%~dp0..") do set "PARENT=%%~fi"
-set "NEWDATA=%PARENT%\水星配音数据"
-set "LOG=%~dp0本次操作日志.txt"
+set "KEEP=D:\Mercury"
+set "KEEPDATA=%KEEP%\水星配音数据"
+set "OLD=D:\GitHub\By\AU&PR"
 
-echo ════════ 1/3 换回 CUDA 版 torch（2.11.0+cu126）════════
-echo （fish-speech 依赖把 torch 降成了 2.8.0 CPU，导致 dots.tts 检测不到 CUDA）
-python -m pip install --force-reinstall torch==2.11.0 torchaudio==2.11.0 --index-url %IDX% --timeout 60 --retries 3
-if errorlevel 1 goto FAIL
-
+echo ════════ 计划 ════════
+echo  保留（正在用、已验证）：
+echo    "%KEEP%\AU-PR"        代码
+echo    "%KEEPDATA%"          数据+模型
+echo  待删（都是冗余、数据是副本）：
+echo    "%OLD%"               （含 3060 拷贝 + 嵌套克隆）
 echo.
-echo ════════ 2/3 数据总目录重指向 "%NEWDATA%" ════════
-if exist "%NEWDATA%" (
-  python -c "import sys;sys.path.insert(0,'source');from dub_align_studio import settings;print('已设为:',settings.set_data_root(r'%NEWDATA%'))"
-) else (
-  echo [警告] 没找到 "%NEWDATA%" —— 请确认数据已在此处；跳过设置。
+
+rem —— 安全闸：D:\Mercury 的关键模型/音色/字体必须齐，才允许删旧 ——
+set "SAFE=1"
+if not exist "%KEEPDATA%\组件\dots.tts\dots.tts-soar" set "SAFE="
+if not exist "%KEEPDATA%\音色库" set "SAFE="
+if not exist "%KEEPDATA%\字体" set "SAFE="
+if not defined SAFE (
+  echo [中止] 没在 "%KEEPDATA%" 里确认到 dots.tts 模型 / 音色库 / 字体，
+  echo        为防误删，本次不删任何东西。请先确认 D:\Mercury 的数据完整再运行。
+  pause
+  exit /b 1
 )
+echo [安全闸通过] D:\Mercury 的 dots.tts 模型 / 音色库 / 字体 均在。
 
 echo.
-echo ════════ 3/3 验证 ════════
-> "%LOG%" echo 本次操作日志 · %DATE% %TIME%
->> "%LOG%" echo 任务：迁移收尾（CUDA torch + 数据目录重指向）
-python -c "import torch,torchaudio;print('torch      :',torch.__version__);print('torchaudio :',torchaudio.__version__);print('cuda 可用  :',torch.cuda.is_available());print('GPU        :',torch.cuda.get_device_name(0) if torch.cuda.is_available() else '无')" >> "%LOG%" 2>&1
-python -c "import sys;sys.path.insert(0,'source');from dub_align_studio import settings;print('data_root  :',settings.data_root())" >> "%LOG%" 2>&1
-python -c "import sys;sys.path.insert(0,'source');from dub_align_studio.engines.dots_local import DotsLocalEngine as E;s=E().probe();print('dots.tts   :','available=',s.available)" >> "%LOG%" 2>&1
-type "%LOG%"
+echo —— 旧目录里若还有「水星配音数据」旧副本，先列出来（都是副本，真数据在 D:\Mercury）——
+if exist "%OLD%" for /f "delims=" %%d in ('dir /s /b /ad "%OLD%" 2^>nul ^| findstr /i /e "\\水星配音数据"') do echo    副本："%%d"
 
 echo.
-echo ════════ 完成 ════════
-echo 若上面 cuda 可用=True 且 dots.tts available=True，就成功了——把「本次操作日志.txt」发我。
-echo 确认新目录能配音/出片后，可删旧目录：  rmdir /s /q "D:\GitHub\By\AU&PR"
-echo ⚠ 别再点 fish-speech「安装」——它会把 torch 再次降级成 2.8.0 CPU，弄坏 dots.tts。
+if not exist "%OLD%" ( echo 旧目录 "%OLD%" 已不存在，无需清理。& pause & exit /b 0 )
+choice /c YN /m "确认删除旧目录（含两个冗余文件夹）？Y=删  N=不删"
+if errorlevel 2 ( echo 未删除。稍后可手动执行： rmdir /s /q "%OLD%" & pause & exit /b 0 )
+
+taskkill /f /im "水星配音对齐工作室.exe" >nul 2>nul
+rmdir /s /q "%OLD%"
+if exist "%OLD%" (
+  echo [部分失败] "%OLD%" 仍在——可能有资源管理器窗口/程序占用。关掉后重试即可。
+) else (
+  echo [完成] 旧目录已删除。现在只剩干净的 D:\Mercury\AU-PR + D:\Mercury\水星配音数据。
+)
 pause
 exit /b 0
-
-:FAIL
-echo.
-echo [失败] torch 安装失败。请确认能联网访问 download.pytorch.org（或校园/公司网代理），
-echo        或到软件「工具箱自检」点 PyTorch GPU「安装」。把上方输出发我也行。
-pause
-exit /b 1
