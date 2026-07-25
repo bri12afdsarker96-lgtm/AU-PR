@@ -55,6 +55,40 @@ class AspectConfigTests(unittest.TestCase):
         self.assertEqual((config.width, config.height), (1080, 1920))
 
 
+class CleanupIntermediatesTests(unittest.TestCase):
+    def test_deletes_intermediates_keeps_deliverables(self):
+        root = Path(tempfile.mkdtemp(prefix="clean_"))
+        try:
+            # 中间产物
+            chunks = root / "master_chunks"; chunks.mkdir()
+            (chunks / "chunk_001.wav").write_bytes(b"x" * 1000)
+            segs = root / "成片_segments"; segs.mkdir()
+            (segs / "001.mp4").write_bytes(b"y" * 2000)
+            # 交付物 + 交接包（须保留）
+            for keep in ("成片.mp4", "成片.srt", "master.wav", "配音计时表.csv"):
+                (root / keep).write_bytes(b"k")
+            pkg = root / "剪映草稿包_x"; pkg.mkdir(); (pkg / "manifest.json").write_bytes(b"{}")
+
+            deleted, freed = pipeline.cleanup_intermediates(root)
+
+            self.assertEqual(sorted(deleted), ["master_chunks", "成片_segments"])
+            self.assertEqual(freed, 3000)                          # 1000 + 2000 字节
+            self.assertFalse(chunks.exists() or segs.exists())     # 中间产物已删
+            for keep in ("成片.mp4", "成片.srt", "master.wav", "配音计时表.csv"):
+                self.assertTrue((root / keep).exists())            # 交付物保留
+            self.assertTrue((pkg / "manifest.json").exists())      # 草稿包保留
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_nothing_to_clean_is_safe(self):
+        root = Path(tempfile.mkdtemp(prefix="clean0_"))
+        try:
+            deleted, freed = pipeline.cleanup_intermediates(root)
+            self.assertEqual((deleted, freed), ([], 0))
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+
 class SegmentsFromOutputTests(unittest.TestCase):
     def test_reads_back_numbered_segments(self):
         root = Path(tempfile.mkdtemp(prefix="segs_"))

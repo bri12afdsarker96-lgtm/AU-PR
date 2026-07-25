@@ -183,7 +183,7 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
         audio_mix = mix_from_payload(payload.get("audio") or {}, _resolve_asset)
 
         # 友好校验：目录留空时给明确提示，避免 Path(None) 抛 TypeError（用户反馈①）
-        if action in ("run_all", "dub", "timing", "render", "capcut", "rechunk", "finalize", "premiere") and output_dir is None:
+        if action in ("run_all", "dub", "timing", "render", "capcut", "rechunk", "finalize", "premiere", "cleanup") and output_dir is None:
             raise ValueError("请先在下方选择「输出目录」（配音与成片都写到这里）。")
         if action in ("run_all", "render", "finalize") and not str(payload.get("shots_dir") or "").strip():
             raise ValueError("请先选择「分镜目录」（放 1.mp4、2.mp4 … 的文件夹）。")
@@ -288,7 +288,8 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             with JOB.lock:
                 JOB.result, JOB.ok = result, result.ok
         elif action == "finalize":
-            # 文本框逐行校对后：用校对文字重烧字幕（overlays）+ 导出剪映草稿，一步到位（导出统一在文本框页触发）
+            # 文本框调完样式后：按当前样式重烧字幕成片。**不再自动导出剪映草稿**
+            # （2026-07-25 用户定案：没点「导出剪映草稿」就不生成草稿包）——草稿/工程各有独立按钮。
             master_path = output_dir / pipeline.MASTER_NAME
             timings = JOB.timings or pipeline.load_timings(output_dir)
             # 与首次成片同一份选片（选片清单.csv 复用）——重烧字幕不换画面
@@ -297,20 +298,14 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                                                  int(payload.get("seed") or 42), output_dir, log=log)
 
             def _fin_progress(done: int, total: int) -> None:
-                JOB.set_progress(f"重烧字幕 · 第 {done}/{total} 段", 8 + int(done / max(1, total) * 80))
+                JOB.set_progress(f"重烧字幕 · 第 {done}/{total} 段", 5 + int(done / max(1, total) * 90))
 
-            JOB.set_progress("① 重烧字幕 · 逐行收口", 8)
-            log("① 用文本框校对后的逐行文字重烧字幕成片…")
+            JOB.set_progress("重烧字幕 · 逐行收口", 5)
+            log("按当前样式重烧字幕成片…（未点「导出剪映草稿」不会生成草稿包）")
             result = pipeline.step_render(master_path, timings, videos, output_dir, style,
                                           config=config, overlays=overlays, audio_mix=audio_mix,
                                           progress=_fin_progress)
-            log(("  ✅ 成片：" if result.ok else "  ❌ 收口未过：") + str(result.output_path))
-            JOB.set_progress("② 导出剪映草稿", 92)
-            log("② 导出剪映草稿…")
-            package = pipeline.step_capcut(timings, result, master_path, output_dir,
-                                           style or SubtitleStyle(), canvas=canvas)
-            log(f"  ✅ {package.message}")
-            log(f"     交接包：{package.package_dir}")
+            log(("✅ 成片：" if result.ok else "❌ 收口未过：") + str(result.output_path))
             JOB.set_progress("完成", 100)
             with JOB.lock:
                 JOB.timings, JOB.result, JOB.ok = timings, result, result.ok
@@ -355,6 +350,19 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             log(f"✅ Premiere 工程已导出：{xml_path}")
             log("   Premiere Pro → 文件 → 导入 → 选该 XML 即得完整时间线（字幕另导入 成片.srt）。")
             log("   整个输出目录即交接包；换电脑整目录拷贝后在 PR 里重新链接素材。")
+            with JOB.lock:
+                JOB.ok = True
+        elif action == "cleanup":
+            # 清理缓存：删掉成片生成过程中的可再生中间产物，保留成片与各交接包（2026-07-25 用户需求）
+            if not (output_dir / pipeline.FILM_NAME).is_file():
+                raise ValueError(f"未找到成片（{pipeline.FILM_NAME}），请先成功生成成片再清理，避免误删。")
+            deleted, freed = pipeline.cleanup_intermediates(output_dir)
+            if deleted:
+                log(f"✅ 已清理中间产物：{'、'.join(deleted)}，释放 {freed / 1024 / 1024:.1f} MB。")
+                log("   保留：成片.mp4/.srt、master.wav、配音计时表.csv、剪映草稿包/、Premiere工程（均自包含）。")
+                log("   注意：清理后「重配此段」与「重新导出草稿/工程」不可用，如需请先导出。")
+            else:
+                log("没有可清理的中间产物（master_chunks / 成片_segments 均不存在）。")
             with JOB.lock:
                 JOB.ok = True
         elif action == "probe":

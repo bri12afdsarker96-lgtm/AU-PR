@@ -334,3 +334,42 @@ def run_all(
 def load_timings(output_dir: Path) -> list[LineTiming]:
     """读回已有计时表（GUI 分步操作时跨步恢复）。"""
     return read_timing_table(Path(output_dir) / TIMING_TABLE_NAME)
+
+
+def _dir_size(path: Path) -> int:
+    total = 0
+    for p in Path(path).rglob("*"):
+        try:
+            if p.is_file():
+                total += p.stat().st_size
+        except OSError:
+            pass
+    return total
+
+
+def cleanup_intermediates(output_dir: Path) -> tuple[list[str], int]:
+    """删除成片生成过程中的可再生中间产物，保留成片与各交接包。返回 (已删名单, 释放字节)。
+
+    删除：
+      · master_chunks/   逐行段音频 + 分段清单（仅「重配此段」用）
+      · 成片_segments/   逐行无声分镜段 + 字幕临时 txt + 拼接中间件（_concat.txt/_full_silent.mp4）
+    保留：成片.mp4/.srt、master.wav/.json、配音计时表.csv、选片清单.csv、
+         剪映草稿包_*/（自包含）、Premiere工程.xml + Premiere工程_素材/（自包含）。
+    清理后「重配此段/重新导出草稿或工程」不可用（需要中间产物），故应在确认成片与交接包无误后再清理。
+    """
+    import shutil
+    from .engines.longform import chunks_dir_for
+
+    output_dir = Path(output_dir)
+    targets = [
+        chunks_dir_for(output_dir / MASTER_NAME),          # master_chunks/
+        output_dir / f"{Path(FILM_NAME).stem}_segments",   # 成片_segments/
+    ]
+    deleted: list[str] = []
+    freed = 0
+    for target in targets:
+        if target.is_dir():
+            freed += _dir_size(target)
+            shutil.rmtree(target, ignore_errors=True)
+            deleted.append(target.name)
+    return deleted, freed

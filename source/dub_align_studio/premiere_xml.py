@@ -89,16 +89,37 @@ def build_fcp7_xml(sequence_name: str, segments: list[Path], master_wav: Path,
 def export_premiere_project(output_dir: Path, segments: list[Path], master_wav: Path,
                             frames_per_segment: list[int], fps: int,
                             width: int, height: int) -> Path:
-    """写出 Premiere工程.xml 到输出目录（输出目录整体即交接包）。返回 xml 路径。"""
+    """写出 Premiere工程.xml + 自包含素材到输出目录。返回 xml 路径。
+
+    2026-07-25：把分镜段与配音**复制**进「Premiere工程_素材/」再引用副本（不再原地引用
+    成片_segments/master.wav）——这样「清理缓存」删掉中间产物后 Premiere 工程仍可打开，
+    整个工程也可随「Premiere工程.xml + Premiere工程_素材/」独立拷走。"""
+    import shutil
+
     output_dir = Path(output_dir)
-    xml = build_fcp7_xml(output_dir.name or "水星成片", [Path(s) for s in segments],
-                         Path(master_wav), frames_per_segment, fps, width, height)
+    material_dir = output_dir / "Premiere工程_素材"
+    material_dir.mkdir(parents=True, exist_ok=True)
+    staged_segments: list[Path] = []
+    for i, seg in enumerate(segments, start=1):
+        seg = Path(seg)
+        if not seg.exists():
+            raise FileNotFoundError(f"分镜段不存在：{seg}（请先执行「③ 渲染成片 / 生成成片」）")
+        target = material_dir / f"{i:03d}{seg.suffix}"
+        shutil.copy2(seg, target)
+        staged_segments.append(target)
+    master_copy = material_dir / ("master" + Path(master_wav).suffix)
+    shutil.copy2(master_wav, master_copy)
+
+    xml = build_fcp7_xml(output_dir.name or "水星成片", staged_segments,
+                         master_copy, frames_per_segment, fps, width, height)
     path = output_dir / "Premiere工程.xml"
     path.write_text(xml, encoding="utf-8")
     note = output_dir / "Premiere导入说明.txt"
     note.write_text(
         "Premiere Pro：文件 → 导入 → 选择本目录的「Premiere工程.xml」→ 得到完整时间线\n"
         "（V1=逐行分镜段，A1=整轨配音）。字幕：再导入同目录「成片.srt」到字幕轨。\n"
-        "素材按绝对路径引用本目录内文件——整个输出目录即交接包；换电脑请整目录拷贝后\n"
-        "在 Premiere 里对缺失素材「重新链接」到新位置。\n", encoding="utf-8")
+        "素材已复制进「Premiere工程_素材/」并被工程引用——自包含、可随 XML+素材文件夹整体拷走；\n"
+        "换电脑后若提示缺素材，在 Premiere 里对「Premiere工程_素材」重新链接即可。\n"
+        "（本工程不依赖 成片_segments/ 与 master_chunks/，清理缓存后仍可打开。）\n",
+        encoding="utf-8")
     return path

@@ -98,6 +98,22 @@ class PremiereXmlTests(unittest.TestCase):
         self.assertTrue((self.work / "Premiere导入说明.txt").exists())
         ET.parse(path)                                              # 落盘文件同样可解析
 
+    def test_export_is_self_contained_and_survives_cleanup(self):
+        # 导出后素材复制进 Premiere工程_素材/，且工程只引用副本——删掉源分镜段/配音后仍完整
+        path = export_premiere_project(self.work, self.segs, self.master, [150, 210, 180], 30, 1080, 1920)
+        mat = self.work / "Premiere工程_素材"
+        self.assertTrue((mat / "001.mp4").exists() and (mat / "master.wav").exists())
+        from urllib.parse import unquote
+
+        root = ET.parse(path).getroot()
+        urls = [unquote(u.text) for u in root.iter("pathurl")]      # pathurl 对中文做了 %XX 编码
+        self.assertTrue(urls and all("Premiere工程_素材" in u for u in urls))  # 只引用素材副本
+        # 模拟清理：删掉源分镜段与配音，工程引用的副本仍在
+        for s in self.segs:
+            s.unlink()
+        self.master.unlink()
+        self.assertTrue((mat / "001.mp4").exists() and (mat / "master.wav").exists())
+
     def test_mismatched_counts_raise(self):
         with self.assertRaises(ValueError):
             build_fcp7_xml("x", self.segs, self.master, [100, 100], 30, 1080, 1920)

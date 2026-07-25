@@ -476,17 +476,20 @@ footer b{color:var(--muted);font-weight:600}
         <p style="font-size:11px;color:var(--faint);margin-top:12px;letter-spacing:.5px">渲染「③ / 生成成片」时全部烧入。</p>
       </div>
 
-      <!-- 校对后统一导出（成片+剪映草稿）：成片流程的最后一步都在此触发 -->
+      <!-- 校对后：重烧成片（不自动导草稿）；草稿/工程/清理各自独立按钮 -->
       <div class="card" style="margin-top:16px">
         <h2>样式确认 · 导出</h2>
         <p class="mini" style="color:var(--faint);margin:-4px 0 10px">
           字幕由渲染端<b>按标点逐句、按时间轴</b>自动烧录（本页只管字幕样式与手加文字层）。
-          调整样式/文字层后点下方按钮：<b>按当前样式重烧成片 + 导出剪映草稿</b>，一步到位。</p>
-        <button class="btn gold big" style="white-space:normal;line-height:1.5;letter-spacing:2px" onclick="run('finalize')">✔ 重烧字幕并导出<br><span style="font-size:12px;font-weight:400">成片 ＋ 剪映草稿 · 一步到位</span></button>
+          调整样式/文字层后点下方按钮<b>按当前样式重烧成片</b>。剪映草稿 / Premiere 工程<b>只在你点对应按钮时才导出</b>，不再自动生成。</p>
+        <button class="btn gold big" style="white-space:normal;line-height:1.5;letter-spacing:2px" onclick="run('finalize')">✔ 按当前样式重烧成片<br><span style="font-size:12px;font-weight:400">只出成片 · 不自动导草稿</span></button>
         <div class="row" style="gap:10px;margin-top:10px">
           <a id="filmBtn2" class="btn line" style="display:none;flex:1" href="#" target="_blank">▶ 打开成片</a>
-          <button class="btn line" style="flex:none" onclick="run('capcut')" title="不重烧，仅按当前成片导出剪映草稿">仅导出剪映草稿</button>
-          <button class="btn line" style="flex:none" onclick="run('premiere')" title="导出 Premiere Pro 可直接导入的 XML 工程（V1 分镜段 + A1 整轨配音；字幕另导入成片.srt）">导出 Premiere 工程</button>
+          <button class="btn line" style="flex:none" onclick="run('capcut')" title="按当前成片导出剪映草稿（自包含，素材已复制进草稿包）">导出剪映草稿</button>
+          <button class="btn line" style="flex:none" onclick="run('premiere')" title="导出 Premiere Pro 可直接导入的 XML 工程（自包含素材；字幕另导入成片.srt）">导出 Premiere 工程</button>
+        </div>
+        <div class="row" style="gap:10px;margin-top:10px">
+          <button class="btn line" style="flex:1;border-color:#7a5a2a" onclick="cleanupCache()" title="删掉生成过程中的中间产物（master_chunks / 成片_segments），保留成片与各交接包">🧹 清理缓存（删中间产物）</button>
         </div>
       </div>
     </div>
@@ -1136,6 +1139,12 @@ async function run(action,target){
     aspect:$('aspect').value,overlays,audio:collectAudio()};
   if(await postRun(payload))pollAll();
 }
+// 清理缓存：二次确认后删掉生成过程中的中间产物（成片与交接包保留）
+function cleanupCache(){
+  if(!$('outdir').value.trim()){alert('请先选择「输出目录」。');return;}
+  if(!confirm('将删除本次成片生成过程中的中间产物：\n  · master_chunks/（逐行段+分段清单）\n  · 成片_segments/（无声分镜段+字幕临时件）\n\n保留：成片.mp4/.srt、master.wav、配音计时表、剪映草稿包、Premiere 工程（均自包含）。\n\n注意：清理后「重配此段」与「重新导出草稿/工程」将不可用。确定清理？'))return;
+  run('cleanup');
+}
 const _prevRun={};
 async function pollAll(){
   let s;try{s=await (await fetch('/api/jobs')).json();}catch(e){return;}
@@ -1163,7 +1172,7 @@ async function pollAll(){
 // 生成成片进度条：显示阶段文字 + 百分比
 function updateProgress(main){
   const wrap=$('progWrap');if(!wrap)return;
-  const isFilm=['run_all','render','dub','timing','capcut','finalize'].includes(main.action);
+  const isFilm=['run_all','render','dub','timing','capcut','finalize','premiere','cleanup'].includes(main.action);
   if(main.running&&isFilm){
     wrap.style.display='block';
     $('progStage').textContent=main.stage||'进行中…';

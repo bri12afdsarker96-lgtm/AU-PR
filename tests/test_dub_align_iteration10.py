@@ -121,8 +121,9 @@ class UiContractV10Tests(unittest.TestCase):
                   'id="subColor"', 'id="subSwatches"', 'id="subBorder"',      # #4 字幕颜色/描边
                   "setSfxVol", "mixGains",                                    # #2/#3 音效音量·独立增益
                   "标点逐句", "按时间轴",                                     # 字幕改渲染端逐句烧录（2026-07-25）
-                  "去文本框调样式/导出", "最后一步",                            # #8 剪映位置（导出移至文本框页）
-                  "run('finalize')"):                                        # 文本框页校对后重烧+导出
+                  "去文本框调样式/导出",                                       # #8 剪映位置（导出移至文本框页）
+                  "run('finalize')",                                         # 文本框页校对后重烧（不自动导草稿）
+                  "cleanupCache"):                                           # 清理缓存按钮（2026-07-25）
             self.assertIn(m, html, m)
 
 
