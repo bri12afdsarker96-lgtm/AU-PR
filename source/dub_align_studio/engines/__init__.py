@@ -16,6 +16,7 @@ from .base import (
 )
 from .mock_engine import MockEngine
 from .dots_local import DotsLocalEngine
+from .dots_remote import DotsRemoteEngine
 from .fish_local import FishLocalEngine
 
 __all__ = [
@@ -26,6 +27,7 @@ __all__ = [
     "SynthesisOptions",
     "MockEngine",
     "DotsLocalEngine",
+    "DotsRemoteEngine",
     "FishLocalEngine",
     "write_master_metadata",
 ]

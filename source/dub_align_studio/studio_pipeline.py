@@ -23,6 +23,7 @@ from .audio_mix import AudioMix
 from .capcut_draft import CapcutPackage, export_capcut_package
 from .engines import (
     DotsLocalEngine,
+    DotsRemoteEngine,
     DubEngine,
     FishLocalEngine,
     MasterAudio,
@@ -49,7 +50,7 @@ MASTER_NAME = "master.wav"
 FILM_NAME = "成片.mp4"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
 
-ENGINE_KEYS = ["mock", "dots_local", "fish_local"]
+ENGINE_KEYS = ["mock", "dots_local", "dots_remote", "fish_local"]
 ALIGNER_KEYS = ["whisper", "均分兜底"]
 
 # 五种常见画面比例（名称取自内核 edit_compose.ASPECT_RATIOS，画布由 aspect_canvas 计算）
@@ -113,6 +114,8 @@ def make_engine(key: str) -> DubEngine:
         return MockEngine()
     if key == "dots_local":
         return DotsLocalEngine()
+    if key == "dots_remote":
+        return DotsRemoteEngine()
     if key == "fish_local":
         return FishLocalEngine()
     raise KeyError(f"未知引擎：{key}（可选：{'、'.join(ENGINE_KEYS)}）")
