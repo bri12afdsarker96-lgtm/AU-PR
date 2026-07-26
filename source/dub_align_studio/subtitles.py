@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -85,10 +86,24 @@ _PHRASE_SPLIT = re.compile(r"[，。！？；：、,.!?;:…—]+")
 PHRASE_MIN_SECONDS = 0.4     # 每个短句最短显示时长（太短一闪而过）；不够分则退回按占比
 
 
+def strip_subtitle_punct(text: str) -> str:
+    """剔除字幕里的**所有标点符号**（用户 2026-07-26 定案：引号/书名号/括号等一律不进字幕）。
+
+    断句用的句读（，。！？…）本就在 split 时被吃掉；这里再兜底清掉 split 不覆盖的
+    引号「」『』“”‘’、书名号《》〈〉、括号（）【】[]() 等——凡 Unicode 标点类(P*)全去。
+    只用于**字幕/SRT**；文本框 overlay（书名带含《》）不走这里，保留其标点。"""
+    cleaned = "".join(ch for ch in str(text) if not unicodedata.category(ch).startswith("P"))
+    return " ".join(cleaned.split())  # 顺带并掉标点剥离后残留的多余空白
+
+
 def split_line_phrases(text: str) -> list[str]:
-    """按常用标点把一行切成短句并剥掉标点；空片丢弃；无标点则整行一句。"""
-    phrases = [p.strip() for p in _PHRASE_SPLIT.split(str(text)) if p.strip()]
-    return phrases or ([str(text).strip()] if str(text).strip() else [])
+    """按常用标点把一行切成短句，并**剔除所有标点**；空片丢弃；无标点则整行一句。"""
+    phrases = [strip_subtitle_punct(p) for p in _PHRASE_SPLIT.split(str(text))]
+    phrases = [p for p in phrases if p]
+    if phrases:
+        return phrases
+    whole = strip_subtitle_punct(text)
+    return [whole] if whole else []
 
 
 def entries_to_phrases(entries: list[SubtitleEntry]) -> list[SubtitleEntry]:
