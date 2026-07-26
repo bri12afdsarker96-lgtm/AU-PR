@@ -109,6 +109,15 @@ class EditQueueTests(unittest.TestCase):
         self.assertTrue(edit_queue.remove(item_id, store=self.store))
         self.assertEqual(edit_queue.list_active(store=self.store, now=1), [])
 
+    def test_stores_and_returns_settings(self):
+        f = self._film("带设置")
+        edit_queue.add("带设置", f, str(Path(f).parent),
+                       settings={"sub": {"size": 88}, "wm": {"enabled": True}},
+                       store=self.store, now=1)
+        item = edit_queue.list_active(store=self.store, now=2)[0]
+        self.assertEqual(item["settings"]["sub"]["size"], 88)
+        self.assertTrue(item["settings"]["wm"]["enabled"])
+
     def test_persists_across_reload(self):
         f = self._film("持久化")
         edit_queue.add("持久化", f, str(Path(f).parent), store=self.store, now=5)
