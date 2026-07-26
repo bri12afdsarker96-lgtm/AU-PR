@@ -22,8 +22,28 @@ class UiContractPhase3Tests(unittest.TestCase):
                   "function toast", "tap-pulse", "pointerdown", ".busy",  # 全局点击反馈
                   "pickDoc", "mirrorOut", "_outdirManual",                # ① 导入设目录 + 输出跟随分镜
                   "dubLastVoice", "dubLastAspect",                        # ② 记住上次音色/比例
-                  'id="burnPreset"', "saveBurnPreset", "collectBurnStyle"):  # ③ 烧录预设
+                  'id="burnPreset"', "saveBurnPreset", "collectBurnStyle",  # ③ 烧录预设
+                  "enqueueTask(true)", "pauseResumeQueue", "cancelQueueTask",  # 生成成片并入队列 + 暂停/取消
+                  'id="queuePauseBtn"', "疑似卡死"):                          # 暂停按钮 + 卡死看门狗
             self.assertIn(m, html, m)
+
+    def test_queue_pause_and_cancel(self):
+        import tempfile
+        from pathlib import Path
+        from dub_align_studio import web_server as ws
+        ws._gen_queue_set_paused(True)                      # 暂停 → 不启动新任务，入队停 pending
+        try:
+            work = Path(tempfile.mkdtemp())
+            tid = ws._gen_enqueue({"text": "一\n二", "engine": "mock", "aligner": "均分兜底",
+                                   "output_dir": str(work / "o"), "shots_dir": str(work)}, "T")
+            snap = ws._gen_queue_snapshot()
+            self.assertTrue(snap["paused"])
+            row = next(t for t in snap["tasks"] if t["id"] == tid)
+            self.assertEqual(row["status"], "pending")
+            self.assertTrue(ws._gen_queue_cancel(tid))       # 取消待办 → 移除
+            self.assertFalse(any(t["id"] == tid for t in ws._gen_queue_snapshot()["tasks"]))
+        finally:
+            ws._gen_queue_set_paused(False)
 
     def test_browse_lists_files_and_parse_by_path(self):
         import tempfile

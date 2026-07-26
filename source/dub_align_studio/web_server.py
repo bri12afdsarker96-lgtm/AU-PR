@@ -19,6 +19,7 @@ import copy
 import json
 import tempfile
 import threading
+import time
 import traceback
 import uuid
 import webbrowser
@@ -78,6 +79,13 @@ class JobState:
     result: object | None = None
     stage: str = ""          # 当前阶段文字（生成成片进度用）
     progress: int = 0        # 0~100 进度百分比
+    cancelled: bool = False  # 队列任务取消标志（进度回调检查后中止）
+    last_tick: float = 0.0   # 最后一次进度更新时刻（看门狗判「疑似卡死」用）
+
+    def check_cancel(self) -> None:
+        """协作式取消：run_all 各步进度回调调用它，一旦被取消就抛出中止。"""
+        if self.cancelled:
+            raise RuntimeError("已取消该任务")
 
     def snapshot(self) -> dict:
         with self.lock:
@@ -101,6 +109,7 @@ class JobState:
         with self.lock:
             self.stage = stage
             self.progress = max(0, min(100, int(percent)))
+            self.last_tick = time.time()
 
 
 JOB = JobState()          # main 槽（保持旧口径：/api/job 即它）
@@ -164,7 +173,16 @@ def _remember_edit_item(output_dir: Path, canvas: tuple[int, int], payload: dict
 # 别的成片——已入队任务的 payload 已深拷冻结，互不影响（用户 2026-07-26 选 A 方案）。
 GEN_COND = threading.Condition()      # 同时充当 GEN_QUEUE 的锁
 GEN_QUEUE: list[dict] = []            # 每项：{id,title,payload,job:JobState,status,error}
+GEN_PAUSED = False                    # 队列暂停：不再启动新任务（正在跑的那个不受影响）
+STUCK_SECONDS = 180                   # 运行中任务超过此秒无进度 → 前端标「疑似卡死」，可手动取消
 _GEN_WORKER: threading.Thread | None = None
+
+
+def _next_pending_locked():
+    """持锁下取下一个待办；队列暂停时返回 None（不启动新任务）。"""
+    if GEN_PAUSED:
+        return None
+    return next((e for e in GEN_QUEUE if e["status"] == "pending"), None)
 
 
 def _gen_enqueue(payload: dict, title: str) -> str:
@@ -192,18 +210,18 @@ def _ensure_gen_worker_locked() -> None:
 def _gen_worker_loop() -> None:
     while True:
         with GEN_COND:
-            entry = next((e for e in GEN_QUEUE if e["status"] == "pending"), None)
+            entry = _next_pending_locked()
             while entry is None:
-                GEN_COND.wait()                       # 无待办 → 休眠，enqueue 时被唤醒
-                entry = next((e for e in GEN_QUEUE if e["status"] == "pending"), None)
+                GEN_COND.wait()                       # 无待办 / 已暂停 → 休眠，enqueue/继续时唤醒
+                entry = _next_pending_locked()
             entry["status"] = "running"
             job: JobState = entry["job"]
             payload = entry["payload"]
             attempt = entry["retries"] + 1
             with job.lock:
-                job.running, job.done, job.ok = True, False, False
+                job.running, job.done, job.ok, job.cancelled = True, False, False, False
                 job.log = [f"══ 队列任务「{entry['title']}」开始克隆" + (f"（第 {attempt} 次尝试）" if attempt > 1 else "") + " ══"]
-                job.stage, job.progress = "", 0
+                job.stage, job.progress, job.last_tick = "", 0, time.time()
         # 单个任务出问题绝不掀翻整队：_run_job 内部已兜异常；这里再包一层防线程被杀。
         try:
             _run_job(job, "run_all", payload)         # 复用整套 run_all（含成功后进待编辑队列）
@@ -212,7 +230,10 @@ def _gen_worker_loop() -> None:
             with job.lock:
                 job.running, job.done, job.ok = False, True, False
         with GEN_COND:
-            if job.ok:
+            if job.cancelled:
+                entry["status"] = "cancelled"         # 用户取消 → 跳过，不自动重试
+                entry["error"] = "已取消"
+            elif job.ok:
                 entry["status"] = "done"
             elif entry["retries"] < entry["auto_max"]:
                 entry["retries"] += 1                  # 自动重试：重置为待办，worker 稍后再取
@@ -225,24 +246,52 @@ def _gen_worker_loop() -> None:
                     (m for m in reversed(job.log) if "失败" in m or "错误" in m), "克隆失败")
 
 
-def _gen_queue_snapshot() -> list[dict]:
+def _gen_queue_snapshot() -> dict:
+    now = time.time()
     with GEN_COND:
         out = []
         for e in GEN_QUEUE:
             job: JobState = e["job"]
             with job.lock:
+                idle = int(now - job.last_tick) if (e["status"] == "running" and job.last_tick) else 0
                 out.append({"id": e["id"], "title": e["title"], "status": e["status"],
                             "error": e["error"], "stage": job.stage, "progress": job.progress,
                             "running": job.running, "ok": job.ok, "retries": e.get("retries", 0),
+                            "output_dir": str((e.get("payload") or {}).get("output_dir") or ""),
+                            "idle_seconds": idle, "stuck": bool(idle >= STUCK_SECONDS),
                             "log": list(job.log)[-40:]})
-        return out
+        return {"tasks": out, "paused": GEN_PAUSED, "stuck_after": STUCK_SECONDS}
+
+
+def _gen_queue_set_paused(paused: bool) -> None:
+    global GEN_PAUSED
+    with GEN_COND:
+        GEN_PAUSED = bool(paused)
+        GEN_COND.notify_all()                          # 继续时唤醒 worker 取下一个
+
+
+def _gen_queue_cancel(task_id: str) -> bool:
+    """取消/删除一个任务：待办直接移除；运行中置取消标志（进度间隙协作中止）。"""
+    with GEN_COND:
+        for i, e in enumerate(GEN_QUEUE):
+            if e["id"] != task_id:
+                continue
+            if e["status"] == "pending":
+                GEN_QUEUE.pop(i)
+                return True
+            if e["status"] == "running":
+                e["job"].cancelled = True              # run_all 进度回调 check_cancel 抛错中止
+                e["job"].append("⏹ 收到取消指令，正在中止…")
+                return True
+            return False
+    return False
 
 
 def _gen_queue_retry(task_id: str) -> bool:
     """手动重试一个已失败（或已完成）的任务：重置为待办、清零错误，唤醒 worker。"""
     with GEN_COND:
         for e in GEN_QUEUE:
-            if e["id"] == task_id and e["status"] in ("failed", "done"):
+            if e["id"] == task_id and e["status"] in ("failed", "done", "cancelled"):
                 e["job"] = JobState(slot=f"queue:{task_id}", label=e["title"], action="run_all")
                 e["status"], e["error"], e["retries"] = "pending", "", 0
                 GEN_COND.notify()
@@ -344,6 +393,7 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                 # 进度配比按真实耗时：配音（逐行 GPU 克隆，每行数十秒）是全程最久的一步，
                 # 给它最大区段 5→78%，否则「18/20 行只走到 25%」看着像卡死（用户反馈）。
                 def _dub_progress(done: int, total: int) -> None:
+                    JOB.check_cancel()   # 队列任务被取消 → 逐行处理间隙中止
                     pct = 5 + int(done / max(1, total) * 73)  # 配音占 5~78%
                     JOB.set_progress(f"① 配音 · 第 {done}/{total} 行", pct)
 
@@ -363,6 +413,7 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             log("③ 渲染成片 · 逐行裁剪/变速 + 整轨叠加…")
 
             def _render_progress(done: int, total: int) -> None:
+                JOB.check_cancel()   # 逐段渲染间隙响应取消
                 pct = 80 + int(done / max(1, total) * 15)  # 渲染占 80~95%（比配音快很多）
                 JOB.set_progress(f"③ 渲染成片 · 第 {done}/{total} 段", pct)
 
@@ -661,7 +712,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({"jobs": jobs})
             return
         if route == "/api/queue":                       # ⑨ 生成任务队列状态
-            self._json({"tasks": _gen_queue_snapshot()})
+            self._json(_gen_queue_snapshot())
             return
         if route == "/api/edit_queue":                  # ⑧ 待编辑队列（顺带清过期）
             self._json({"items": edit_queue.list_active()})
@@ -937,6 +988,13 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             if act == "retry":
                 self._json({"ok": _gen_queue_retry(str(payload.get("id") or ""))})
+                return
+            if act == "cancel":
+                self._json({"ok": _gen_queue_cancel(str(payload.get("id") or ""))})
+                return
+            if act in ("pause", "resume"):
+                _gen_queue_set_paused(act == "pause")
+                self._json({"ok": True, "paused": act == "pause"})
                 return
             if act == "clear":
                 self._json({"ok": True, "cleared": _gen_queue_clear_finished()})
