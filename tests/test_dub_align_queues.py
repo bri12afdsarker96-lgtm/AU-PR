@@ -4,7 +4,20 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from dub_align_studio import edit_queue
+from dub_align_studio import edit_queue, web_server
+
+
+class UiContractPhase3Tests(unittest.TestCase):
+    """界面契约：Phase 3 前端接线必须存在真实端点/元素（防「样子货」回归）。"""
+
+    def test_index_wires_queues_and_preview(self):
+        html = (Path(web_server.__file__).parent / "web" / "index.html").read_text(encoding="utf-8")
+        for m in ("enqueueTask", "/api/queue", "/api/edit_queue",       # ⑨⑧ 端点
+                  'id="genQueueCard"', 'id="eqList"', "loadEditQueue",   # 两条队列 UI
+                  'id="pvVideo"', "pvToggle", "stylePvBar",              # ⑦ 真视频预览
+                  "烧录列表", 'id="subsize"', 'id="pbEnable"',           # ④⑥ 字幕/进度条移入一键成片
+                  "applyPbObj", "applySubObj"):                          # ⑤ 预设含字幕/进度条
+            self.assertIn(m, html, m)
 
 
 def _touch_file(p: Path) -> str:
