@@ -115,7 +115,25 @@ input[type=file]::file-selector-button{appearance:none;cursor:pointer;border:1px
   background:var(--field);color:var(--text);font:600 14px/1 inherit;letter-spacing:1.5px;
   padding:12px 19px;transition:.16s;white-space:nowrap}
 .btn:hover{border-color:var(--gold-deep);color:var(--gold)}
-.btn:active{transform:translateY(1px)}
+.btn:active{transform:translateY(1px) scale(.985);filter:brightness(1.08)}
+/* busy 态：点了在跑的按钮转圈+禁点，杜绝「点了像没点」 */
+.btn.busy{opacity:.65;cursor:progress;pointer-events:none}
+.btn.busy::after{content:"";display:inline-block;width:11px;height:11px;margin-left:8px;
+  vertical-align:-1px;border:2px solid currentColor;border-right-color:transparent;
+  border-radius:50%;animation:spin .6s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+/* 通用点击脉冲：任何可点元素按下瞬间闪一圈金光，绝不「点了像没点」 */
+@keyframes tap-pulse{0%{box-shadow:0 0 0 0 rgba(228,185,99,.5)}100%{box-shadow:0 0 0 9px rgba(228,185,99,0)}}
+.tapped{animation:tap-pulse .42s ease-out}
+/* 轻提示 toast：无即时可见结果的操作用它回执 */
+#toasts{position:fixed;left:50%;bottom:30px;transform:translateX(-50%);z-index:9999;
+  display:flex;flex-direction:column;gap:8px;align-items:center;pointer-events:none}
+.toast{background:var(--panel2);border:1px solid var(--gold-deep);color:var(--text);
+  padding:10px 18px;border-radius:10px;font-size:13.5px;box-shadow:0 10px 28px rgba(0,0,0,.45);
+  opacity:0;transform:translateY(10px);transition:.24s;max-width:82vw}
+.toast.show{opacity:1;transform:none}
+.toast.ok{border-color:var(--ok);color:var(--ok)}
+.toast.bad{border-color:var(--bad);color:var(--bad)}
 .btn.gold{background:linear-gradient(135deg,var(--gold-hi),var(--gold) 60%,#D9A94E);color:var(--ink);
   border-color:transparent;font-weight:800;box-shadow:0 8px 26px rgba(228,185,99,.25),inset 0 1px 0 rgba(255,255,255,.4)}
 .btn.gold:hover{filter:brightness(1.05);color:var(--ink)}
@@ -870,6 +888,27 @@ footer b{color:var(--muted);font-weight:600}
 
 <script>
 const $=id=>document.getElementById(id);
+/* ── 全局点击反馈：任何可点元素按下即闪一圈金光（杜绝「点了像没点」） ── */
+document.addEventListener('pointerdown',e=>{
+  const el=e.target.closest('.btn,nav button,.sw,.lbtn,.x,.item,[onclick]');
+  if(!el||el.classList.contains('busy'))return;
+  el.classList.remove('tapped'); void el.offsetWidth; el.classList.add('tapped');
+  setTimeout(()=>el.classList.remove('tapped'),440);
+},true);
+/* ── 轻提示 toast：给「无即时可见结果」的操作一个回执 ── */
+function toast(msg,kind){
+  let box=$('toasts');
+  if(!box){box=document.createElement('div');box.id='toasts';document.body.appendChild(box);}
+  const t=document.createElement('div');t.className='toast'+(kind?(' '+kind):'');t.textContent=msg;
+  box.appendChild(t);requestAnimationFrame(()=>t.classList.add('show'));
+  setTimeout(()=>{t.classList.remove('show');setTimeout(()=>t.remove(),300);},2200);
+}
+/* 点击后台动作时给按钮短暂 busy 态（有 event 时用 event.currentTarget） */
+function _busy(ms){
+  const el=(typeof event!=='undefined'&&event)?event.currentTarget:null;
+  if(!el||!el.classList)return;
+  el.classList.add('busy');setTimeout(()=>el.classList.remove('busy'),ms||900);
+}
 let overlays=[], logTarget='mainlog', POSITIONS=[];
 const ASPECT_CANVAS={'9:16 竖屏':[1080,1920],'16:9 横屏':[1920,1080],'1:1 方形':[1080,1080],'4:3':[1440,1080],'3:4':[1080,1440]};
 const SUB_POS_RATIO={'顶部':0.06,'中上':0.30,'中部':0.48,'中下':0.68,'底部':0.885};
@@ -1011,7 +1050,7 @@ async function postRun(payload){
   if(j.error){alert(j.error);return false;}
   return true;
 }
-async function installComponent(key){ if(rootUnsaved())return; if(await postRun({action:'component',component_key:key}))pollAll(); }
+async function installComponent(key){ if(rootUnsaved())return; _busy(1200); if(await postRun({action:'component',component_key:key})){toast('开始下载/安装 · '+key,'ok');pollAll();} }
 async function runFish(action){ if(await postRun({action}))pollAll(); }
 async function stopComponent(key){
   if(!confirm('停止「'+key+'」的安装？（已下载部分保留，重装走国内镜像会更快）'))return;
@@ -1039,6 +1078,7 @@ async function removeEditItem(id){
   await fetch('/api/edit_queue',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({action:'remove',id})});
   if(_curEdit===id)_curEdit=null;
+  toast('已移出待编辑队列');
   loadEditQueue();
 }
 function selectEditItem(id,filmEnc,outEnc,cw,ch,title){
@@ -1050,6 +1090,7 @@ function selectEditItem(id,filmEnc,outEnc,cw,ch,title){
   loadPreviewVideo('/api/audio?path='+encodeURIComponent(film));
   loadEditQueue();
   if($('pvInfo'))$('pvInfo').textContent='编辑中 · '+title;
+  toast('已载入 · '+title,'ok');
 }
 function loadPreviewVideo(url){
   const v=$('pvVideo');if(!v)return;
@@ -1221,6 +1262,7 @@ function addOverlay(){
   const o=editorOverlay();
   if(!o.text){alert('请先填写文本内容');return;}
   overlays.push(o);$('edText').value='';renderOverlays();syncPv();
+  toast('已添加文本框','ok');
 }
 /* ── 逐条编辑：点列表行载入编辑器（可改文字/手动换行分割/样式/时间窗），更新写回原条目 ── */
 let ovEdit=-1;
@@ -1245,6 +1287,7 @@ function updateOverlay(){
   // 保留 _sub 标记与原条目未编辑字段，覆盖编辑器里的全部可改项（含手动换行）
   overlays[ovEdit]={...o,...e};
   cancelOvEdit();
+  toast('已更新此条','ok');
 }
 function cancelOvEdit(){
   ovEdit=-1;$('ovEditBar').style.display='none';$('edText').value='';
@@ -1357,31 +1400,36 @@ function applyWmObj(w){
   if(w.color!=null){$('wmColor').value=w.color;if($('wmColorHex'))$('wmColorHex').value=w.color;}
   if(w.opacity!=null){$('wmOpacity').value=w.opacity;if($('wmOpV'))$('wmOpV').textContent=(+w.opacity).toFixed(2);}
 }
+const _ACTION_LABEL={run_all:'生成成片',dub:'配音',timing:'量时长',render:'渲染',
+  finalize:'按当前样式重烧成片',capcut:'导出剪映草稿',premiere:'导出 Premiere 工程',cleanup:'清理缓存'};
 async function run(action,target){
   logTarget=target||'mainlog';
-  if(await postRun(buildPayload(action)))pollAll();
+  _busy(1400);
+  if(await postRun(buildPayload(action))){toast('已开始 · '+(_ACTION_LABEL[action]||action),'ok');pollAll();}
 }
 /* ── ⑨ 生成任务队列（串行后台）：加入队列 / 拉状态 / 移除 / 清完成 ── */
 async function enqueueTask(){
   if(!$('outdir').value.trim()){alert('请先选择「输出目录」再加入队列。');return;}
   if(!$('text').value.trim()){alert('请先填写「待合成文案」再加入队列。');return;}
   const p=buildPayload('run_all'); p.action='add';
+  _busy(900);
   const j=await (await fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify(p)})).json();
   if(j.error){alert(j.error);return;}
+  toast('已加入队列 · '+(j.title||''),'ok');
   pollQueue();
 }
 async function removeQueueTask(id){
   await fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({action:'remove',id})}); pollQueue();
+    body:JSON.stringify({action:'remove',id})}); toast('已移除队列任务'); pollQueue();
 }
 async function retryQueueTask(id){
   await fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({action:'retry',id})}); pollQueue();
+    body:JSON.stringify({action:'retry',id})}); toast('已重新排队重试','ok'); pollQueue();
 }
 async function clearQueueDone(){
   await fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({action:'clear'})}); pollQueue();
+    body:JSON.stringify({action:'clear'})}); toast('已清除完成项'); pollQueue();
 }
 const _QSTAT={pending:['排队中','var(--faint)'],running:['克隆中','var(--gold)'],
   done:['✅ 已完成','var(--ok)'],failed:['❌ 失败','var(--bad)']};
@@ -1772,6 +1820,7 @@ function saveColor(){
   if(!/^#[0-9A-F]{6}$/.test(c)){alert('请输入合法色号，如 #FF5A4D');return;}
   const arr=myColors();if(!arr.includes(c)){arr.push(c);localStorage.setItem('dubColors',JSON.stringify(arr.slice(-16)));}
   renderMyColors();
+  toast('已存色 '+c,'ok');
 }
 
 /* ── 文本框样式模板（可命名/复用/重命名/删除，localStorage 持久） ── */

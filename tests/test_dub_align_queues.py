@@ -18,7 +18,8 @@ class UiContractPhase3Tests(unittest.TestCase):
                   "烧录列表", 'id="subsize"', 'id="pbEnable"',           # ④⑥ 字幕/进度条移入一键成片
                   "applyPbObj", "applySubObj",                           # ⑤ 预设含字幕/进度条
                   'id="wmEnable"', "collectWatermark", "动态水印",        # 动态水印
-                  "retryQueueTask", "action:'retry'"):                   # 队列重试
+                  "retryQueueTask", "action:'retry'",                    # 队列重试
+                  "function toast", "tap-pulse", "pointerdown", ".busy"):  # 全局点击反馈
             self.assertIn(m, html, m)
 
 
