@@ -68,9 +68,15 @@ _MAX_LEADING_TRIM_S = 0.8      # 兜底裁静音的封顶
 #     （实测用户音频首句 0.79s > 0.6s，不会被误当填充音切掉）。
 # 2026-07-25：与停顿多长无关——旧方案要求「嗯」后停顿 ≥50ms 才切，模型实际常只停几十毫秒
 # → 门限不达标、「嗯」大量泄漏。现在只要「嗯」与正文之间有任何停顿边界（≥1 个整静音窗）就切。
+# 2026-07-26：用户实测三条音频，「嗯」时长随音色语速漂移到 0.27~0.69s——0.69s 那条超过单一
+# 0.6s 门限被判「不是嗯」→ 泄漏。但不能简单放宽门限：真正文首句 0.79s 与 0.69s 的「嗯」时长
+# 已重叠，纯时长分不开。关键判据在**其后停顿**：注入的是「嗯。」——句号→长停顿（实测「嗯」后
+# 停 0.37~0.58s），而真正文首句后是短句内停顿（实测 0.16s）。故用双档判定（见 _onset_cut_index）。
 _FILLER_GAP_MIN_S = 0.05       # 保留常量（不再作切割门限，_voiced_runs 的整窗断段即边界）
-_FILLER_MAX_S = 1.0
-_FILLER_VOICED_MAX_S = 0.6
+_FILLER_MAX_S = 1.3            # 正文首字须在此前出现（放宽 1.0→1.3：慢速音色「嗯。」后长停顿把正文推到 ~1.1s）
+_FILLER_VOICED_MAX_S = 0.6     # 判「嗯」第一档：第一段发声很短(≤0.6s)→其后有任何停顿边界即切
+_FILLER_VOICED_MAX2_S = 1.0    # 判「嗯」第二档：第一段发声中等(≤1.0s)**且**其后是长停顿 → 仍是「嗯。」
+_FILLER_GAP_LONG_S = 0.30      # 第二档要求的停顿下限：「嗯。」句号停顿实测≥0.37s；真首句后停顿仅~0.16s
 _FILLER_KEEP_MS = 40           # 切到正文起点前回退这点余量，保住正文首音上升沿
 
 # 尾部爆音净化（2026-07-24 实测：正文结束后隔 90ms 冒出 ~50ms、峰值 0.5 的孤立噪声脉冲，
@@ -484,13 +490,21 @@ def _onset_cut_index(abs_samples, sample_rate: int, peak: float) -> int:
         return 0  # 全静音，不动
     r0_start, r0_end = runs[0]
     early = int(_MAX_LEADING_TRIM_S / 0.010)      # 「嗯」必须靠开头
-    short = int(_FILLER_VOICED_MAX_S / 0.010)     # 「嗯」很短；正文首句普遍更长
+    short = int(_FILLER_VOICED_MAX_S / 0.010)     # 第一档：很短即判「嗯」
+    short2 = int(_FILLER_VOICED_MAX2_S / 0.010)   # 第二档：中等长度，须配长停顿
+    long_gap = int(_FILLER_GAP_LONG_S / 0.010)    # 第二档要求的其后停顿下限
     deadline = int(_FILLER_MAX_S / 0.010)
-    if r0_start <= early and (r0_end - r0_start) <= short and len(runs) >= 2:
+    if r0_start <= early and len(runs) >= 2:
         body_start = runs[1][0]                    # 第二段发声 = 正文首字
-        if body_start <= deadline:
+        r0_len = r0_end - r0_start
+        gap = body_start - r0_end                  # 「嗯」与正文之间的停顿
+        # 双档判「嗯」：① 第一段很短（≤0.6s）——语气词「嗯」典型形态，其后有停顿即切；
+        #             ② 第一段中等（≤1.0s）但其后是长停顿（≥0.30s）——「嗯。」句号停顿的签名，
+        #                借此把 0.69s 的慢速「嗯」与 0.79s+短停顿的真正文首句区分开。
+        is_filler = (r0_len <= short) or (r0_len <= short2 and gap >= long_gap)
+        if is_filler and body_start <= deadline:
             return max(0, body_start * win - int(_FILLER_KEEP_MS / 1000.0 * sample_rate))
-    return _leading_trim_index(abs_samples, sample_rate, peak)  # 无第二段/首段过长 → 只裁开头静音
+    return _leading_trim_index(abs_samples, sample_rate, peak)  # 无第二段/首段过长/短停顿长首句 → 只裁开头静音
 
 
 def _voiced_runs(abs_samples, win: int, thr: float) -> list[tuple[int, int]]:
