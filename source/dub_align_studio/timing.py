@@ -18,7 +18,8 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 
-# 每句脚本音频最低时长（秒）——业务约束：一句一画面，每镜 ≥5s，不会一闪而过。
+# 参考时长（秒）：仅作 Mock 假引擎的每行默认时长与 floor_violations() 的默认参照，
+# 不再作为「低于即拦截/告警」的业务硬限——短句同样正常出配音（用户 2026-07-26 明确解除）。
 LINE_DURATION_FLOOR = 5.0
 
 

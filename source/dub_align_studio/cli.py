@@ -24,7 +24,7 @@ from .capcut_draft import export_capcut_package
 from .engines import DotsLocalEngine, FishLocalEngine, MockEngine
 from .render_b import RenderConfig, render_b, _run
 from .subtitles import SubtitleStyle
-from .timing import MockAligner, floor_violations, read_timing_table, total_duration, write_timing_table
+from .timing import MockAligner, read_timing_table, total_duration, write_timing_table
 
 
 # 样例：变长逐行时长（≥5s 业务下限）与对应画面源长度，覆盖三种画面对齐分支。
@@ -74,10 +74,6 @@ def verify(workdir: Path | None = None, keep: bool = False) -> int:
         timings = aligner.measure(master, _SAMPLE_LINES)
         table = write_timing_table(workdir / "配音计时表.csv", timings)
         print(f"[计时表] {table.name}")
-
-        violations = floor_violations(timings)
-        if violations:
-            print(f"[警告] 以下行低于 {5.0}s 业务下限：{violations}")
 
         output = workdir / "成片.mp4"
         result = render_b(master, timings, videos, output, config, subtitle_style=SubtitleStyle())
