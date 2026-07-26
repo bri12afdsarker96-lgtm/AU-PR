@@ -6,11 +6,30 @@ cd "$(dirname "$0")"
 LOG=/root/server/server.log
 echo "==================== 云配音一键装机 ===================="
 
-# 0) 国内机器走 HF 镜像，避免 huggingface.co 拉不动（AutoDL 常见）
+# 0) 国内机器走 HF 镜像，避免 huggingface.co 拉不动
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 echo "HF 镜像：$HF_ENDPOINT"
 
-PY="${PYTHON:-python}"
+# 0.1) 非交互 SSH shell 默认不激活 conda base（→ python 不在 PATH）。找到并激活它。
+for c in "$HOME/miniconda3" "/opt/conda" "$HOME/anaconda3" "/root/miniconda3" "/root/anaconda3"; do
+  if [ -f "$c/etc/profile.d/conda.sh" ]; then
+    . "$c/etc/profile.d/conda.sh"; conda activate base 2>/dev/null || true; break
+  fi
+done
+
+# 0.2) 选 Python 解释器：优先 $PYTHON，其次 python，再 python3（本镜像是 py312，多为 python3）
+PY=""
+for cand in "${PYTHON:-}" python python3; do
+  if [ -n "$cand" ] && command -v "$cand" >/dev/null 2>&1; then PY="$(command -v "$cand")"; break; fi
+done
+if [ -z "$PY" ]; then
+  echo "❌ 找不到 python/python3。请确认镜像自带 Python 环境（本镜像应为 py312）。"; exit 1
+fi
+echo "使用 Python：$PY"; "$PY" --version
+# 校验 torch（镜像应自带 CUDA 版；缺了说明选错解释器/环境没激活）
+if "$PY" -c "import torch;print('torch',torch.__version__,'CUDA可用',torch.cuda.is_available())" 2>/dev/null; then :; else
+  echo "⚠ 当前 Python 里没有 torch —— 可能没激活到镜像预装的那个环境。仍继续；若后面报缺 torch，请告诉我。"
+fi
 
 # 1) dots.tts 本体（--no-deps，与本地 App 完全一致：绕开 Windows 装不了的 pynini）
 echo "[1/4] 安装 dots.tts 本体…"
