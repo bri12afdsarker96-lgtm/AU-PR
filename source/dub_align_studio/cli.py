@@ -21,7 +21,7 @@ from pathlib import Path
 
 from .aligners import WhisperAligner
 from .capcut_draft import export_capcut_package
-from .engines import DotsLocalEngine, FishLocalEngine, MockEngine
+from .engines import DotsLocalEngine, DotsRemoteEngine, FishLocalEngine, MockEngine
 from .render_b import RenderConfig, render_b, _run
 from .subtitles import SubtitleStyle
 from .timing import MockAligner, read_timing_table, total_duration, write_timing_table
@@ -104,7 +104,8 @@ def verify(workdir: Path | None = None, keep: bool = False) -> int:
 def engines_status() -> int:
     """探测配音引擎与尺子可用性（capability-check 风格）。"""
     print("=== 配音引擎 ===")
-    for status in (MockEngine().probe(), DotsLocalEngine().probe(), FishLocalEngine().probe()):
+    for status in (MockEngine().probe(), DotsLocalEngine().probe(),
+                   DotsRemoteEngine().probe(), FishLocalEngine().probe()):
         mark = "✅" if status.available else "⛔"
         print(f"  {mark} {status.key:<12} {status.detail}")
     print("=== 计时尺子 ===")

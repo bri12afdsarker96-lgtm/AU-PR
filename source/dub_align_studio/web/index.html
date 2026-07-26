@@ -852,6 +852,16 @@ footer b{color:var(--muted);font-weight:600}
           <button class="btn gold" style="flex:1" onclick="run('envcheck','checklog')">🩺 环境自检</button></div>
         <p class="hint" style="margin-top:8px"><span id="pathToggle" style="cursor:pointer;color:var(--gold);user-select:none" onclick="togglePaths()">▸ 下载/存档存到哪里？（点击展开）</span></p>
         <p class="hint" id="pathHint" style="display:none;line-height:1.9;margin-top:4px"></p></div>
+      <div class="sp"><span class="f">☁ 云配音（远程 GPU）——本机太慢时，把配音克隆甩给云显卡；其余全在本地，本地路径照旧</span>
+        <div class="row" style="margin-bottom:8px">
+          <input type="text" id="remoteEp" placeholder="云服务器地址，如 https://xxx.example.com（不含 /synthesize）">
+        </div>
+        <div class="row" style="margin-bottom:8px">
+          <input type="password" id="remoteKey" placeholder="API Key（留空=不改；已设置会显示 ✓）">
+          <button class="btn line" style="flex:none" onclick="saveRemote()">💾 保存云配置</button>
+          <button class="btn" style="flex:none" onclick="testRemote()">🔌 测试连接</button>
+        </div>
+        <p class="hint" id="remoteHint" style="line-height:1.8;margin-top:2px">填好后到「配音引擎」下拉里选 <b style="color:var(--gold)">dots.tts（云 GPU · 远程）</b> 即可用云显卡克隆。部署见 <code>server/</code> 目录的部署文档。</p></div>
       <p class="hint">缺什么点击即可下载/安装（多源 + SHA256 校验 + 断点续传）；<b style="color:var(--gold)">多个下载可同时进行</b>，互不阻塞，进度在下方与各行实时显示。</p>
       <div id="compList"><p class="empty">读取中…</p></div>
       <div class="console" id="dlog" style="height:150px;margin-top:14px"><span class="dim">—— 下载/安装日志 · 多任务并行 ——</span></div>
@@ -925,7 +935,7 @@ function _busy(ms){
 let overlays=[], logTarget='mainlog', POSITIONS=[];
 const ASPECT_CANVAS={'9:16 竖屏':[1080,1920],'16:9 横屏':[1920,1080],'1:1 方形':[1080,1080],'4:3':[1440,1080],'3:4':[1080,1440]};
 const SUB_POS_RATIO={'顶部':0.06,'中上':0.30,'中部':0.48,'中下':0.68,'底部':0.885};
-const ENGINE_LABEL={dots_local:'dots.tts（本地 · 48kHz）',fish_local:'fish-speech（本地服务）',mock:'mock（测试）'};
+const ENGINE_LABEL={dots_local:'dots.tts（本地 · 48kHz）',dots_remote:'dots.tts（云 GPU · 远程）',fish_local:'fish-speech（本地服务）',mock:'mock（测试）'};
 const still=matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 /* ── 页签（支持 #p2 hash 直达） ── */
@@ -1873,11 +1883,33 @@ async function loadSettings(){
     const s=await (await fetch('/api/settings')).json();
     _savedRoot=s.data_root||'';
     $('compRoot').value=_savedRoot;
+    if($('remoteEp'))$('remoteEp').value=s.dots_remote_endpoint||'';
+    if($('remoteKey'))$('remoteKey').placeholder=s.dots_remote_api_key_set?'API Key 已设置 ✓（留空=不改，重填=覆盖）':'API Key（必填一次）';
     if(s.paths){
       $('pathHint').innerHTML=Object.entries(s.paths)
         .map(([k,v])=>`　${k} → ${esc(v)}`).join('<br>');
     }
   }catch(e){}
+}
+async function saveRemote(){
+  const ep=$('remoteEp').value.trim(), key=$('remoteKey').value;
+  const body={dots_remote_endpoint:ep};
+  if(key!=='')body.dots_remote_api_key=key;   // 留空=不覆盖已存 Key
+  const j=await (await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body)})).json();
+  if(j.error){alert(j.error);return;}
+  $('remoteKey').value='';
+  toast('已保存云配音配置','ok');
+  loadSettings();loadState();
+}
+async function testRemote(){
+  $('remoteHint').innerHTML='测试中…（首次会等云端响应）';
+  try{
+    const j=await (await fetch('/api/probe')).json();
+    const hit=(j.components||[]).find(x=>x.key==='dots_remote');
+    $('remoteHint').innerHTML=hit?((hit.available?'✅ ':'⛔ ')+esc(hit.detail))
+      :'未取到云端状态，请确认已保存地址并部署好服务端。';
+  }catch(e){$('remoteHint').innerHTML='测试失败：'+esc(String(e));}
 }
 function rootUnsaved(){
   const now=$('compRoot').value.trim();

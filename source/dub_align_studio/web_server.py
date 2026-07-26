@@ -36,7 +36,7 @@ from . import studio_pipeline as pipeline
 from . import voice_library
 from . import xlsx_reader
 from .aligners import WhisperAligner
-from .engines import DotsLocalEngine, FishLocalEngine, MockEngine, SynthesisOptions
+from .engines import DotsLocalEngine, DotsRemoteEngine, FishLocalEngine, MockEngine, SynthesisOptions
 from .overlays import POSITION_PRESETS, overlays_from_dicts
 from .subtitles import SubtitleStyle
 
@@ -610,7 +610,8 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                 JOB.ok = True
                 JOB.result = None  # 分镜段已删，作废内存结果 → 后续导出走磁盘回读并给出友好提示
         elif action == "probe":
-            for status in (MockEngine().probe(), DotsLocalEngine().probe(), FishLocalEngine().probe()):
+            for status in (MockEngine().probe(), DotsLocalEngine().probe(),
+                           DotsRemoteEngine().probe(), FishLocalEngine().probe()):
                 log(("✅ " if status.available else "⛔ ") + f"{status.key}：{status.detail}")
             aligner = WhisperAligner().probe()
             log(("✅ " if aligner.available else "⛔ ") + f"whisper：{aligner.detail}")
@@ -801,9 +802,13 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if route == "/api/settings":
             root = studio_settings.data_root()
+            remote_ep, remote_key = studio_settings.dots_remote_config()
             self._json({"data_root": str(root),
                         "default_data_root": str(studio_settings.default_data_root()),
                         "component_root": str(studio_settings.component_root()),
+                        # 云配音（远程 GPU）配置：地址明示；Key 仅回「是否已设置」，不回明文
+                        "dots_remote_endpoint": remote_ep,
+                        "dots_remote_api_key_set": bool(remote_key),
                         "paths": {  # 各类下载/资产的实际落地目录（界面明示，杜绝「下到哪了」的疑问）
                             "组件": str(studio_settings.components_root()),
                             "whisper 模型": str(studio_settings.whisper_models_dir()),
@@ -849,6 +854,7 @@ class _Handler(BaseHTTPRequestHandler):
                 for s, n in (
                     (MockEngine().probe(), "mock 引擎"),
                     (DotsLocalEngine().probe(), "dots.tts"),
+                    (DotsRemoteEngine().probe(), "dots.tts 云端"),
                     (FishLocalEngine().probe(), "fish-speech"),
                 )
             ]
@@ -905,9 +911,27 @@ class _Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length") or 0)
             try:
                 payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+                out = {"ok": True}
                 raw = str(payload.get("data_root") or payload.get("component_root") or "")
-                root = studio_settings.set_data_root(raw)
-                self._json({"ok": True, "data_root": str(root)})
+                if raw.strip():
+                    out["data_root"] = str(studio_settings.set_data_root(raw))
+                # 云配音（远程 GPU）：地址/Key。空字符串=清空该项；未提供该键=保持不变
+                remote_update = {}
+                if "dots_remote_endpoint" in payload:
+                    remote_update["dots_remote_endpoint"] = str(payload.get("dots_remote_endpoint") or "").strip().rstrip("/")
+                if "dots_remote_api_key" in payload:
+                    remote_update["dots_remote_api_key"] = str(payload.get("dots_remote_api_key") or "").strip()
+                if remote_update:
+                    # save_settings 会跳过 None；空串是有效值（清空），故直接写
+                    merged = studio_settings.load_settings()
+                    merged.update(remote_update)
+                    studio_settings.SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+                    studio_settings.SETTINGS_FILE.write_text(
+                        json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+                    ep, key = studio_settings.dots_remote_config()
+                    out["dots_remote_endpoint"] = ep
+                    out["dots_remote_api_key_set"] = bool(key)
+                self._json(out)
             except Exception as exc:
                 self._json({"error": f"保存失败：{exc}"}, 400)
             return

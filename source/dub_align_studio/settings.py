@@ -16,6 +16,7 @@ settings.json 始终在用户目录（找到总目录之前必须有处可读）
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -66,6 +67,18 @@ def save_settings(update: dict) -> dict:
     SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
     SETTINGS_FILE.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
     return settings
+
+
+def dots_remote_config() -> tuple[str, str]:
+    """云 dots.tts 远程引擎配置：(服务器地址, API Key)。
+    环境变量优先（DOTS_REMOTE_ENDPOINT / DOTS_REMOTE_API_KEY），其次 settings.json
+    （dots_remote_endpoint / dots_remote_api_key）。地址去掉尾部斜杠。"""
+    settings = load_settings()
+    endpoint = (os.environ.get("DOTS_REMOTE_ENDPOINT")
+                or str(settings.get("dots_remote_endpoint") or "")).strip().rstrip("/")
+    api_key = (os.environ.get("DOTS_REMOTE_API_KEY")
+               or str(settings.get("dots_remote_api_key") or "")).strip()
+    return endpoint, api_key
 
 
 def data_root() -> Path:

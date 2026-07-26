@@ -77,7 +77,9 @@ class WebServerTests(unittest.TestCase):
     def test_probe_endpoint_structured(self):
         probe = self._get("/api/probe")
         names = [c["name"] for c in probe["components"]]
-        self.assertEqual(len(names), 5)
+        keys = [c["key"] for c in probe["components"]]
+        self.assertEqual(len(names), 6)  # ffmpeg + mock + dots.tts + dots.tts 云端 + fish + whisper
+        self.assertIn("dots_remote", keys)  # 云配音远程引擎已注册进探针
         self.assertTrue(all(c["detail"] for c in probe["components"]))
 
     def test_voice_upload_and_delete_with_chinese_id(self):
