@@ -262,6 +262,19 @@ class DotsLocalEngine:
         write_master_metadata(master)
         return master
 
+    def warmup(self, log=None) -> None:
+        """预加载并缓存 2B 运行时（进显存，冷启动可达 1–3 分钟）。已加载则秒回。
+
+        供 longform 在逐行循环前调用：把「加载模型」与「逐行生成」拆成两个可观测阶段，
+        各自单独刷新看门狗心跳，避免冷启动被误判「疑似卡死」。best-effort：预热失败不抛，
+        真正的报错留给随后的 synthesize_full 走完整 probe/中文提示。"""
+        try:
+            if log:
+                log("① 配音 · 首次加载 dots.tts 模型到显存（约 1–3 分钟，勿关窗）…")
+            self._load_runtime()
+        except Exception:  # noqa: BLE001 —— 仅预热，错误交给 synthesize_full 统一处理
+            pass
+
     # ------------------------------------------------------------------
     def _load_runtime(self):
         """加载（并缓存）DotsTtsRuntime。API：from dots_tts.runtime import DotsTtsRuntime。"""

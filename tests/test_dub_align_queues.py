@@ -24,7 +24,7 @@ class UiContractPhase3Tests(unittest.TestCase):
                   "dubLastVoice", "dubLastAspect",                        # ② 记住上次音色/比例
                   'id="burnPreset"', "saveBurnPreset", "collectBurnStyle",  # ③ 烧录预设
                   "enqueueTask(true)", "pauseResumeQueue", "cancelQueueTask",  # 生成成片并入队列 + 暂停/取消
-                  'id="queuePauseBtn"', "疑似卡死"):                          # 暂停按钮 + 卡死看门狗
+                  'id="queuePauseBtn"', "无阶段进度"):                        # 暂停按钮 + 心跳看门狗（温和提示）
             self.assertIn(m, html, m)
 
     def test_queue_pause_and_cancel(self):
