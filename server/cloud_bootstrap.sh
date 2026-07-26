@@ -71,6 +71,29 @@ fi
 export DOTS_SERVER_API_KEY
 export DOTS_CHECKPOINT="${DOTS_CHECKPOINT:-rednote-hilab/dots.tts-soar}"
 
+# 4.5) 注入 tn 桩包：dots_tts 导入时硬性 `from tn.chinese.normalizer import Normalizer`，
+#      tn 来自 WeTextProcessing(--no-deps 跳过)。真 tn 不在时，写一个「原样返回」的 tn 包到
+#      site-packages，让 import tn 真能成功（与本地口径一致；normalize 默认关，不影响音色）。
+if ! "$PY" -c "import tn" >/dev/null 2>&1; then
+  SITE="$("$PY" -c "import sysconfig;print(sysconfig.get_paths()['purelib'])" 2>/dev/null)"
+  if [ -n "$SITE" ]; then
+    mkdir -p "$SITE/tn/chinese" "$SITE/tn/english"
+    : > "$SITE/tn/__init__.py"
+    for lang in chinese english; do
+      : > "$SITE/tn/$lang/__init__.py"
+      cat > "$SITE/tn/$lang/normalizer.py" <<'PYEOF'
+class Normalizer:
+    def __init__(self, *a, **k):
+        pass
+    def normalize(self, text, *a, **k):
+        return text
+PYEOF
+    done
+    "$PY" -c "import tn.chinese.normalizer as m; m.Normalizer().normalize('测试')" >/dev/null 2>&1 \
+      && echo "已注入 tn 桩包 → $SITE/tn" || echo "⚠ tn 桩注入校验失败（继续，服务端自带桩兜底）"
+  fi
+fi
+
 # 5) 起服务（后台常驻，监听所有网卡；配合公网 IP + 防火墙放行同一端口）
 PORT="${SERVER_PORT:-8000}"
 echo "[4/4] 启动服务（端口 $PORT，后台常驻）…"
