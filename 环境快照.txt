@@ -1,8 +1,9 @@
-水星配音对齐工作室 · 环境快照  2026-07-25 14:59:57
+水星配音对齐工作室 · 环境快照  2026-07-27 00:33:30
 
 ════════ Python 环境 ════════
   python: D:\Python\Python311\python.exe
   版本: 3.11.8
+  frozen(打包版): False
   torch: 2.11.0+cu126
   torchaudio: 2.11.0+cu126
   torchvision: 0.26.0+cu126
@@ -19,48 +20,152 @@
   You may be able to resolve this warning by setting `model_config['protected_namespaces'] = ()`.
     warnings.warn(
   available= True
-  dots.tts ���ã����� D:\GitHub\By\AU&PR\ˮ����������\���\dots.tts\dots.tts-soar����GPU��NVIDIA GeForce RTX 3060���Դ� 11.0/12.0 GB ���ã��� ��6GB���Ƽ� ��11GB�������ı�������׮������ȱ WeTextProcessing/pynini����Ӱ������������İ�������д�����ģ�
+  dots.tts 可用（检查点 D:\GitHub\By\AU&PR\水星配音数据\组件\dots.tts\dots.tts-soar）；GPU：NVIDIA GeForce RTX 3060，显存 11.0/12.0 GB 可用（需 ≥6GB，推荐 ≥11GB）。；文本正则化用桩跳过（缺 WeTextProcessing/pynini，不影响出声，建议文案里数字写成中文）
+
+════════ dots.tts 运行时 API 详解（不加载权重，只反射签名） ════════
+  D:\Python\Python311\Lib\site-packages\pydantic\_internal\_fields.py:132: UserWarning: Field "model_type" in ModelConfig has conflict with protected namespace "model_".
+  
+  You may be able to resolve this warning by setting `model_config['protected_namespaces'] = ()`.
+    warnings.warn(
+  from_pretrained: (model_name_or_path: 'str', *, revision: 'str | None' = None, cache_dir: 'str | None' = None, precision: 'str' = 'bfloat16', optimize: 'bool' = False, max_generate_length: 'int' = 500, max_sequence_length: 'int' = 2048, vocoder_merge_steps: 'int' = 4, warmup_on_optimize: 'bool' = True) -> 'DotsTtsRuntime'
+  generate: (self, *, text: 'str', prompt_audio_path: 'str | None' = None, prompt_text: 'str | None' = None, template_name: 'str | None' = None, language: 'str | None' = None, speaker_scale: 'float' = 1.5, ode_method: 'str' = 'euler', num_steps: 'int' = 10, guidance_scale: 'float' = 1.2, normalize_text: 'bool' = False, profile_inference: 'bool' = False, log_profile_calls: 'bool' = False) -> 'dict[str, Any]'
+  generate 接受 **kwargs: False
+    接受 text: True
+    接受 prompt_audio_path: True
+    接受 prompt_text: True
+    接受 num_steps: True
+    接受 guidance_scale: True
+    接受 seed: False
+    接受 normalize_text: True
+    接受 max_generate_length: False
+    接受 speed: False
+    接受 max_pause: False
+    接受 length: False
+  max_generate_length 在 dots_tts 包内出现 35 处：
+    cli.py:126: max_generate_length=args.max_generate_length,
+    runtime.py:86: max_generate_length: int = 500,
+    runtime.py:110: self.max_generate_length = int(max_generate_length)
+    runtime.py:113: if self.max_generate_length <= 0:
+    runtime.py:114: raise ValueError("max_generate_length must be positive.")
+    runtime.py:139: self.max_generate_length,
+    runtime.py:155: max_generate_length: int = 500,
+    runtime.py:185: max_generate_length=max_generate_length,
+    runtime.py:252: if int(candidate) < self.max_generate_length
+    runtime.py:259: "prompt_patch_counts={} max_generate_length={}",
+    runtime.py:264: self.max_generate_length,
+    runtime.py:268: # [prev_bucket + 1, max_generate_length] all land in the largest
+    runtime.py:296: # >= max_generate_length (decode caps at max_generate_length patches).
+    runtime.py:299: (b for b in buckets if b >= self.max_generate_length),
+    runtime.py:307: return min(self.max_generate_length, prev_edge + 1)
+    runtime.py:369: if self.max_generate_length <= int(prompt_patch_count):
+    runtime.py:371: "Warmup prompt patch count must be less than max_generate_length: "
+    runtime.py:373: f"max_generate_length={self.max_generate_length}."
+    runtime.py:550: max_audio_tokens=self.max_generate_length,
+    runtime.py:608: and self.max_generate_length <= prompt_audio_patch_count
+    runtime.py:611: "max_generate_length must exceed prompt audio patch count when prompt_text is provided: "
+    runtime.py:612: f"max_generate_length={self.max_generate_length} "
+    runtime.py:644: self.max_generate_length,
+    runtime.py:697: self.max_generate_length,
+    runtime.py:805: self.max_generate_length,
+    runtime_double_streaming.py:53: self.max_generate_length = runtime.max_generate_length
+    runtime_double_streaming.py:74: max_audio_patch_count=self.max_generate_length,
+    runtime_double_streaming.py:106: self.max_generate_length,
+    runtime_double_streaming.py:324: if self._decoded_patch_count >= self.max_generate_length:
+    runtime_double_streaming.py:326: "Double streaming exceeded max_generate_length before reaching EOS."
+    models\dots_tts\model.py:191: max_generate_length: int,
+    models\dots_tts\model.py:193: requested = int(max_generate_length)
+    models\dots_tts\model.py:195: raise ValueError("max_generate_length must be positive.")
+    models\dots_tts\model.py:200: "max_generate_length exceeds the largest supported compile bucket: "
+    models\dots_tts\model.py:201: f"max_generate_length={requested} "
+
+════════ 音色库参考音频体检（定位过长参考） ════════
+  📁 书单女生温情/参考音频.mp3: 0.5MB · 时长 20.9s · 44100Hz
 
 ════════ 仓库状态 ════════
   分支: release/v0.5-download-fix
-  HEAD: e84c0201 字幕单条永不折行：长度只由标点分句控制 (v0.7.32)
+  HEAD: b0bf029b 云配音一键部署：Windows bat + 云端 bootstrap（模型 HF 自动下载，无需手动拷）
   近5次提交:
-    e84c0201 字幕单条永不折行：长度只由标点分句控制 (v0.7.32)
-    b6086fca 发行音色 + 文件夹批量建音色 + Premiere XML 工程导出 (v0.7.31)
-    7361a7a1 字幕改标点逐句按时间轴烧录 + 「嗯」泄漏修复 (v0.7.30)
-    ad1b4520 环境快照：本机目录与环境状态
-    e326aeac 尾部爆音净化：删收尾垃圾脉冲 + 切口淡入淡出 (v0.7.29)
-  未提交改动: （干净）
+    b0bf029b 云配音一键部署：Windows bat + 云端 bootstrap（模型 HF 自动下载，无需手动拷）
+    9965b6c9 新增云 dots.tts 远程引擎（混合方案）：本地路径不变，仅把配音推理甩给云 GPU
+    a2fe01c4 起音兜底新增「能量谷」检测：预防下一个音色「嗯」连读泄漏
+    19738865 修复慢速音色「嗯」泄漏：按「嗯。」后长停顿签名双档判定（实测三条音频定标）
+    b31c66a9 队列进行中点①②③步骤按钮：跳到该任务实时进度，不再另起冲突任务报错
+  未提交改动: 
+    D "\347\216\257\345\242\203\345\277\253\347\205\247.txt"
+
+════════ 近期错误日志 ════════
+  本次操作日志.txt（07-24 22:24，尾部 40 行）:
+        Found existing installation: MarkupSafe 3.0.3
+        Uninstalling MarkupSafe-3.0.3:
+          Successfully uninstalled MarkupSafe-3.0.3
+      Attempting uninstall: fsspec
+        Found existing installation: fsspec 2026.4.0
+        Uninstalling fsspec-2026.4.0:
+          Successfully uninstalled fsspec-2026.4.0
+      Attempting uninstall: filelock
+        Found existing installation: filelock 3.29.0
+        Uninstalling filelock-3.29.0:
+          Successfully uninstalled filelock-3.29.0
+      Attempting uninstall: jinja2
+        Found existing installation: Jinja2 3.1.6
+        Uninstalling Jinja2-3.1.6:
+          Successfully uninstalled Jinja2-3.1.6
+      Attempting uninstall: torch
+        Found existing installation: torch 2.5.1+cu121
+        Uninstalling torch-2.5.1+cu121:
+          Successfully uninstalled torch-2.5.1+cu121
+    
+    ERROR: pip's dependency resolver does not currently take into account all the packages that are installed. This behaviour is the source of the following dependency conflicts.
+    basicsr 1.4.2 requires tb-nightly, which is not installed.
+    dots-tts 0.2.1 requires WeTextProcessing, which is not installed.
+    gfpgan 1.3.8 requires tb-nightly, which is not installed.
+    voxcpm 2.0.3 requires torchcodec, which is not installed.
+    datasets 2.18.0 requires fsspec[http]<=2024.2.0,>=2023.1.0, but you have fsspec 2026.4.0 which is incompatible.
+    dots-tts 0.2.1 requires pydantic<3,>=2.12.5, but you have pydantic 2.9.2 which is incompatible.
+    fish-speech 2.0.0 requires torch==2.8.0, but you have torch 2.11.0+cu126 which is incompatible.
+    fish-speech 2.0.0 requires torchaudio==2.8.0, but you have torchaudio 2.11.0+cu126 which is incompatible.
+    voxcpm 2.0.3 requires datasets<4,>=3, but you have datasets 2.18.0 which is incompatible.
+    voxcpm 2.0.3 requires modelscope>=1.22.0, but you have modelscope 1.17.1 which is incompatible.
+    Successfully installed MarkupSafe-3.0.3 filelock-3.29.0 fsspec-2026.4.0 jinja2-3.1.6 mpmath-1.3.0 networkx-3.6.1 setuptools-78.1.0 sympy-1.14.0 torch-2.11.0+cu126 torchaudio-2.11.0+cu126 typing-extensions-4.15.0
+    
+    [2/2] dots.tts probe：
+    D:\Python\Python311\Lib\site-packages\pydantic\_internal\_fields.py:132: UserWarning: Field "model_type" in ModelConfig has conflict with protected namespace "model_".
+    
+    You may be able to resolve this warning by setting `model_config['protected_namespaces'] = ()`.
+      warnings.warn(
+    available= True
+    dots.tts 可用（检查点 D:\GitHub\By\AU&PR\水星配音数据\组件\dots.tts\dots.tts-soar）；GPU：NVIDIA GeForce RTX 3060，显存 11.0/12.0 GB 可用（需 ≥6GB，推荐 ≥11GB）。；文本正则化用桩跳过（缺 WeTextProcessing/pynini，不影响出声，建议文案里数字写成中文）
 
 ════════ 仓库根目录（深度1） ════════
   D:\GitHub\By\AU&PR\AU-PR
   📁 dist/
   📁 docs/
+  📁 installer/
+  📁 server/
   📁 source/
   📁 tests/
      README.md  (0.0MB, 07-23 01:33)
-     打包.bat  (0.0MB, 07-24 11:11)
-     打包_整合离线版.bat  (0.0MB, 07-24 16:43)
+     打包.bat  (0.0MB, 07-25 19:40)
+     打包_整合离线版.bat  (0.0MB, 07-25 21:39)
+     打包安装程序.bat  (0.0MB, 07-26 16:06)
      打包收尾.py  (0.0MB, 07-24 11:11)
-     打包说明.md  (0.0MB, 07-24 21:27)
-     本次操作.bat  (0.0MB, 07-24 23:28)
+     打包说明.md  (0.0MB, 07-26 16:06)
+     本次操作.bat  (0.0MB, 07-25 19:40)
      本次操作日志.txt  (0.0MB, 07-24 22:24)
-     水星配音对齐工作室.spec  (0.0MB, 07-25 14:09)
-     环境快照.bat  (0.0MB, 07-24 21:57)
-     环境快照.py  (0.0MB, 07-24 21:57)
-     环境快照.txt  (0.0MB, 07-25 01:57)
+     水星配音对齐工作室.spec  (0.0MB, 07-26 20:16)
+     环境快照.bat  (0.0MB, 07-26 21:18)
+     环境快照.py  (0.0MB, 07-26 21:18)
 
 ════════ 父目录（检查散落的旧脚本副本） ════════
   D:\GitHub\By\AU&PR
   📁 AU-PR/
-  📁 发布包/
   📁 水星配音数据/
 
 ════════ dist 产物 ════════
   D:\GitHub\By\AU&PR\AU-PR\dist
   📁 水星配音对齐工作室/
     📁 _internal/
-       水星配音对齐工作室.exe  (115.9MB, 07-25 14:15)
+       水星配音对齐工作室.exe  (115.9MB, 07-26 20:22)
 
 ════════ 发布包 ════════
   （不存在）D:\GitHub\By\AU&PR\AU-PR\发布包
@@ -87,6 +192,8 @@
        20260725_013529_dots_local_书单女生温情.wav  (13.5MB, 07-25 01:35)
        20260725_145235_dots_local_书单女生温情.json  (0.0MB, 07-25 14:52)
        20260725_145235_dots_local_书单女生温情.wav  (13.2MB, 07-25 14:52)
+       20260725_174714_dots_local_书单女生温情.json  (0.0MB, 07-25 17:47)
+       20260725_174714_dots_local_书单女生温情.wav  (13.4MB, 07-25 17:47)
   📁 字体/
        CactusClassicalSerif-Regular.ttf  (27.2MB, 07-24 22:39)
        Huninn-Regular.ttf  (4.5MB, 07-24 22:39)
@@ -104,6 +211,8 @@
        ZCOOLQingKeHuangYou-Regular.ttf  (7.9MB, 07-24 02:08)
        ZCOOLXiaoWei-Regular.ttf  (6.0MB, 07-24 02:08)
        ZhiMangXing-Regular.ttf  (3.9MB, 07-24 22:39)
+       晴圆.ttc  (8.7MB, 07-26 17:01)
+       百度综艺简体.ttf  (1.5MB, 07-26 17:01)
   📁 组件/
     📁 dots.tts/
       📁 dots.tts-soar/
