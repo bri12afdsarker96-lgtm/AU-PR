@@ -78,6 +78,12 @@ _FILLER_VOICED_MAX_S = 0.6     # 判「嗯」第一档：第一段发声很短(�
 _FILLER_VOICED_MAX2_S = 1.0    # 判「嗯」第二档：第一段发声中等(≤1.0s)**且**其后是长停顿 → 仍是「嗯。」
 _FILLER_GAP_LONG_S = 0.30      # 第二档要求的停顿下限：「嗯。」句号停顿实测≥0.37s；真首句后停顿仅~0.16s
 _FILLER_KEEP_MS = 40           # 切到正文起点前回退这点余量，保住正文首音上升沿
+# 2026-07-26 能量谷兜底（_onset_valley_cut）：预判「下一个音色」最可能坏在——「嗯」与正文**连读**、
+# 中间的停顿没跌到绝对静音线(1.5%峰值) → 上面按绝对静音断段的快速路径判 len(runs)<2 → 整段不切、
+# 「嗯」泄漏。兜底改用**相对「嗯」峰**的能量阈重新断段：连读时那个明显下陷(相对谷)会被切开。
+# 只在谷够深(低于「嗯」峰 _VALLEY_DEPTH_RATIO)且够长(≥_FILLER_GAP_LONG_S)时才切——连读音节间的
+# 浅坑短、够不着,真正文首句不会被误删（宁可偶尔漏,也不误删真内容）。
+_VALLEY_DEPTH_RATIO = 0.35     # 相对谷阈：能量低于「第一段(嗯)峰值」的这个比例即算「谷」
 
 # 尾部爆音净化（2026-07-24 实测：正文结束后隔 90ms 冒出 ~50ms、峰值 0.5 的孤立噪声脉冲，
 # 是 AR 模型生成收尾的垃圾音）：从后往前，凡「与前面发声隔 ≥_TAIL_GAP_MIN_S 静音、
@@ -504,7 +510,52 @@ def _onset_cut_index(abs_samples, sample_rate: int, peak: float) -> int:
         is_filler = (r0_len <= short) or (r0_len <= short2 and gap >= long_gap)
         if is_filler and body_start <= deadline:
             return max(0, body_start * win - int(_FILLER_KEEP_MS / 1000.0 * sample_rate))
-    return _leading_trim_index(abs_samples, sample_rate, peak)  # 无第二段/首段过长/短停顿长首句 → 只裁开头静音
+    valley = _onset_valley_cut(abs_samples, sample_rate, peak)  # 连读/浅停顿(未到静音线)兜底
+    if valley:
+        return valley
+    return _leading_trim_index(abs_samples, sample_rate, peak)  # 仍无把握 → 只裁开头静音，绝不误删正文
+
+
+def _onset_valley_cut(abs_samples, sample_rate: int, peak: float):
+    """能量谷兜底：当快速路径失败（「嗯」与正文连读、中间停顿未跌破绝对静音线 → 并成一段无法断开）时，
+    改用**相对「嗯」峰**的能量阈重新断段，找出那个明显下陷的「谷」当作「嗯|正文」边界。
+    返回切点样本；判据不成立（无谷/谷太浅太短/首段过长/正文太晚）时返回 None，交回上层兜底——
+    宁可漏一点「嗯」，也绝不把真正文首句误当填充音删掉。纯逻辑，可单测。"""
+    win = max(1, int(sample_rate * 0.010))
+    scan = abs_samples[: int((_FILLER_MAX_S + 1.0) * sample_rate)]
+    floor = _SILENCE_THRESHOLD * (peak or 1.0)
+    abs_runs = _voiced_runs(scan, win, floor)     # 绝对静音断段：连读时「嗯+正文」并成一段
+    if not abs_runs:
+        return None
+    early = int(_MAX_LEADING_TRIM_S / 0.010)
+    a0s, a0e = abs_runs[0]
+    if a0s > early:                               # 起音太靠后，不像开头的「嗯」
+        return None
+    p1 = 0.0                                       # 第一段能量峰 → 作相对谷阈基准
+    for i in range(a0s, a0e):
+        seg = scan[i * win:(i + 1) * win]
+        if len(seg):
+            m = max(seg)
+            if m > p1:
+                p1 = m
+    if p1 <= floor:
+        return None
+    rel = max(floor, _VALLEY_DEPTH_RATIO * p1)     # 相对谷阈：低于「嗯」峰这个比例即算「谷」
+    rel_runs = _voiced_runs(scan, win, rel)        # 用相对阈重断：连读的浅停顿在此被切开
+    if len(rel_runs) < 2:
+        return None
+    r0s, r0e = rel_runs[0]
+    r1s, _ = rel_runs[1]
+    short2 = int(_FILLER_VOICED_MAX2_S / 0.010)
+    long_gap = int(_FILLER_GAP_LONG_S / 0.010)
+    deadline = int(_FILLER_MAX_S / 0.010)
+    if r0s > early or (r0e - r0s) > short2:         # 「嗯」须靠开头且不过长
+        return None
+    if (r1s - r0e) < long_gap:                      # 谷太短（像连读音节间的浅坑）→ 不切
+        return None
+    if r1s > deadline:                              # 正文出现太晚 → 不切
+        return None
+    return max(0, r1s * win - int(_FILLER_KEEP_MS / 1000.0 * sample_rate))
 
 
 def _voiced_runs(abs_samples, win: int, thr: float) -> list[tuple[int, int]]:
