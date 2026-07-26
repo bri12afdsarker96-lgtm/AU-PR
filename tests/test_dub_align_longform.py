@@ -141,6 +141,45 @@ class PerLineTests(unittest.TestCase):
             shutil.rmtree(work, ignore_errors=True)
 
 
+class HeartbeatTests(unittest.TestCase):
+    """看门狗心跳：模型加载 + 每行开始都要打心跳，避免 3050 冷启动被误判「疑似卡死」。"""
+
+    def test_heartbeat_fires_on_warmup_and_each_line_start(self):
+        # 带 warmup 的引擎（模拟 dots.tts）：应先「加载模型」心跳，再每行开始各一次心跳
+        class _WarmEngine(MockEngine):
+            warmed = False
+
+            def warmup(self, log=None):
+                type(self).warmed = True
+
+        work = Path(tempfile.mkdtemp(prefix="hb_"))
+        try:
+            beats: list[str] = []
+            text = "\n".join(f"第{i}句。" for i in range(1, 4))  # 3 行
+            synthesize_long(_WarmEngine(), text, None, work / "master.wav",
+                            SynthesisOptions(), max_chars=1_000_000, per_line=True,
+                            heartbeat=lambda s="": beats.append(s))
+            self.assertTrue(_WarmEngine.warmed, "应调用引擎 warmup 预加载模型")
+            self.assertTrue(any("加载模型" in b for b in beats), beats)
+            # 三行各有一次「第 i 行 生成中」心跳
+            line_beats = [b for b in beats if "生成中" in b and "行" in b]
+            self.assertEqual(len(line_beats), 3, beats)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+    def test_no_warmup_engine_still_beats_per_line(self):
+        # 无 warmup 的引擎（mock/fish）：不报错，每行开始仍打心跳
+        work = Path(tempfile.mkdtemp(prefix="hb2_"))
+        try:
+            beats: list[str] = []
+            synthesize_long(MockEngine(), "\n".join(["甲。", "乙。"]), None, work / "m.wav",
+                            SynthesisOptions(), max_chars=1_000_000, per_line=True,
+                            heartbeat=lambda s="": beats.append(s))
+            self.assertEqual(len([b for b in beats if "生成中" in b]), 2, beats)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+
 class MockTimbreTests(unittest.TestCase):
     def test_params_change_mock_timbre(self):
         # 不同 seed/步数/引导 → 不同基频倍率（无 GPU 也能听出参数生效）

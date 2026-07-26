@@ -197,7 +197,8 @@ def _remember_edit_item(output_dir: Path, canvas: tuple[int, int], payload: dict
 GEN_COND = threading.Condition()      # 同时充当 GEN_QUEUE 的锁
 GEN_QUEUE: list[dict] = []            # 每项：{id,title,payload,job:JobState,status,error}
 GEN_PAUSED = False                    # 队列暂停：不再启动新任务（正在跑的那个不受影响）
-STUCK_SECONDS = 180                   # 运行中任务超过此秒无进度 → 前端标「疑似卡死」，可手动取消
+STUCK_SECONDS = 240                   # 运行中任务超过此秒无「阶段心跳」→ 前端温和提示、可手动取消
+                                      # （已在模型加载/每行开始处打心跳，故只有单行/加载真的异常久才触发）
 _GEN_WORKER: threading.Thread | None = None
 
 
@@ -424,8 +425,16 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                     pct = 5 + int(done / max(1, total) * 73)  # 配音占 5~78%
                     JOB.set_progress(f"① 配音 · 第 {done}/{total} 行", pct)
 
+                def _dub_beat(stage: str = "") -> None:
+                    # 模型加载/每行开始等「百分比不动但确实在干活」的时刻刷新心跳，防冷启动误判卡死。
+                    JOB.check_cancel()
+                    with JOB.lock:
+                        if stage:
+                            JOB.stage = stage
+                        JOB.last_tick = time.time()
+
                 master = pipeline.step_dub(text, engine_key, output_dir, voice, options, log=log,
-                                           progress=_dub_progress)
+                                           progress=_dub_progress, heartbeat=_dub_beat)
                 log(f"  ✅ master {master.seconds:.2f}s（引擎 {master.engine}）")
 
             JOB.check_cancel()   # 配音后、量时长前的取消检查点
@@ -466,8 +475,14 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             def _dub_progress(done: int, total: int) -> None:
                 JOB.set_progress(f"配音 · 第 {done}/{total} 行", int(done / max(1, total) * 100))
 
+            def _dub_beat(stage: str = "") -> None:
+                with JOB.lock:
+                    if stage:
+                        JOB.stage = stage
+                    JOB.last_tick = time.time()
+
             master = pipeline.step_dub(text, engine_key, output_dir, voice, options, log=log,
-                                       progress=_dub_progress)
+                                       progress=_dub_progress, heartbeat=_dub_beat)
             log(f"✅ master：{master.path.name}（{master.seconds:.2f}s，引擎 {master.engine}）")
             with JOB.lock:
                 JOB.ok = True

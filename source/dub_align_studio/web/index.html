@@ -1500,12 +1500,12 @@ async function pollQueue(){
     const stg=t.status==='running'&&t.stage?` · ${esc(t.stage)}`:'';
     const dir=t.output_dir?`<div class="mini" style="color:var(--faint)">→ ${esc(t.output_dir)}</div>`:'';
     const err=(t.status==='failed'||t.status==='cancelled')&&t.error?`<div class="mini" style="color:var(--bad)">${esc(t.error)}</div>`:'';
-    const stuck=t.stuck?`<div class="mini" style="color:var(--bad)">⚠ 疑似卡死（${t.idle_seconds}s 无进度）——可点「取消」跳过</div>`:'';
+    const stuck=t.stuck?`<div class="mini" style="color:var(--warn,#e0a83b)">⏳ 已 ${t.idle_seconds}s 无阶段进度（首次会加载模型、GPU 较慢时单行也需数十秒）。若确认卡死可点「取消」跳过。</div>`:'';
     const btns=[];
     if(t.status==='pending')btns.push(F(t.id,'removeQueueTask','移除'));
-    if(t.status==='running')btns.push(F(t.id,'cancelQueueTask','取消',t.stuck?'border-color:var(--bad);color:var(--bad)':''));
+    if(t.status==='running')btns.push(F(t.id,'cancelQueueTask','取消',t.stuck?'border-color:var(--gold);color:var(--gold)':''));
     if(t.status==='failed'||t.status==='done'||t.status==='cancelled')btns.push(F(t.id,'retryQueueTask','重试','border-color:var(--gold)'));
-    return `<div class="row" style="gap:10px;align-items:center;border:1px solid ${t.stuck?'var(--bad)':'var(--line)'};border-radius:10px;padding:9px 12px">
+    return `<div class="row" style="gap:10px;align-items:center;border:1px solid ${t.stuck?'var(--gold)':'var(--line)'};border-radius:10px;padding:9px 12px">
       <span style="flex:1;min-width:0"><b>${esc(t.title)}</b>${stg}${dir}${err}${stuck}</span>
       <span class="mini" style="flex:none;color:${col}">${lab}${pct}</span>${btns.join('')}</div>`;
   }).join('');

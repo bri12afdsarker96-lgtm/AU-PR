@@ -86,16 +86,29 @@ def split_per_line(text: str) -> list[str]:
 
 def synthesize_long(engine, text: str, voice: VoiceRef | None, output: Path,
                     options: SynthesisOptions | None, max_chars: int, log=None,
-                    per_line: bool = False, progress=None) -> MasterAudio:
+                    per_line: bool = False, progress=None, heartbeat=None) -> MasterAudio:
     """长文分段合成 + 拼接。per_line=True 时逐行一段（一行=一段=一分镜时长，精确对齐）。
 
     progress(done, total)：每完成一段回调一次，供 UI 进度条实时前进（配音是最耗时的一步）。
+    heartbeat(stage)：在「模型加载」「每行开始生成」等长耗时不动百分比的时刻刷新看门狗心跳，
+        避免 3050 冷启动/慢 GPU 单行数十秒被误判「疑似卡死」。可选。
     单段（短文且非逐行）直接单次合成，与原行为一致。
     """
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
+    # 模型加载与逐行生成拆成两个可观测阶段：先预热（可能 1–3 分钟）并单独打心跳，
+    # 再进入逐行循环——这样看门狗看到的是「加载→逐行」的连续心跳，而非 5% 处一动不动。
+    _warm = getattr(engine, "warmup", None)
+    if callable(_warm):
+        if heartbeat:
+            heartbeat("① 配音 · 加载模型…")
+        _warm(log=log)
+        if heartbeat:
+            heartbeat("① 配音 · 模型就绪，开始逐行克隆")
     chunks = split_per_line(text) if per_line else split_for_synthesis(text, max_chars)
     if len(chunks) <= 1:
+        if heartbeat:
+            heartbeat("① 配音 · 生成中…")
         master = engine.synthesize_full(text, voice, output, options)
         if progress:
             progress(1, 1)
@@ -111,6 +124,8 @@ def synthesize_long(engine, text: str, voice: VoiceRef | None, output: Path,
     total = len(chunks)
     for i, chunk in enumerate(chunks, start=1):
         part = tmp_dir / f"chunk_{i:03d}.wav"
+        if heartbeat:
+            heartbeat(f"① 配音 · 第 {i}/{total} 行 生成中…")   # 行开始即打心跳（生成本身可数十秒）
         engine.synthesize_full(chunk, voice, part, options)
         parts.append(part)
         manifest_chunks.append({"index": i, "line": i, "text": chunk, "file": part.name,

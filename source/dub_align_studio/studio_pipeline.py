@@ -161,10 +161,12 @@ def step_dub(
     log=None,
     per_line: bool = True,
     progress=None,
+    heartbeat=None,
 ) -> MasterAudio:
     """① 逐行克隆并拼接 master。per_line=True（默认）时一行一段，分镜时长按单行音频精确对齐。
 
     progress(done, total)：每完成一行回调，供 UI 进度条实时前进（配音是最耗时一步）。
+    heartbeat(stage)：模型加载/每行开始等不动百分比的时刻刷新看门狗心跳，防冷启动误判卡死。
     mock 引擎按每行 5s 生成假音频（供无 GPU 环境走通全流程）。
     """
     output_dir = Path(output_dir)
@@ -175,7 +177,7 @@ def step_dub(
     # 逐行一段：一行=一段音频=一个分镜时长，精确对齐、避免截断/漂移；同一音色参考锚定音色。
     max_chars = int(getattr(engine, "max_chars", 1_000_000))
     master = synthesize_long(engine, text, voice, output_dir / MASTER_NAME, options, max_chars,
-                             log=log, per_line=per_line, progress=progress)
+                             log=log, per_line=per_line, progress=progress, heartbeat=heartbeat)
     _archive_clone(master, voice)
     return master
 
