@@ -1,0 +1,118 @@
+"""待编辑队列（⑧）：一键成片烧完字幕的成片进队列，等待「文本框」二次精修。
+
+需求（用户 2026-07-26）：
+    · 生成成片（烧完字幕）后自动进队列；
+    · **12 小时无后续操作**自动移除（按「最后活动时间」起算，不是生成时间）；
+    · 点队列里任一「已烧字幕成片」可载入文本框继续编辑（select→touch 刷新时效）；
+    · 持久化到本地（关软件重开仍在）。
+
+纯逻辑 + JSON 持久化，可单测：store 路径与 now 均可注入。
+"""
+
+from __future__ import annotations
+
+import json
+import time
+import uuid
+from pathlib import Path
+
+TTL_SECONDS = 12 * 3600   # 12 小时无操作自动清（用户 2026-07-26 定：3h→12h）
+
+
+_STORE_OVERRIDE: Path | None = None   # 测试可覆盖，避免污染 ~/.dub_align_studio
+
+
+def _default_store() -> Path:
+    if _STORE_OVERRIDE is not None:
+        return _STORE_OVERRIDE
+    from . import settings as studio_settings
+
+    return studio_settings.STUDIO_HOME / "edit_queue.json"
+
+
+def _store_path(store: Path | None) -> Path:
+    return Path(store) if store is not None else _default_store()
+
+
+def _load(store: Path) -> list[dict]:
+    try:
+        data = json.loads(store.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    items = data.get("items") if isinstance(data, dict) else data
+    return [x for x in (items or []) if isinstance(x, dict)]
+
+
+def _save(store: Path, items: list[dict]) -> None:
+    store.parent.mkdir(parents=True, exist_ok=True)
+    store.write_text(json.dumps({"items": items}, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _prune(items: list[dict], now: float, ttl: float) -> list[dict]:
+    """丢弃：① 距最后活动超过 ttl 的；② 成片文件已不存在的（可再生中间产物被清理/删档）。"""
+    kept: list[dict] = []
+    for it in items:
+        last = float(it.get("last_active") or it.get("created") or 0.0)
+        if now - last > ttl:
+            continue
+        film = str(it.get("film_path") or "")
+        if film and not Path(film).exists():
+            continue
+        kept.append(it)
+    return kept
+
+
+def add(title: str, film_path: str, output_dir: str,
+        canvas: tuple[int, int] | list[int] | None = None,
+        *, store: Path | None = None, now: float | None = None) -> dict:
+    """把一条已烧字幕的成片加入待编辑队列（按 film_path 去重：已存在则刷新时效/标题）。"""
+    store = _store_path(store)
+    now = time.time() if now is None else float(now)
+    items = _prune(_load(store), now, TTL_SECONDS)
+    film_path = str(film_path)
+    row = next((x for x in items if str(x.get("film_path")) == film_path), None)
+    if row is None:
+        row = {"id": uuid.uuid4().hex[:8], "film_path": film_path, "created": now}
+        items.append(row)
+    row["title"] = str(title or Path(output_dir).name or "成片")
+    row["output_dir"] = str(output_dir)
+    row["canvas"] = list(canvas) if canvas else row.get("canvas") or []
+    row["last_active"] = now
+    _save(store, items)
+    return row
+
+
+def list_active(*, store: Path | None = None, now: float | None = None,
+                ttl: float = TTL_SECONDS) -> list[dict]:
+    """返回未过期且成片仍在的队列项（顺带落盘清理），最新活动在前。"""
+    store = _store_path(store)
+    now = time.time() if now is None else float(now)
+    items = _prune(_load(store), now, ttl)
+    _save(store, items)
+    return sorted(items, key=lambda x: float(x.get("last_active") or 0.0), reverse=True)
+
+
+def touch(item_id: str, *, store: Path | None = None, now: float | None = None) -> bool:
+    """刷新某项的最后活动时间（用户点开它编辑时调用 → 重新计 12h）。"""
+    store = _store_path(store)
+    now = time.time() if now is None else float(now)
+    items = _load(store)
+    hit = False
+    for it in items:
+        if str(it.get("id")) == str(item_id):
+            it["last_active"] = now
+            hit = True
+    if hit:
+        _save(store, items)
+    return hit
+
+
+def remove(item_id: str, *, store: Path | None = None) -> bool:
+    """从队列移除某项（不删成片文件本身，只出队）。"""
+    store = _store_path(store)
+    items = _load(store)
+    kept = [it for it in items if str(it.get("id")) != str(item_id)]
+    if len(kept) != len(items):
+        _save(store, kept)
+        return True
+    return False

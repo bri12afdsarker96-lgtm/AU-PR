@@ -15,10 +15,12 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import tempfile
 import threading
 import traceback
+import uuid
 import webbrowser
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -26,6 +28,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from . import components as toolbox
+from . import edit_queue
 from . import fonts as font_library
 from . import settings as studio_settings
 from . import studio_pipeline as pipeline
@@ -144,6 +147,100 @@ def _start_task(action: str, payload: dict) -> tuple[JobState | None, str]:
     return job, ""
 
 
+def _remember_edit_item(output_dir: Path, canvas: tuple[int, int], payload: dict) -> None:
+    """成片烧完字幕后登记进「待编辑队列」（⑧），供文本框二次精修选取。失败不阻塞成片。"""
+    try:
+        film = output_dir / pipeline.FILM_NAME
+        if film.is_file():
+            edit_queue.add(str(payload.get("title") or output_dir.name),
+                           str(film), str(output_dir), canvas)
+    except Exception:
+        pass
+
+
+# ------------------------------------------------------------------ 生成任务队列（⑨ 串行后台）
+# ＋加入队列：把当前配置**整份冻结**成一个任务追加到队列；一个后台 worker 顺序取任务跑
+# run_all（串行克隆，GPU 一次只跑一个）。跑队列期间用户可照常改设置/提交下一个/去文本框精修
+# 别的成片——已入队任务的 payload 已深拷冻结，互不影响（用户 2026-07-26 选 A 方案）。
+GEN_COND = threading.Condition()      # 同时充当 GEN_QUEUE 的锁
+GEN_QUEUE: list[dict] = []            # 每项：{id,title,payload,job:JobState,status,error}
+_GEN_WORKER: threading.Thread | None = None
+
+
+def _gen_enqueue(payload: dict, title: str) -> str:
+    """深拷冻结 payload、建任务、唤醒 worker；返回任务 id。"""
+    task_id = uuid.uuid4().hex[:8]
+    job = JobState(slot=f"queue:{task_id}", label=title, action="run_all")
+    entry = {"id": task_id, "title": title, "payload": copy.deepcopy(payload),
+             "job": job, "status": "pending", "error": ""}
+    with GEN_COND:
+        GEN_QUEUE.append(entry)
+        _ensure_gen_worker_locked()
+        GEN_COND.notify()
+    return task_id
+
+
+def _ensure_gen_worker_locked() -> None:
+    """在持锁状态下确保 worker 存活（懒启动，进程内常驻，不会退出）。"""
+    global _GEN_WORKER
+    if _GEN_WORKER is None or not _GEN_WORKER.is_alive():
+        _GEN_WORKER = threading.Thread(target=_gen_worker_loop, name="gen-queue", daemon=True)
+        _GEN_WORKER.start()
+
+
+def _gen_worker_loop() -> None:
+    while True:
+        with GEN_COND:
+            entry = next((e for e in GEN_QUEUE if e["status"] == "pending"), None)
+            while entry is None:
+                GEN_COND.wait()                       # 无待办 → 休眠，enqueue 时被唤醒
+                entry = next((e for e in GEN_QUEUE if e["status"] == "pending"), None)
+            entry["status"] = "running"
+            job: JobState = entry["job"]
+            payload = entry["payload"]
+            with job.lock:
+                job.running, job.done, job.ok = True, False, False
+                job.log = [f"══ 队列任务「{entry['title']}」开始克隆 ══"]
+                job.stage, job.progress = "", 0
+        _run_job(job, "run_all", payload)             # 复用整套 run_all（含成功后进待编辑队列）
+        with GEN_COND:
+            entry["status"] = "done" if job.ok else "failed"
+            if not job.ok:
+                entry["error"] = next(
+                    (m for m in reversed(job.log) if "失败" in m or "错误" in m), "克隆失败")
+
+
+def _gen_queue_snapshot() -> list[dict]:
+    with GEN_COND:
+        out = []
+        for e in GEN_QUEUE:
+            job: JobState = e["job"]
+            with job.lock:
+                out.append({"id": e["id"], "title": e["title"], "status": e["status"],
+                            "error": e["error"], "stage": job.stage, "progress": job.progress,
+                            "running": job.running, "ok": job.ok,
+                            "log": list(job.log)[-40:]})
+        return out
+
+
+def _gen_queue_remove(task_id: str) -> bool:
+    """移除一个**尚未开始**的队列任务（运行中/已完成不动）。"""
+    with GEN_COND:
+        for i, e in enumerate(GEN_QUEUE):
+            if e["id"] == task_id and e["status"] == "pending":
+                GEN_QUEUE.pop(i)
+                return True
+    return False
+
+
+def _gen_queue_clear_finished() -> int:
+    """清掉已完成/失败的任务项（运行中/待办保留）。"""
+    with GEN_COND:
+        before = len(GEN_QUEUE)
+        GEN_QUEUE[:] = [e for e in GEN_QUEUE if e["status"] in ("pending", "running")]
+        return before - len(GEN_QUEUE)
+
+
 def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 —— 沿用旧函数体的 JOB 名
     log = JOB.append
     try:
@@ -255,6 +352,8 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             log(("✅ 成片完成：" if result.ok else "❌ 收口断言未通过：") + str(result.output_path))
             with JOB.lock:
                 JOB.timings, JOB.result, JOB.ok = timings, result, result.ok
+            if result.ok:
+                _remember_edit_item(output_dir, canvas, payload)  # ⑧ 进待编辑队列
         elif action == "dub":
             def _dub_progress(done: int, total: int) -> None:
                 JOB.set_progress(f"配音 · 第 {done}/{total} 行", int(done / max(1, total) * 100))
@@ -322,6 +421,8 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             JOB.set_progress("完成", 100)
             with JOB.lock:
                 JOB.timings, JOB.result, JOB.ok = timings, result, result.ok
+            if result.ok:
+                _remember_edit_item(output_dir, canvas, payload)  # ⑧ 刷新待编辑队列时效
         elif action == "capcut":
             timings = JOB.timings or pipeline.load_timings(output_dir)
             # JOB.result 为 None（软件重启后）时由 step_capcut 从磁盘读回分镜段
@@ -529,6 +630,12 @@ class _Handler(BaseHTTPRequestHandler):
             with TASKS_LOCK:
                 jobs = [t.snapshot() for t in TASKS.values()]
             self._json({"jobs": jobs})
+            return
+        if route == "/api/queue":                       # ⑨ 生成任务队列状态
+            self._json({"tasks": _gen_queue_snapshot()})
+            return
+        if route == "/api/edit_queue":                  # ⑧ 待编辑队列（顺带清过期）
+            self._json({"items": edit_queue.list_active()})
             return
         if route == "/api/audio":
             query = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
@@ -776,6 +883,49 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json({"error": busy}, 409)
                 return
             self._json({"ok": True, "slot": job.slot})
+            return
+        if route == "/api/queue":                       # ⑨ 生成任务队列
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+            except json.JSONDecodeError:
+                self._json({"error": "JSON 无效"}, 400)
+                return
+            act = str(payload.get("action") or "add")
+            if act == "remove":
+                self._json({"ok": _gen_queue_remove(str(payload.get("id") or ""))})
+                return
+            if act == "clear":
+                self._json({"ok": True, "cleared": _gen_queue_clear_finished()})
+                return
+            # add：把整份配置冻结成一个后台克隆任务
+            for key in ("output_dir", "shots_dir"):
+                _allow_media_root(str(payload.get(key) or ""))
+            if not str(payload.get("output_dir") or "").strip():
+                self._json({"error": "请先选择「输出目录」再加入队列。"}, 400)
+                return
+            if not str(payload.get("text") or "").strip():
+                self._json({"error": "请先填写「待合成文案」再加入队列。"}, 400)
+                return
+            title = str(payload.get("title") or Path(str(payload["output_dir"])).name or "成片")
+            task_id = _gen_enqueue(payload, title)
+            self._json({"ok": True, "id": task_id, "title": title})
+            return
+        if route == "/api/edit_queue":                  # ⑧ 待编辑队列 操作
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+            except json.JSONDecodeError:
+                self._json({"error": "JSON 无效"}, 400)
+                return
+            act = str(payload.get("action") or "")
+            item_id = str(payload.get("id") or "")
+            if act == "remove":
+                self._json({"ok": edit_queue.remove(item_id)})
+            elif act == "touch":
+                self._json({"ok": edit_queue.touch(item_id)})
+            else:
+                self._json({"error": f"未知操作：{act}"}, 400)
             return
         if route == "/api/open_folder":
             length = int(self.headers.get("Content-Length") or 0)
