@@ -16,7 +16,9 @@ class UiContractPhase3Tests(unittest.TestCase):
                   'id="genQueueCard"', 'id="eqList"', "loadEditQueue",   # 两条队列 UI
                   'id="pvVideo"', "pvToggle", "stylePvBar",              # ⑦ 真视频预览
                   "烧录列表", 'id="subsize"', 'id="pbEnable"',           # ④⑥ 字幕/进度条移入一键成片
-                  "applyPbObj", "applySubObj"):                          # ⑤ 预设含字幕/进度条
+                  "applyPbObj", "applySubObj",                           # ⑤ 预设含字幕/进度条
+                  'id="wmEnable"', "collectWatermark", "动态水印",        # 动态水印
+                  "retryQueueTask", "action:'retry'"):                   # 队列重试
             self.assertIn(m, html, m)
 
 
