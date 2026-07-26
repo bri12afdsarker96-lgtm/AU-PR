@@ -48,7 +48,9 @@ API_KEY = os.environ.get("DOTS_SERVER_API_KEY", "").strip()
 CHECKPOINT = os.environ.get("DOTS_CHECKPOINT", "").strip() or "rednote-hilab/dots.tts-soar"
 RUNTIME_MODULE = os.environ.get("DOTS_RUNTIME_MODULE", "dots_tts.runtime").strip()
 PRECISION = os.environ.get("DOTS_PRECISION", "bf16").strip()
-OPTIMIZE = os.environ.get("DOTS_OPTIMIZE", "1").strip() not in ("0", "false", "False", "")
+# optimize=True 会走 torch.compile(inductor)，在 torch 2.9 上会崩（flex_attention「duplicate
+# template name」）。dots.tts 本身默认就是 False，这里也默认关；确要开可设 DOTS_OPTIMIZE=1。
+OPTIMIZE = os.environ.get("DOTS_OPTIMIZE", "0").strip() not in ("0", "false", "False", "")
 EXPECTED_SAMPLE_RATE = 48000
 MGL_OUTPUT_BUDGET = 800   # 与客户端一致：参考音频较长时 max_generate_length 的额外预算
 
