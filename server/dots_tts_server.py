@@ -43,7 +43,9 @@ except Exception as exc:  # noqa: BLE001
 
 # ---- 配置（环境变量） --------------------------------------------------------
 API_KEY = os.environ.get("DOTS_SERVER_API_KEY", "").strip()
-CHECKPOINT = os.environ.get("DOTS_CHECKPOINT", "").strip() or "dots.tts"
+# 与客户端 dots_local.DEFAULT_CHECKPOINT 一致：HF 仓库名，首次 from_pretrained 自动下载，
+# 无需手动拷检查点。国内机器可设 HF_ENDPOINT=https://hf-mirror.com 加速（见部署脚本）。
+CHECKPOINT = os.environ.get("DOTS_CHECKPOINT", "").strip() or "rednote-hilab/dots.tts-soar"
 RUNTIME_MODULE = os.environ.get("DOTS_RUNTIME_MODULE", "dots_tts.runtime").strip()
 PRECISION = os.environ.get("DOTS_PRECISION", "bf16").strip()
 OPTIMIZE = os.environ.get("DOTS_OPTIMIZE", "1").strip() not in ("0", "false", "False", "")
