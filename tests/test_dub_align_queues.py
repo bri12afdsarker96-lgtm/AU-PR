@@ -19,8 +19,22 @@ class UiContractPhase3Tests(unittest.TestCase):
                   "applyPbObj", "applySubObj",                           # ⑤ 预设含字幕/进度条
                   'id="wmEnable"', "collectWatermark", "动态水印",        # 动态水印
                   "retryQueueTask", "action:'retry'",                    # 队列重试
-                  "function toast", "tap-pulse", "pointerdown", ".busy"):  # 全局点击反馈
+                  "function toast", "tap-pulse", "pointerdown", ".busy",  # 全局点击反馈
+                  "pickDoc", "mirrorOut", "_outdirManual",                # ① 导入设目录 + 输出跟随分镜
+                  "dubLastVoice", "dubLastAspect",                        # ② 记住上次音色/比例
+                  'id="burnPreset"', "saveBurnPreset", "collectBurnStyle"):  # ③ 烧录预设
             self.assertIn(m, html, m)
+
+    def test_browse_lists_files_and_parse_by_path(self):
+        import tempfile
+        from pathlib import Path
+        from dub_align_studio import web_server
+        d = Path(tempfile.mkdtemp()); (d / "sub").mkdir()
+        (d / "稿.txt").write_text("第一句\n第二句\n", encoding="utf-8")
+        r = web_server._browse(str(d), "txt")
+        self.assertIn("sub", r["dirs"])
+        self.assertIn("稿.txt", r["files"])
+        self.assertEqual(web_server._browse(str(d), "")["files"], [])  # 不给 files_ext 时不列文件
 
 
 def _touch_file(p: Path) -> str:
