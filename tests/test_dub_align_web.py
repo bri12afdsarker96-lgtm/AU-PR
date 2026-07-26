@@ -37,6 +37,9 @@ class WebServerTests(unittest.TestCase):
         import dub_align_studio.web_server as ws
 
         ws.STUDIO_HOME = cls._temp_home
+        from dub_align_studio import edit_queue as _eq
+        cls._eq_backup = _eq._STORE_OVERRIDE
+        _eq._STORE_OVERRIDE = cls._temp_home / "edit_queue.json"
         cls.server = web_server.serve(port=cls.port, open_browser=False)
         threading.Thread(target=cls.server.serve_forever, daemon=True).start()
         cls.base = f"http://127.0.0.1:{cls.port}"
@@ -46,6 +49,8 @@ class WebServerTests(unittest.TestCase):
         cls.server.shutdown()
         cls.server.server_close()
         web_server.STUDIO_HOME = cls._home_backup
+        from dub_align_studio import edit_queue as _eq
+        _eq._STORE_OVERRIDE = cls._eq_backup
         shutil.rmtree(cls._temp_home, ignore_errors=True)
 
     def _get(self, path: str) -> dict:
@@ -103,6 +108,52 @@ class WebServerTests(unittest.TestCase):
         job = self._wait_job()
         self.assertFalse(job["ok"])
         self.assertTrue(any("失败" in line for line in job["log"]))
+
+    def _post(self, path: str, payload: dict) -> dict:
+        request = urllib.request.Request(
+            self.base + path, data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"}, method="POST")
+        return json.loads(urllib.request.urlopen(request).read())
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "需要 ffmpeg/ffprobe")
+    def test_generation_queue_runs_and_enters_edit_queue(self):
+        workdir = Path(tempfile.mkdtemp(prefix="web_queue_"))
+        try:
+            shots = workdir / "分镜"
+            shots.mkdir()
+            from dub_align_studio.render_b import RenderConfig, _run
+            config = RenderConfig()
+            for i in (1, 2):
+                _run([config.ffmpeg, "-y", "-f", "lavfi", "-i",
+                      "testsrc=size=640x360:rate=30:duration=6",
+                      "-pix_fmt", "yuv420p", str(shots / f"{i}.mp4")], "样例")
+            out = workdir / "输出Q"
+            payload = {"text": "第一句台词。\n第二句台词。", "engine": "mock", "aligner": "均分兜底",
+                       "shots_dir": str(shots), "output_dir": str(out),
+                       "burn_subtitles": True, "subtitle_size": 56, "title": "队列集01"}
+            # ⑨ 加入生成队列
+            resp = self._post("/api/queue", {"action": "add", **payload})
+            self.assertTrue(resp["ok"])
+            task_id = resp["id"]
+            # 等队列任务跑完
+            deadline = time.time() + 180
+            task = None
+            while time.time() < deadline:
+                tasks = self._get("/api/queue")["tasks"]
+                task = next((t for t in tasks if t["id"] == task_id), None)
+                if task and task["status"] in ("done", "failed"):
+                    break
+                time.sleep(0.3)
+            self.assertIsNotNone(task)
+            self.assertEqual(task["status"], "done", "\n".join(task["log"]) if task else "")
+            self.assertTrue((out / "成片.mp4").exists())
+            # ⑧ 成片自动进待编辑队列
+            items = self._get("/api/edit_queue")["items"]
+            self.assertTrue(any(it["title"] == "队列集01" for it in items))
+            # 清理已完成队列项
+            self.assertTrue(self._post("/api/queue", {"action": "clear"})["ok"])
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "需要 ffmpeg/ffprobe")
     def test_run_all_via_api(self):
