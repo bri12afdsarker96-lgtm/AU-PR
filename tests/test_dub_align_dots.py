@@ -220,6 +220,20 @@ class FillerCutTests(unittest.TestCase):
         seq = [0.6]*690 + [0.0]*160 + [0.5]*400
         self.assertEqual(_onset_cut_index(seq, 1000, 0.6), 0)
 
+    def test_connected_filler_dip_above_silence_is_cut(self):
+        from dub_align_studio.engines.dots_local import _onset_cut_index
+        # 预判「下一个音色」：「嗯」与正文连读，中间停顿只降到 10%（未跌破 1.5% 绝对静音线）——
+        # 绝对静音断段会把三者并成一段(len(runs)<2)、快速路径不切 → 泄漏。能量谷兜底应按相对阈切开。
+        seq = [0.5]*300 + [0.05]*350 + [0.5]*400   # 嗯 0.3s + 浅停 0.35s(降到10%) + 正文 0.4s
+        # 正文起点=样本650；回退 40ms → 610
+        self.assertEqual(_onset_cut_index(seq, 1000, 0.5), 610)
+
+    def test_connected_shallow_short_dip_not_cut(self):
+        from dub_align_studio.engines.dots_local import _onset_cut_index
+        # 反向护栏：连读音节间只有 0.1s 的浅坑（非「嗯。」句号长停顿）→ 谷太短 → 不切，保住真内容。
+        seq = [0.5]*300 + [0.05]*100 + [0.5]*400
+        self.assertEqual(_onset_cut_index(seq, 1000, 0.5), 0)
+
     def test_all_silent_untouched(self):
         from dub_align_studio.engines.dots_local import _onset_cut_index
         self.assertEqual(_onset_cut_index([0.0]*2000, 1000, 0.0), 0)
