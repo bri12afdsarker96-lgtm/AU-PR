@@ -13,6 +13,28 @@
 
 ---
 
+## 最省事：Windows 一键 bat（推荐给不熟命令行的你）
+
+租好 GPU 实例后（见下方第 0 节），**不用敲任何命令**：
+
+1. 把本 `server/` 文件夹整个下载到 Windows（至少要有 `一键部署到云GPU.bat`、
+   `dots_tts_server.py`、`cloud_bootstrap.sh`、`requirements.txt` 四个文件在一起）。
+2. 双击 **`一键部署到云GPU.bat`**。
+3. 按提示**粘贴 AutoDL 面板的「SSH 登录指令」**，回车；出现 `password` 时**输入面板的「密码」**
+   （可能要输 1–2 次）。
+4. 脚本会自动：上传服务端 → 装 dots.tts + 依赖 → 下载模型 → 在 6006 端口启动服务，
+   最后**打印一串 API Key**。记下它。
+5. 到 **AutoDL 控制台 → 本实例 →「自定义服务」** 拿公网 https 地址。
+6. 打开软件 → **设置 → ☁ 云配音**：填「地址 + API Key」→ 💾 保存 → 🔌 测试连接 →
+   引擎下拉选 **dots.tts（云 GPU · 远程）**。完成。
+
+> 模型是 HF 仓库 `rednote-hilab/dots.tts-soar`，**首次自动下载，无需手动拷检查点**；
+> 脚本已设 `HF_ENDPOINT=https://hf-mirror.com` 国内镜像加速。torch 由镜像自带。
+
+下面是手动分步版（想自己控制或排错时看）。
+
+---
+
 ## 0. 先租 GPU（AutoDL 为例）
 
 - **GPU**：选 **RTX 4090**（约 ¥2/小时）。单句能从 3 分钟压到几秒~十几秒。**不配音就关机**
@@ -32,25 +54,26 @@ cd server
 pip install -r requirements.txt          # fastapi/uvicorn/soundfile/pydantic
 ```
 
-**安装 dots.tts 本体与模型**（按你现在本地用的同一版 dots.tts）：
+**安装 dots.tts 本体 + 运行依赖**（与本地 App 完全同一口径；`cloud_bootstrap.sh` 已封装这步）：
 
 ```bash
-# ① 安装 dots.tts 运行时（示例，按你本地组件里 dots.tts 的实际来源/版本安装）
-pip install dots_tts            # 或 pip install /path/to/dots_tts-0.2.x-*.whl
-# ② 准备检查点（与本地一致），放到某目录，例如：
-#    /root/models/dots.tts
+export HF_ENDPOINT=https://hf-mirror.com                 # 国内镜像，模型才拉得动
+pip install --no-deps dots.tts                           # 本体（--no-deps，绕开 pynini）
+pip install transformers==4.57.0 accelerate==1.12.0 huggingface-hub loguru \
+  "langcodes[data]" einops librosa soundfile numpy pydantic PyYAML safetensors \
+  torchdiffeq tqdm lingua-language-detector               # 运行依赖（不含 torch，镜像自带）
 ```
 
-> 服务端只认 `dots_tts.runtime.DotsTtsRuntime`（0.2.x API），和本地引擎同一套。
-> 若你的 dots.tts 导入路径不同，用环境变量 `DOTS_RUNTIME_MODULE` 覆盖。
+> **模型无需手动下载**：默认检查点 `rednote-hilab/dots.tts-soar`（与本地一致），首次
+> `from_pretrained` 自动从 HF 镜像拉取。服务端只认 `dots_tts.runtime.DotsTtsRuntime`；
+> 若导入路径不同，用环境变量 `DOTS_RUNTIME_MODULE` 覆盖。
 
 ---
 
 ## 2. 设 API Key + 启动
 
 ```bash
-export DOTS_CHECKPOINT=/root/models/dots.tts   # 改成你的检查点目录（或 HF 名）
-bash run_server.sh
+bash run_server.sh          # 检查点默认 rednote-hilab/dots.tts-soar，自动下载；如需自定义再 export DOTS_CHECKPOINT
 ```
 
 `run_server.sh` 首次会**自动生成一个 API Key** 并写入 `server/.env`，同时打印出来：
