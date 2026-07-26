@@ -10,26 +10,43 @@ echo "==================== 云配音一键装机 ===================="
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 echo "HF 镜像：$HF_ENDPOINT"
 
-# 0.1) 非交互 SSH shell 默认不激活 conda base（→ python 不在 PATH）。找到并激活它。
+# 0.1) 激活 conda base（若有；非交互 shell 默认不激活）
 for c in "$HOME/miniconda3" "/opt/conda" "$HOME/anaconda3" "/root/miniconda3" "/root/anaconda3"; do
   if [ -f "$c/etc/profile.d/conda.sh" ]; then
     . "$c/etc/profile.d/conda.sh"; conda activate base 2>/dev/null || true; break
   fi
 done
 
-# 0.2) 选 Python 解释器：优先 $PYTHON，其次 python，再 python3（本镜像是 py312，多为 python3）
-PY=""
-for cand in "${PYTHON:-}" python python3; do
-  if [ -n "$cand" ] && command -v "$cand" >/dev/null 2>&1; then PY="$(command -v "$cand")"; break; fi
+# 0.2) 找「真正带 torch + pip」的 Python——镜像预装的 torch 常在 conda/venv 里，
+#      而不是 /usr/bin/python3（系统自带、无 torch 无 pip）。逐个候选试，选第一个能 import torch 且有 pip 的。
+_has_torch_pip() { [ -x "$1" ] || command -v "$1" >/dev/null 2>&1 || return 1; "$1" -c "import torch" >/dev/null 2>&1 && "$1" -m pip --version >/dev/null 2>&1; }
+_has_pip()       { [ -x "$1" ] || command -v "$1" >/dev/null 2>&1 || return 1; "$1" -m pip --version >/dev/null 2>&1; }
+
+CANDS=()
+[ -n "${PYTHON:-}" ] && CANDS+=("$PYTHON")
+CANDS+=(python python3.12 python3.11 python3.10 python3)
+for base in /opt/conda /root/miniconda3 /root/anaconda3 /usr/local /root/venv /workspace/venv /root/.venv; do
+  for p in "$base"/bin/python "$base"/bin/python3 "$base"/bin/python3.12; do [ -x "$p" ] && CANDS+=("$p"); done
+  for ep in "$base"/envs/*/bin/python; do [ -x "$ep" ] && CANDS+=("$ep"); done
 done
+
+PY=""
+for c in "${CANDS[@]}"; do if _has_torch_pip "$c"; then PY="$c"; break; fi; done   # 优先带 torch 的
+if [ -z "$PY" ]; then                                                             # 全盘兜底找带 torch 的
+  echo "候选里没找到带 torch 的，正在全盘搜索（/opt /root /usr/local /workspace，稍等）…"
+  for p in $(find /opt /root /usr/local /workspace -maxdepth 5 -name 'python3*' -type f 2>/dev/null); do
+    if _has_torch_pip "$p"; then PY="$p"; break; fi
+  done
+fi
+if [ -z "$PY" ]; then                                                             # 退而求其次：有 pip 就行
+  for c in "${CANDS[@]}"; do if _has_pip "$c"; then PY="$c"; break; fi; done
+fi
 if [ -z "$PY" ]; then
-  echo "❌ 找不到 python/python3。请确认镜像自带 Python 环境（本镜像应为 py312）。"; exit 1
+  echo "❌ 没找到可用的 Python（要能 import torch 且有 pip）。请把这段窗口截图发我，我按你这台环境再调。"; exit 1
 fi
 echo "使用 Python：$PY"; "$PY" --version
-# 校验 torch（镜像应自带 CUDA 版；缺了说明选错解释器/环境没激活）
-if "$PY" -c "import torch;print('torch',torch.__version__,'CUDA可用',torch.cuda.is_available())" 2>/dev/null; then :; else
-  echo "⚠ 当前 Python 里没有 torch —— 可能没激活到镜像预装的那个环境。仍继续；若后面报缺 torch，请告诉我。"
-fi
+"$PY" -c "import torch;print('torch',torch.__version__,'CUDA可用',torch.cuda.is_available())" 2>/dev/null \
+  || echo "⚠ 选中的 Python 仍没有 torch（会继续，但配音可能起不来）。请把窗口截图发我。"
 
 # 1) dots.tts 本体（--no-deps，与本地 App 完全一致：绕开 Windows 装不了的 pynini）
 echo "[1/4] 安装 dots.tts 本体…"
@@ -54,12 +71,16 @@ fi
 export DOTS_SERVER_API_KEY
 export DOTS_CHECKPOINT="${DOTS_CHECKPOINT:-rednote-hilab/dots.tts-soar}"
 
-# 5) 起服务（后台常驻；6006 = AutoDL「自定义服务」端口，配合公网 HTTPS）
-echo "[4/4] 启动服务（端口 6006，后台常驻）…"
+# 5) 起服务（后台常驻，监听所有网卡；配合公网 IP + 防火墙放行同一端口）
+PORT="${SERVER_PORT:-8000}"
+echo "[4/4] 启动服务（端口 $PORT，后台常驻）…"
 pkill -f dots_tts_server.py 2>/dev/null || true
 sleep 1
-nohup $PY dots_tts_server.py --host 0.0.0.0 --port 6006 --preload > "$LOG" 2>&1 &
+nohup "$PY" dots_tts_server.py --host 0.0.0.0 --port "$PORT" --preload > "$LOG" 2>&1 &
 sleep 3
+
+# 尽力探测公网 IP（拿不到就用占位，不影响启动）
+PUBIP="$(curl -s --max-time 5 https://api.ipify.org 2>/dev/null || curl -s --max-time 5 https://ifconfig.me 2>/dev/null || echo '你的公网IP')"
 
 echo
 echo "==================== 完成 ===================="
@@ -67,6 +88,10 @@ echo ">>> 你的 API Key（填到软件『设置 → 云配音 → API Key』）
 echo
 echo "        $DOTS_SERVER_API_KEY"
 echo
-echo ">>> 服务地址：到 AutoDL 控制台 → 本实例 →「自定义服务」拿公网 https 地址（对应 6006 端口）。"
-echo ">>> 首次会自动下载模型（几分钟），下载/运行日志：tail -f $LOG"
+echo ">>> 服务地址（填到软件『设置 → 云配音 → 地址』）："
+echo
+echo "        http://$PUBIP:$PORT"
+echo
+echo ">>> 重要：先到云控制台『外网防火墙』放行 TCP $PORT（动作=接受，源=0.0.0.0/0），否则本地连不上。"
+echo ">>> 首次会自动下载模型（几分钟）才能用；进度看日志：tail -f $LOG"
 echo "=============================================="
