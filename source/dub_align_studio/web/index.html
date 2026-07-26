@@ -1088,9 +1088,14 @@ function selectEditItem(id,filmEnc,outEnc,cw,ch,title){
   fetch('/api/edit_queue',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({action:'touch',id})});   // 点开编辑=续期 12h
   loadPreviewVideo('/api/audio?path='+encodeURIComponent(film));
+  // ⑦ 配音切到这条队列任务：主轨播放器指向该任务的 master.wav（预览视频本身也带该任务的配音）
+  const sep=out.includes('\\')?'\\':'/';
+  const murl='/api/audio?path='+encodeURIComponent(out+sep+'master.wav');
+  if($('masterAudio')){$('masterAudio').src=murl;$('masterAudio').dataset.src=murl;}
+  if($('mediaRow'))$('mediaRow').style.display='flex';
   loadEditQueue();
   if($('pvInfo'))$('pvInfo').textContent='编辑中 · '+title;
-  toast('已载入 · '+title,'ok');
+  toast('已载入 · '+title+'（配音已切到本任务）','ok');
 }
 function loadPreviewVideo(url){
   const v=$('pvVideo');if(!v)return;
@@ -1223,12 +1228,15 @@ function syncPv(fromInput){
     showSub=(ovEdit>=0&&overlays[ovEdit]&&overlays[ovEdit]._sub)?overlays[ovEdit]:subs[0];
   }
   overlays.forEach(o=>{ if(!o._sub||o===showSub) phone.appendChild(pvNode(o,false,pvW)); });
-  phone.appendChild(pvNode(editorOverlay(),true,pvW));
-  // 字幕位置示意（跟随一键成片页的字幕位置/字号设置）
-  if($('burn')?.checked){
+  // 正在编辑的文本框：仅当有文字时才画虚线占位（空文本不显示「（文本）」提示，用户 2026-07-26 ②）
+  const eo=editorOverlay();
+  if(eo.text) phone.appendChild(pvNode(eo,true,pvW));
+  // 字幕位置示意：字幕样式已移到「一键成片」，这里只是位置参考。
+  // 载入真视频后不再画示意——真视频已有真字幕，避免和默认示意重叠误导（用户 2026-07-26 ①）。
+  const videoOn=$('pvVideo')&&$('pvVideo').style.display!=='none';
+  if($('burn')?.checked && !videoOn){
     const sub=document.createElement('div');
     sub.className='ov sub';
-    sub.textContent='—— 字幕位置示意 ——';
     sub.style.top=((SUB_POS_RATIO[$('subPos')?.value]??0.885)*94)+'%';
     sub.style.fontSize=Math.max(6,((+$('subsize')?.value||64)*pvW/cw)).toFixed(1)+'px';
     sub.style.color=($('subColor')&&$('subColor').value.trim())||'#FFFFFF';sub.style.opacity='.92';
