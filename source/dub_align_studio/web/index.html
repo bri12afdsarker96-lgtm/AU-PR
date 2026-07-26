@@ -474,6 +474,8 @@ footer b{color:var(--muted);font-weight:600}
           <div id="pvBarFill" style="position:absolute;left:0;top:0;bottom:0;width:0%"></div>
           <div id="pvBarText" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:700;white-space:nowrap"></div>
         </div>
+        <!-- 动态水印预览：四角跳动（画在底层，不遮字幕/进度条） -->
+        <div id="pvWm" style="display:none;position:absolute;white-space:nowrap;pointer-events:none;font-weight:700;transition:all .4s ease;z-index:0"></div>
       </div>
       <div class="row" id="pvTransport" style="margin-top:10px;gap:10px;display:none">
         <button class="btn gold" id="pvPlay" style="padding:6px 12px;flex:none" onclick="pvToggle()">▶</button>
@@ -550,6 +552,30 @@ footer b{color:var(--muted);font-weight:600}
         <p style="font-size:11px;color:var(--faint);margin-top:12px;letter-spacing:.5px">重烧成片时全部烧入（字幕样式在「一键成片」页的烧录列表设置）。</p>
       </div>
 
+    </div>
+  </div>
+
+  <!-- 动态水印（满宽一行）：四角随机跳动，画在字幕/进度条下层不遮挡它们 -->
+  <div class="card" style="margin-top:16px">
+    <h2>动态水印 <label class="mini" style="float:right;font-weight:400;cursor:pointer"><input type="checkbox" id="wmEnable" onchange="syncPv()"> 启用</label></h2>
+    <p class="mini" style="color:var(--faint);margin:-4px 0 12px">自定义一行水印文字，烧录时<b>在四角（左上/右上/左下/右下）之间按时间随机跳动</b>（防搬运）。它画在<b>最底层</b>，不遮挡字幕与进度条。</p>
+    <div class="sp"><span class="f">水印文字</span>
+      <input type="text" id="wmText" placeholder="例：@你的账号名 / 原创搬运必究" style="width:100%" oninput="syncPv()"></div>
+    <div class="row sp" style="gap:20px;flex-wrap:wrap;align-items:flex-end">
+      <div style="flex:none"><span class="f">字号</span>
+        <input type="number" id="wmSize" value="36" min="16" max="120" style="width:82px" oninput="syncPv()"></div>
+      <div style="flex:none"><span class="f">切换间隔（秒）</span>
+        <input type="number" id="wmInterval" value="3" min="0.5" max="30" step="0.5" style="width:90px" title="每隔多少秒换一个角"></div>
+      <div style="flex:none"><span class="f">边距</span>
+        <input type="number" id="wmMargin" value="40" min="0" max="300" style="width:82px" oninput="syncPv()"></div>
+      <div style="flex:none"><span class="f">描边</span>
+        <input type="number" id="wmBorder" value="2" min="0" max="20" style="width:74px"></div>
+      <div style="flex:none"><span class="f">文字颜色</span>
+        <div class="row" style="gap:6px">
+          <input type="color" id="wmColor" value="#FFFFFF" style="width:44px;height:30px;padding:2px;flex:none" oninput="$('wmColorHex').value=this.value;syncPv()">
+          <input type="text" id="wmColorHex" value="#FFFFFF" style="width:88px" oninput="if(/^#[0-9a-fA-F]{6}$/.test(this.value)){$('wmColor').value=this.value;syncPv()}"></div></div>
+      <div style="flex:none"><span class="f">透明度 <span class="val" id="wmOpV" style="padding:1px 6px">0.50</span></span>
+        <input type="range" id="wmOpacity" min="0.1" max="1" step="0.05" value="0.5" style="width:120px" oninput="$('wmOpV').textContent=(+this.value).toFixed(2);syncPv()"></div>
     </div>
   </div>
 
@@ -1058,6 +1084,27 @@ function stylePvBar(){
   if(txt){txt.textContent=$('pbText')?.value||''; txt.style.color=($('pbColor')?.value||'#fff');
     txt.style.fontSize=Math.max(9,Math.round(h*0.5))+'px';}
 }
+// 动态水印预览：四角跳动（与烧录同款，观感一致；真实随机顺序由后端 seed 决定）
+let _wmCorner=0, _wmTimer=null;
+function stylePvWm(){
+  const el=$('pvWm');if(!el)return;
+  const on=$('wmEnable')&&$('wmEnable').checked&&($('wmText')?.value||'').trim();
+  el.style.display=on?'block':'none'; if(!on){if(_wmTimer){clearInterval(_wmTimer);_wmTimer=null;}return;}
+  el.textContent=$('wmText').value.trim();
+  el.style.color=$('wmColor')?.value||'#fff';
+  el.style.opacity=(+($('wmOpacity')?.value||0.5));
+  const ph=$('phone'),cw=pvCanvas()[0],pvW=ph?.clientWidth||300;
+  el.style.fontSize=Math.max(8,((+$('wmSize')?.value||36)*pvW/cw)).toFixed(1)+'px';
+  el.style.textShadow=strokeShadow(((+$('wmBorder')?.value||0))*pvW/cw*0.9,'#000');
+  const m=Math.max(2,((+$('wmMargin')?.value||40)*pvW/cw));
+  const top=_wmCorner<2, left=(_wmCorner%2===0);
+  el.style.top=top?m+'px':'auto'; el.style.bottom=top?'auto':m+'px';
+  el.style.left=left?m+'px':'auto'; el.style.right=left?'auto':m+'px';
+  if(!_wmTimer){
+    const iv=Math.max(500,(+$('wmInterval')?.value||3)*1000);
+    _wmTimer=setInterval(()=>{_wmCorner=(_wmCorner+1+Math.floor(Math.random()*3))%4;stylePvWm();},iv);
+  }
+}
 function pvTick(){
   const v=$('pvVideo');if(!v)return;
   if($('pvPlay'))$('pvPlay').textContent=v.paused?'▶':'⏸';
@@ -1151,6 +1198,7 @@ function syncPv(fromInput){
     phone.appendChild(sub);
   }
   stylePvBar();
+  stylePvWm();
 }
 function editorOverlay(){
   return {text:$('edText').value.trim(),position:$('edPos').value||'中部',
@@ -1284,7 +1332,30 @@ function buildPayload(action){
     subtitle_color:($('subColor')&&$('subColor').value.trim())||'#FFFFFF',
     subtitle_border:+($('subBorder')&&$('subBorder').value)||0,
     aspect:$('aspect').value,overlays,audio:collectAudio(),progressbar:collectProgressBar(),
+    watermark:collectWatermark(),
     reuse_dub:$('reuseDub')?$('reuseDub').checked:false};
+}
+// 动态水印配置（未启用/空文字 → enabled:false，后端返回 None 不烧）
+function collectWatermark(){
+  if(!$('wmEnable')||!$('wmEnable').checked||!($('wmText')?.value||'').trim())return{enabled:false};
+  return {enabled:true,text:$('wmText').value.trim(),
+    font_size_px:+$('wmSize').value||36,
+    color:($('wmColor').value||'#FFFFFF').trim(),
+    opacity:+$('wmOpacity').value,
+    interval_seconds:+$('wmInterval').value||3,
+    margin_px:+$('wmMargin').value||40,
+    border_width:+$('wmBorder').value||0};
+}
+function applyWmObj(w){
+  if(!w)return;
+  if($('wmEnable'))$('wmEnable').checked=!!w.enabled;
+  if(w.text!=null)$('wmText').value=w.text;
+  if(w.font_size_px!=null)$('wmSize').value=w.font_size_px;
+  if(w.interval_seconds!=null)$('wmInterval').value=w.interval_seconds;
+  if(w.margin_px!=null)$('wmMargin').value=w.margin_px;
+  if(w.border_width!=null)$('wmBorder').value=w.border_width;
+  if(w.color!=null){$('wmColor').value=w.color;if($('wmColorHex'))$('wmColorHex').value=w.color;}
+  if(w.opacity!=null){$('wmOpacity').value=w.opacity;if($('wmOpV'))$('wmOpV').textContent=(+w.opacity).toFixed(2);}
 }
 async function run(action,target){
   logTarget=target||'mainlog';
@@ -1304,6 +1375,10 @@ async function removeQueueTask(id){
   await fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({action:'remove',id})}); pollQueue();
 }
+async function retryQueueTask(id){
+  await fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({action:'retry',id})}); pollQueue();
+}
 async function clearQueueDone(){
   await fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({action:'clear'})}); pollQueue();
@@ -1320,9 +1395,10 @@ async function pollQueue(){
     const stg=t.status==='running'&&t.stage?` · ${esc(t.stage)}`:'';
     const err=t.status==='failed'&&t.error?`<div class="mini" style="color:var(--bad)">${esc(t.error)}</div>`:'';
     const rm=t.status==='pending'?`<button class="btn" style="padding:4px 10px;flex:none" onclick="removeQueueTask('${t.id}')">移除</button>`:'';
+    const retry=(t.status==='failed'||t.status==='done')?`<button class="btn" style="padding:4px 10px;flex:none;border-color:var(--gold)" onclick="retryQueueTask('${t.id}')">重试</button>`:'';
     return `<div class="row" style="gap:10px;align-items:center;border:1px solid var(--line);border-radius:10px;padding:9px 12px">
       <span style="flex:1;min-width:0"><b>${esc(t.title)}</b>${stg}${err}</span>
-      <span class="mini" style="flex:none;color:${col}">${lab}${pct}</span>${rm}</div>`;
+      <span class="mini" style="flex:none;color:${col}">${lab}${pct}</span>${retry}${rm}</div>`;
   }).join('');
 }
 // 视频进度条配置（未启用 → enabled:false，后端返回 None 不烧）
@@ -1711,7 +1787,7 @@ function curStyle(){return {
   color:$('edColor').value.trim(),border_width:+$('edBorder').value||0,boxed:$('edBox').checked,
   sub:{size:+$('subsize').value||64,pos:$('subPos').value,font:$('subFont')?.value||'',
        color:($('subColor')?.value||'#FFFFFF').trim(),border:+($('subBorder')?.value)||0},
-  pb:collectProgressBar()};}
+  pb:collectProgressBar(),wm:collectWatermark()};}
 function saveTpl(){
   const name=prompt('模板名（例：书单女生·顶部导流）：');if(!name||!name.trim())return;
   const t=tpls();t[name.trim()]=curStyle();saveTplStore(t);loadTpls();$('tplSel').value=name.trim();
@@ -1729,6 +1805,7 @@ function applyTpl(){
   if(s.sub)applySubObj(s.sub);
   // 视频进度条（旧模板无 pb 字段时跳过）
   if(s.pb)applyPbObj(s.pb);
+  if(s.wm)applyWmObj(s.wm);   // 动态水印（旧模板无 wm 字段时跳过）
   syncPv(true);
 }
 // 还原字幕样式（sub{}）与进度条（pb{}）——模板与作品预设共用，避免两处逻辑漂移
@@ -1939,7 +2016,7 @@ function collectConfig(){
     // ⑤ 作品预设纳入完整字幕样式 + 视频进度条设定
     sub:{size:+$('subsize').value||64,pos:$('subPos').value,font:$('subFont')?.value||'',
          color:($('subColor')?.value||'#FFFFFF').trim(),border:+($('subBorder')?.value)||0},
-    pb:collectProgressBar(),
+    pb:collectProgressBar(),wm:collectWatermark(),
     audio:collectAudio(),overlays:overlays};
 }
 function applyConfigObj(c){
@@ -1952,6 +2029,7 @@ function applyConfigObj(c){
   set('subPos',c.subPos);set('subsize',c.subsize);set('subFont',c.subFont);
   if(c.sub)applySubObj(c.sub);     // ⑤ 还原完整字幕样式（颜色/描边）
   if(c.pb)applyPbObj(c.pb);        // ⑤ 还原视频进度条设定
+  if(c.wm)applyWmObj(c.wm);        // 还原动态水印设定
   if($('pv'))$('pv').textContent=(+$('pause').value).toFixed(2);
   if($('sv'))$('sv').textContent=(+$('speed').value).toFixed(2);
   if(c.audio){

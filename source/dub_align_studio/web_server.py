@@ -172,7 +172,8 @@ def _gen_enqueue(payload: dict, title: str) -> str:
     task_id = uuid.uuid4().hex[:8]
     job = JobState(slot=f"queue:{task_id}", label=title, action="run_all")
     entry = {"id": task_id, "title": title, "payload": copy.deepcopy(payload),
-             "job": job, "status": "pending", "error": ""}
+             "job": job, "status": "pending", "error": "",
+             "retries": 0, "auto_max": 1}   # 失败自动重试 1 次；仍失败则跳过、留手动「重试」
     with GEN_COND:
         GEN_QUEUE.append(entry)
         _ensure_gen_worker_locked()
@@ -198,14 +199,28 @@ def _gen_worker_loop() -> None:
             entry["status"] = "running"
             job: JobState = entry["job"]
             payload = entry["payload"]
+            attempt = entry["retries"] + 1
             with job.lock:
                 job.running, job.done, job.ok = True, False, False
-                job.log = [f"══ 队列任务「{entry['title']}」开始克隆 ══"]
+                job.log = [f"══ 队列任务「{entry['title']}」开始克隆" + (f"（第 {attempt} 次尝试）" if attempt > 1 else "") + " ══"]
                 job.stage, job.progress = "", 0
-        _run_job(job, "run_all", payload)             # 复用整套 run_all（含成功后进待编辑队列）
+        # 单个任务出问题绝不掀翻整队：_run_job 内部已兜异常；这里再包一层防线程被杀。
+        try:
+            _run_job(job, "run_all", payload)         # 复用整套 run_all（含成功后进待编辑队列）
+        except Exception as exc:                       # noqa: BLE001 —— worker 必须存活
+            job.append("❌ 失败：" + "".join(traceback.format_exception_only(exc)).strip())
+            with job.lock:
+                job.running, job.done, job.ok = False, True, False
         with GEN_COND:
-            entry["status"] = "done" if job.ok else "failed"
-            if not job.ok:
+            if job.ok:
+                entry["status"] = "done"
+            elif entry["retries"] < entry["auto_max"]:
+                entry["retries"] += 1                  # 自动重试：重置为待办，worker 稍后再取
+                entry["job"] = JobState(slot=job.slot, label=entry["title"], action="run_all")
+                entry["status"] = "pending"
+                GEN_COND.notify()
+            else:
+                entry["status"] = "failed"             # 跳过这个任务，继续队列后续
                 entry["error"] = next(
                     (m for m in reversed(job.log) if "失败" in m or "错误" in m), "克隆失败")
 
@@ -218,9 +233,21 @@ def _gen_queue_snapshot() -> list[dict]:
             with job.lock:
                 out.append({"id": e["id"], "title": e["title"], "status": e["status"],
                             "error": e["error"], "stage": job.stage, "progress": job.progress,
-                            "running": job.running, "ok": job.ok,
+                            "running": job.running, "ok": job.ok, "retries": e.get("retries", 0),
                             "log": list(job.log)[-40:]})
         return out
+
+
+def _gen_queue_retry(task_id: str) -> bool:
+    """手动重试一个已失败（或已完成）的任务：重置为待办、清零错误，唤醒 worker。"""
+    with GEN_COND:
+        for e in GEN_QUEUE:
+            if e["id"] == task_id and e["status"] in ("failed", "done"):
+                e["job"] = JobState(slot=f"queue:{task_id}", label=e["title"], action="run_all")
+                e["status"], e["error"], e["retries"] = "pending", "", 0
+                GEN_COND.notify()
+                return True
+    return False
 
 
 def _gen_queue_remove(task_id: str) -> bool:
@@ -273,8 +300,10 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             )
         overlays = overlays_from_dicts(payload.get("overlays") or [])
         from .progressbar import progressbar_from_payload
+        from .watermark import watermark_from_payload
 
         progress_bar = progressbar_from_payload(payload)  # 未启用返回 None
+        watermark = watermark_from_payload(payload)       # 未启用返回 None
         aspect = str(payload.get("aspect") or pipeline.DEFAULT_ASPECT)
         config = pipeline.make_render_config(aspect)
         canvas = (config.width, config.height)
@@ -339,7 +368,7 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
 
             result = pipeline.step_render(master_path, timings, videos, output_dir, style,
                                           config=config, overlays=overlays, audio_mix=audio_mix,
-                                          progress=_render_progress, progress_bar=progress_bar)
+                                          progress=_render_progress, progress_bar=progress_bar, watermark=watermark)
             log(f"  字幕/文本框：{result.subtitle_note or '未启用'}")
             capcut = None
             if payload.get("export_capcut"):
@@ -394,7 +423,7 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             result = pipeline.step_render(output_dir / pipeline.MASTER_NAME, timings, videos,
                                           output_dir, style, config=config, overlays=overlays,
                                           audio_mix=audio_mix, progress=_render_progress,
-                                          progress_bar=progress_bar)
+                                          progress_bar=progress_bar, watermark=watermark)
             log(f"字幕/文本框：{result.subtitle_note or '未启用'}")
             log(("✅ 成片完成：" if result.ok else "❌ 收口断言未通过：") + str(result.output_path))
             with JOB.lock:
@@ -416,7 +445,7 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             log("按当前样式重烧字幕成片…（未点「导出剪映草稿」不会生成草稿包）")
             result = pipeline.step_render(master_path, timings, videos, output_dir, style,
                                           config=config, overlays=overlays, audio_mix=audio_mix,
-                                          progress=_fin_progress, progress_bar=progress_bar)
+                                          progress=_fin_progress, progress_bar=progress_bar, watermark=watermark)
             log(("✅ 成片：" if result.ok else "❌ 收口未过：") + str(result.output_path))
             JOB.set_progress("完成", 100)
             with JOB.lock:
@@ -894,6 +923,9 @@ class _Handler(BaseHTTPRequestHandler):
             act = str(payload.get("action") or "add")
             if act == "remove":
                 self._json({"ok": _gen_queue_remove(str(payload.get("id") or ""))})
+                return
+            if act == "retry":
+                self._json({"ok": _gen_queue_retry(str(payload.get("id") or ""))})
                 return
             if act == "clear":
                 self._json({"ok": True, "cleared": _gen_queue_clear_finished()})

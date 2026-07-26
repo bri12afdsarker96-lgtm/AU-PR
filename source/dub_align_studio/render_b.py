@@ -27,6 +27,7 @@ from .audio_mix import AudioMix, build_audio_filtergraph, build_audio_inputs
 from .frames import quantize_to_frames
 from .overlays import OverlayText, overlay_filters
 from .progressbar import FillOverlay, ProgressBar, progressbar_layers
+from .watermark import Watermark, watermark_filters
 from .subtitles import (
     SubtitleStyle,
     drawtext_filters,
@@ -201,6 +202,7 @@ def render_b(
     audio_mix: AudioMix | None = None,
     progress=None,
     progress_bar: ProgressBar | None = None,
+    watermark: Watermark | None = None,
 ) -> DubBResult:
     """整条 master 叠加 + 逐行画面收口渲染，返回带断言结果的 DubBResult。
 
@@ -267,6 +269,17 @@ def render_b(
     srt_path: Path | None = None
     burn_filters: list[str] = []
     subtitle_note = ""
+    # 动态水印：画在**最底层**（字幕/文本框/进度条都盖在它上面，故不遮挡它们）。
+    wm_added = False
+    if watermark is not None:
+        wm_font = find_cjk_font()
+        if wm_font:
+            wm_font = _staged_font(wm_font, work_dir)
+        wm_filters = watermark_filters(watermark, wm_font, work_dir,
+                                       config.width, config.height, master_seconds)
+        if wm_filters:
+            burn_filters += wm_filters
+            wm_added = True
     if has_text:
         srt_path = write_srt(output_path.with_suffix(".srt"), entries)
         if subtitle_style is not None:
@@ -305,6 +318,9 @@ def render_b(
         pb_below, pb_fill, pb_above = progressbar_layers(
             progress_bar, pb_font, work_dir, config.width, config.height, master_seconds)
         subtitle_note = (subtitle_note + "；" if subtitle_note else "") + "已加视频进度条"
+
+    if wm_added:
+        subtitle_note = (subtitle_note + "；" if subtitle_note else "") + "已加动态水印"
 
     _overlay_master(config, silent_full, master_wav, output_path, burn_filters, audio_mix,
                     pb_below=pb_below, pb_fill=pb_fill, pb_above=pb_above)

@@ -34,6 +34,7 @@ from .engines.voice_ref import VoiceRef
 from .overlays import OverlayText
 from .progressbar import ProgressBar
 from .render_b import DubBResult, RenderConfig, render_b
+from .watermark import Watermark
 from .subtitles import SubtitleStyle
 from .timing import (
     LineTiming,
@@ -254,12 +255,13 @@ def step_render(
     audio_mix: "AudioMix | None" = None,
     progress=None,
     progress_bar: "ProgressBar | None" = None,
+    watermark: "Watermark | None" = None,
 ) -> DubBResult:
-    """③ B 渲染成片（逐行裁/变速 + 整轨叠加 + 帧收口；可选烧字幕 + 文本框 + 视频进度条 + BGM/音效混流）。"""
+    """③ B 渲染成片（逐行裁/变速 + 整轨叠加 + 帧收口；可选烧字幕 + 文本框 + 进度条 + 动态水印 + BGM/音效混流）。"""
     return render_b(
         Path(master_wav), timings, [Path(v) for v in videos],
         Path(output_dir) / FILM_NAME, config, subtitle_style, overlays, audio_mix, progress,
-        progress_bar=progress_bar,
+        progress_bar=progress_bar, watermark=watermark,
     )
 
 
@@ -309,6 +311,7 @@ def run_all(
     overlays: list[OverlayText] | None = None,
     audio_mix: AudioMix | None = None,
     progress_bar: "ProgressBar | None" = None,
+    watermark: "Watermark | None" = None,
 ) -> StudioRun:
     """一键全流程：①配音 → ②量时长 → ③渲染 →（可选）④剪映导出。"""
     lines = parse_script(text)
@@ -321,7 +324,7 @@ def run_all(
     master = step_dub(text, engine_key, output_dir, voice, options)
     timings, notes = step_timing(text, master.path, aligner_key, output_dir)
     result = step_render(master.path, timings, videos, output_dir, subtitle_style, config,
-                         overlays, audio_mix, progress_bar=progress_bar)
+                         overlays, audio_mix, progress_bar=progress_bar, watermark=watermark)
     capcut = (step_capcut(timings, result, master.path, output_dir, subtitle_style,
                           canvas=(config.width, config.height))
               if export_capcut else None)
