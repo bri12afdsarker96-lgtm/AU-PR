@@ -318,6 +318,11 @@ def _gen_queue_retry(task_id: str) -> bool:
     with GEN_COND:
         for e in GEN_QUEUE:
             if e["id"] == task_id and e["status"] in ("failed", "done", "cancelled"):
+                # 重试自动复用已有配音：配音成功后才会有 master.wav，若失败在后续步骤（如渲染缺 ffmpeg），
+                # 重试应跳过重新克隆、直接量时长+渲染（省时间/云端算力）。配音本身没成功则无 master.wav，
+                # run_all 里 reuse_dub 有 master_path.is_file() 兜底会自动失效、照常克隆——故此处置 True 安全。
+                if isinstance(e.get("payload"), dict):
+                    e["payload"]["reuse_dub"] = True
                 e["job"] = JobState(slot=f"queue:{task_id}", label=e["title"], action="run_all")
                 e["status"], e["error"], e["retries"] = "pending", "", 0
                 _ensure_gen_worker_locked()            # 重试前确保 worker 存活
