@@ -20,6 +20,7 @@ import array as _array
 import base64
 import io
 import json
+import socket
 import urllib.error
 import urllib.request
 import wave
@@ -42,7 +43,8 @@ from .dots_local import (
 )
 from .voice_ref import VoiceRef
 
-DEFAULT_TIMEOUT_S = 900   # 单行合成上限（含冷启动加载模型）；云端快，但首行可能在加载模型
+DEFAULT_TIMEOUT_S = 300   # 单行合成上限。正常一行几秒~几十秒；300s 仍很宽裕，但云端卡死时
+                          # 最多 5 分钟即报错，不再干等 15 分钟冻住整条队列。首行含模型加载见下方重试。
 _HEALTH_TIMEOUT_S = 30
 
 
@@ -168,7 +170,16 @@ class DotsRemoteEngine:
                 data = resp.read()
         except urllib.error.HTTPError as exc:
             raise EngineUnavailable(_http_error_hint(exc)) from exc
+        except (TimeoutError, socket.timeout) as exc:
+            raise EngineUnavailable(
+                f"云端 {int(self.timeout)} 秒无响应（{self.endpoint}）。多为服务器卡死/崩溃/正忙——"
+                "请用「查看云端日志.bat」检查，必要时重跑「一键部署到云GPU.bat」重启服务。") from exc
         except Exception as exc:  # noqa: BLE001
+            reason = getattr(exc, "reason", exc)
+            if isinstance(reason, (TimeoutError, socket.timeout)):
+                raise EngineUnavailable(
+                    f"云端 {int(self.timeout)} 秒无响应（{self.endpoint}）。多为服务器卡死/崩溃/正忙——"
+                    "请用「查看云端日志.bat」检查，必要时重跑「一键部署到云GPU.bat」重启。") from exc
             raise EngineUnavailable(f"连接云配音服务器失败：{self.endpoint}（{exc}）。") from exc
         if "application/json" in ctype:  # 服务端把错误当 JSON 返回
             try:
