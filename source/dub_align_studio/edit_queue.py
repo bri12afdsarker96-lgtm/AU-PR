@@ -12,12 +12,17 @@
 from __future__ import annotations
 
 import json
+import os
+import threading
 import time
 import uuid
 from pathlib import Path
 
 TTL_SECONDS = 12 * 3600   # 12 小时无操作自动清（用户 2026-07-26 定：3h→12h）
 
+# ThreadingHTTPServer 下多请求并发（UI 轮询 GET 与成片完成 add 同时到）会 load→改→save 打架，
+# 导致丢条目甚至整列被清空。用一把可重入锁把「读-改-写」串起来，_save 走临时文件+原子替换。
+_LOCK = threading.RLock()
 
 _STORE_OVERRIDE: Path | None = None   # 测试可覆盖，避免污染 ~/.dub_align_studio
 
@@ -45,7 +50,10 @@ def _load(store: Path) -> list[dict]:
 
 def _save(store: Path, items: list[dict]) -> None:
     store.parent.mkdir(parents=True, exist_ok=True)
-    store.write_text(json.dumps({"items": items}, ensure_ascii=False, indent=2), encoding="utf-8")
+    # 原子写：先写同目录临时文件再 os.replace，避免并发读到被截断的半个文件而当成空队列
+    tmp = store.with_suffix(store.suffix + f".tmp{os.getpid()}")
+    tmp.write_text(json.dumps({"items": items}, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, store)
 
 
 def _prune(items: list[dict], now: float, ttl: float) -> list[dict]:
@@ -72,53 +80,60 @@ def add(title: str, film_path: str, output_dir: str,
     还原，保证「按当前样式重烧」与首次一致（用户 2026-07-26 B）。"""
     store = _store_path(store)
     now = time.time() if now is None else float(now)
-    items = _prune(_load(store), now, TTL_SECONDS)
-    film_path = str(film_path)
-    row = next((x for x in items if str(x.get("film_path")) == film_path), None)
-    if row is None:
-        row = {"id": uuid.uuid4().hex[:8], "film_path": film_path, "created": now}
-        items.append(row)
-    row["title"] = str(title or Path(output_dir).name or "成片")
-    row["output_dir"] = str(output_dir)
-    row["canvas"] = list(canvas) if canvas else row.get("canvas") or []
-    if settings is not None:
-        row["settings"] = settings
-    row["last_active"] = now
-    _save(store, items)
-    return row
+    with _LOCK:
+        items = _prune(_load(store), now, TTL_SECONDS)
+        film_path = str(film_path)
+        row = next((x for x in items if str(x.get("film_path")) == film_path), None)
+        if row is None:
+            row = {"id": uuid.uuid4().hex[:8], "film_path": film_path, "created": now}
+            items.append(row)
+        row["title"] = str(title or Path(output_dir).name or "成片")
+        row["output_dir"] = str(output_dir)
+        row["canvas"] = list(canvas) if canvas else row.get("canvas") or []
+        if settings is not None:
+            row["settings"] = settings
+        row["last_active"] = now
+        _save(store, items)
+        return row
 
 
 def list_active(*, store: Path | None = None, now: float | None = None,
                 ttl: float = TTL_SECONDS) -> list[dict]:
-    """返回未过期且成片仍在的队列项（顺带落盘清理），最新活动在前。"""
+    """返回未过期且成片仍在的队列项，最新活动在前。仅当清理确实删掉了东西才落盘，
+    避免把只读的 GET 变成每次写盘（既省磨损，也缩小并发写窗口）。"""
     store = _store_path(store)
     now = time.time() if now is None else float(now)
-    items = _prune(_load(store), now, ttl)
-    _save(store, items)
-    return sorted(items, key=lambda x: float(x.get("last_active") or 0.0), reverse=True)
+    with _LOCK:
+        raw = _load(store)
+        items = _prune(raw, now, ttl)
+        if len(items) != len(raw):
+            _save(store, items)
+        return sorted(items, key=lambda x: float(x.get("last_active") or 0.0), reverse=True)
 
 
 def touch(item_id: str, *, store: Path | None = None, now: float | None = None) -> bool:
-    """刷新某项的最后活动时间（用户点开它编辑时调用 → 重新计 12h）。"""
+    """刷新某项的最后活动时间（用户点开它编辑时调用 → 重新计 12h）。顺带清过期，
+    避免把已过期项写回复活。"""
     store = _store_path(store)
     now = time.time() if now is None else float(now)
-    items = _load(store)
-    hit = False
-    for it in items:
-        if str(it.get("id")) == str(item_id):
-            it["last_active"] = now
-            hit = True
-    if hit:
-        _save(store, items)
-    return hit
+    with _LOCK:
+        items = _prune(_load(store), now, TTL_SECONDS)
+        hit = False
+        for it in items:
+            if str(it.get("id")) == str(item_id):
+                it["last_active"] = now
+                hit = True
+        _save(store, items)   # prune 后总要落盘（清掉过期），无论是否命中
+        return hit
 
 
 def remove(item_id: str, *, store: Path | None = None) -> bool:
     """从队列移除某项（不删成片文件本身，只出队）。"""
     store = _store_path(store)
-    items = _load(store)
-    kept = [it for it in items if str(it.get("id")) != str(item_id)]
-    if len(kept) != len(items):
-        _save(store, kept)
-        return True
-    return False
+    with _LOCK:
+        items = _load(store)
+        kept = [it for it in items if str(it.get("id")) != str(item_id)]
+        if len(kept) != len(items):
+            _save(store, kept)
+            return True
+        return False

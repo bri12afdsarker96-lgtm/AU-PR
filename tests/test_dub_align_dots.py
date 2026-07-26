@@ -290,6 +290,26 @@ class TnStubTests(unittest.TestCase):
         self.assertIs(sys.modules["tn"], fake_tn)
 
 
+class DotsEmptyRefTests(unittest.TestCase):
+    """D#5：参考音频路径为空时不能变成 "." （指向 cwd）；应走引擎自带声线不带 prompt。"""
+
+    def test_empty_reference_wav_not_dot(self):
+        from dub_align_studio.engines.dots_local import DotsLocalEngine
+        captured = {}
+
+        class RT:
+            @classmethod
+            def from_pretrained(cls, *a, **k): return cls()
+            def generate(self, **kw): captured.update(kw); return {"audio": _FakeAudio(), "sample_rate": 48000}
+
+        eng = DotsLocalEngine(checkpoint="x")
+        eng._load_runtime = lambda: RT()          # type: ignore[assignment]
+        eng._save_result = staticmethod(lambda *a, **k: None)
+        v = VoiceRef(voice_id="空参考", reference_wav=Path(""), transcript="", name="空参考")
+        eng._generate("一句", v, Path(tempfile.mkdtemp()) / "m.wav", SynthesisOptions())
+        self.assertNotIn("prompt_audio_path", captured)   # 空参考 → 不传 prompt（不会是 "."）
+
+
 class _LongRefRuntime:
     """模拟 dots.tts：参考音频 patch=870，max_generate_length 需 > 870 才成功。"""
     PATCH = 870

@@ -317,7 +317,9 @@ class DotsLocalEngine:
         if options.normalize_text:
             kwargs["normalize_text"] = True
         ref_key = ""
-        if voice is not None:
+        # 参考路径为空时 str(Path(""))=="." 会指向 cwd → 必须排除；空则走引擎自带声线
+        _ref_raw = str(voice.reference_wav).strip() if voice is not None else ""
+        if _ref_raw and _ref_raw != ".":
             ref_key = Path(voice.reference_wav).as_posix()
             kwargs["prompt_audio_path"] = ref_key
             if voice.transcript.strip():

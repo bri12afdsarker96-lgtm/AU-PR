@@ -78,12 +78,18 @@ class FillOverlay:
     width: int
     height: int
     y: int
-    duration: float
+    duration: float   # 进度扫动分母（=master 时长，片尾 t/duration 到 1）
+    fps: int = 25     # 色块源帧率，须与成片一致，避免 overlay 跨帧率错位
+    src_seconds: float = 0.0   # 色块源时长：须 ≥ 成片时长，否则 shortest=1 会砍掉末帧
 
     def source(self, out_label: str) -> str:
-        """声明色块源（含 alpha），输出到 out_label（如 [pbfill]）。"""
+        """声明色块源（含 alpha），输出到 out_label（如 [pbfill]）。
+
+        源做得比成片略长且同帧率：shortest=1 便按「成片」长度收口（成片才是较短的一路），
+        绝不会因色块源恰好少一帧而把成片末帧砍掉（帧收口断言随即失败）。"""
+        d = max(self.duration, self.src_seconds) + 1.0   # 比成片多 1s 富余
         return (f"color=c={self.color}@{self.opacity:.2f}:s={self.width}x{self.height}:"
-                f"d={self.duration:.3f},format=rgba{out_label}")
+                f"r={int(self.fps)}:d={d:.3f},format=rgba{out_label}")
 
     def overlay_step(self, base_label: str, fill_label: str, out_label: str) -> str:
         """把色块 overlay 到画面：x 随 t 从 -width→0；min(0\\,…) 防 t 略超时越界（片尾锁满）。"""
@@ -98,6 +104,8 @@ def progressbar_layers(
     canvas_width: int,
     canvas_height: int,
     total_seconds: float,
+    fps: int = 25,
+    video_seconds: float = 0.0,
 ) -> tuple[list[str], "FillOverlay", list[str]]:
     """生成进度条三层（自下而上）：
 
@@ -127,6 +135,7 @@ def progressbar_layers(
     fill = FillOverlay(
         color=normalize_color(bar.fill_color), opacity=fill_op,
         width=int(canvas_width), height=strip_h, y=strip_y, duration=dur,
+        fps=int(fps) or 25, src_seconds=max(dur, float(video_seconds or 0.0)),
     )
 
     # ③ 自定义文字（条带内垂直+水平居中；单行不折；叠在填充之上保证可读）
