@@ -58,6 +58,44 @@ _runtime_lock = threading.Lock()
 _mgl_cache: dict[str, int] = {}
 
 
+def _ensure_tn_stub() -> bool:
+    """dots_tts.utils.text 导入时硬性 `from tn.chinese.normalizer import Normalizer`。
+    `tn` 来自 WeTextProcessing（依赖 pynini），我们一贯跳过。真 tn 不在时注入「原样返回」的桩，
+    让 dots.tts 能导入并出声——只跳过数字/符号口语化预处理，不影响克隆音色。与本地引擎同一口径。"""
+    import importlib.util
+    import sys
+    import types
+
+    if "tn" in sys.modules:
+        return True
+    try:
+        if importlib.util.find_spec("tn") is not None:
+            return False  # 真 WeTextProcessing 在，优先用它
+    except (ImportError, ValueError):
+        pass
+
+    class _PassthroughNormalizer:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def normalize(self, text, *args, **kwargs):
+            return text
+
+    modules: dict = {}
+    tn = types.ModuleType("tn")
+    modules["tn"] = tn
+    for lang in ("chinese", "english"):
+        pkg = types.ModuleType(f"tn.{lang}")
+        norm = types.ModuleType(f"tn.{lang}.normalizer")
+        norm.Normalizer = _PassthroughNormalizer
+        pkg.normalizer = norm
+        setattr(tn, lang, pkg)
+        modules[f"tn.{lang}"] = pkg
+        modules[f"tn.{lang}.normalizer"] = norm
+    sys.modules.update(modules)
+    return True
+
+
 # ---- 模型加载（懒加载 + 缓存） ----------------------------------------------
 def _load_runtime():
     global _runtime
@@ -68,6 +106,7 @@ def _load_runtime():
             return _runtime
         import importlib
 
+        _ensure_tn_stub()   # 必须在导入 runtime 前注入 tn 桩（否则 from tn.chinese... 直接 ModuleNotFoundError）
         mod = importlib.import_module(RUNTIME_MODULE)
         cls = getattr(mod, "DotsTtsRuntime", None)
         if cls is None:
