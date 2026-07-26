@@ -206,6 +206,20 @@ class FillerCutTests(unittest.TestCase):
         # 正文起点=样本330（第33窗）；回退 40ms → 290
         self.assertEqual(_onset_cut_index(seq, 1000, 0.6), 290)
 
+    def test_medium_filler_with_long_gap_is_cut(self):
+        from dub_align_studio.engines.dots_local import _onset_cut_index
+        # 2026-07-26 用户实测（chunk_005，书单号_男 慢速）：「嗯」渲染到 0.69s（>0.6s 第一档门限），
+        # 旧逻辑判「不是嗯」→ 泄漏。但其后是 0.37s 长停顿（「嗯。」句号签名）→ 第二档应判为「嗯」并切。
+        seq = [0.0]*20 + [0.5]*690 + [0.0]*370 + [0.6]*400   # 引 0.02 + 嗯 0.69 + 停 0.37 + 正文
+        # 正文起点=样本1080；回退 40ms → 1040
+        self.assertEqual(_onset_cut_index(seq, 1000, 0.6), 1040)
+
+    def test_medium_first_phrase_with_short_gap_not_cut(self):
+        from dub_align_studio.engines.dots_local import _onset_cut_index
+        # 反向护栏：0.69s 的发声 + 仅 0.16s 短停顿（真正文首句形态，非「嗯。」长停顿）→ 不得切。
+        seq = [0.6]*690 + [0.0]*160 + [0.5]*400
+        self.assertEqual(_onset_cut_index(seq, 1000, 0.6), 0)
+
     def test_all_silent_untouched(self):
         from dub_align_studio.engines.dots_local import _onset_cut_index
         self.assertEqual(_onset_cut_index([0.0]*2000, 1000, 0.0), 0)
