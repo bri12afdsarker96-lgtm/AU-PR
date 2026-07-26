@@ -18,8 +18,9 @@ from .subtitles import SubtitleStyle, _filter_path, wrap_subtitle_text
 
 
 # 位置预设 → 垂直位置比例（0=顶 1=底；y = (h-text_h)*ratio）
+# 顶部=0.0：书名/引导带**贴满上沿**（2026-07-26 用户定案，去掉上方留白）。
 POSITION_PRESETS: dict[str, float] = {
-    "顶部": 0.06,
+    "顶部": 0.0,
     "中上": 0.30,
     "中部": 0.48,
     "中下": 0.68,

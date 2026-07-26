@@ -26,7 +26,7 @@ from integrated_workbench.proc import run_silent
 from .audio_mix import AudioMix, build_audio_filtergraph, build_audio_inputs
 from .frames import quantize_to_frames
 from .overlays import OverlayText, overlay_filters
-from .progressbar import ProgressBar, progressbar_filters
+from .progressbar import FillOverlay, ProgressBar, progressbar_layers
 from .subtitles import (
     SubtitleStyle,
     drawtext_filters,
@@ -292,16 +292,22 @@ def render_b(
         else:
             subtitle_note = (subtitle_note + "；" if subtitle_note else "") + "字体缺失，文本框未叠加"
 
-    # 视频进度条（短剧风格）：随播放增长、片尾走满；绘制在字幕/文本框之上（最上层）。
+    # 视频进度条（短剧风格）：随播放丝滑增长、片尾走满；绘制在字幕/文本框之上（最上层）。
+    #   track（底色条带）与 text（文字）是线性滤镜，fill（已播图层）是 overlay，
+    #   由 _overlay_master 拼进 filter_complex：subs/overlays/track → overlay(fill) → text。
+    pb_below: list[str] = []
+    pb_fill: FillOverlay | None = None
+    pb_above: list[str] = []
     if progress_bar is not None:
         pb_font = find_cjk_font()
         if pb_font:
             pb_font = _staged_font(pb_font, work_dir)
-        burn_filters += progressbar_filters(progress_bar, pb_font, work_dir,
-                                            config.width, config.height, master_seconds)
+        pb_below, pb_fill, pb_above = progressbar_layers(
+            progress_bar, pb_font, work_dir, config.width, config.height, master_seconds)
         subtitle_note = (subtitle_note + "；" if subtitle_note else "") + "已加视频进度条"
 
-    _overlay_master(config, silent_full, master_wav, output_path, burn_filters, audio_mix)
+    _overlay_master(config, silent_full, master_wav, output_path, burn_filters, audio_mix,
+                    pb_below=pb_below, pb_fill=pb_fill, pb_above=pb_above)
 
     total_frames = count_video_frames(config, output_path)
     video_seconds = total_frames / config.fps
@@ -350,6 +356,21 @@ def _concat_copy(config: RenderConfig, segments: list[Path], output: Path) -> No
     _run(command, "拼接无声画面")
 
 
+def _build_video_graph(below: list[str], fill: "FillOverlay | None", above: list[str]) -> str:
+    """视频侧 filter_complex：subs/overlays/track → overlay(fill) → text → [vout]。
+
+    fill 为 None 时退化为一条线性链；有 fill 时中间插入 overlay（进度条丝滑填充）。"""
+    if fill is None:
+        return "[0:v]" + (",".join(below) if below else "null") + "[vout]"
+    decls = [
+        fill.source("[pbfill]"),
+        "[0:v]" + (",".join(below) if below else "null") + "[pbbase]",
+        fill.overlay_step("[pbbase]", "[pbfill]", "[pbfilled]"),
+        "[pbfilled]" + (",".join(above) if above else "null") + "[vout]",
+    ]
+    return ";".join(decls)
+
+
 def _overlay_master(
     config: RenderConfig,
     silent_video: Path,
@@ -357,42 +378,55 @@ def _overlay_master(
     output: Path,
     burn_filters: list[str] | None = None,
     audio_mix: AudioMix | None = None,
+    pb_below: list[str] | None = None,
+    pb_fill: "FillOverlay | None" = None,
+    pb_above: list[str] | None = None,
 ) -> None:
-    """叠加整轨配音；给定字幕滤镜时同步烧录（此步才重编码，否则视频流直拷）。
+    """叠加整轨配音；给定字幕/文本框/进度条滤镜时同步烧录（此步才重编码，否则视频流直拷）。
 
-    audio_mix 非空且非平凡时走 filter_complex 混流（master+BGM循环+音效，各自音量）；
-    视频侧的字幕/文本框烧录与之并存（视频链也进 filter_complex 以免与音频链冲突）。"""
+    audio_mix 非空且非平凡时走 filter_complex 混流（master+BGM循环+音效，各自音量）。
+    进度条 fill 是 overlay（需第二个色块源），一旦存在就走 filter_complex；其余
+    字幕/文本框（burn_filters）为线性滤镜，铺在进度条 track 之下、fill 之下。"""
+    burn_filters = burn_filters or []
+    pb_below = pb_below or []
+    pb_above = pb_above or []
     command = [config.ffmpeg, "-y", "-i", str(silent_video), "-i", str(master_wav)]
     mix = audio_mix if (audio_mix is not None and not audio_mix.is_trivial()) else None
+    has_fill = pb_fill is not None
+    below = list(burn_filters) + list(pb_below)   # 铺在 fill 之下：字幕→文本框→进度条底色带
+    venc = [
+        "-c:v", "libx264", "-preset", config.preset, "-crf", str(config.crf),
+        "-pix_fmt", "yuv420p", "-fps_mode", "cfr", "-r", str(config.fps),
+    ]
+    burn_note = "+烧录字幕" if burn_filters else ""
+    pb_note = "+进度条" if has_fill else ""
 
     if mix is None:
-        # 原路径：单轨 master 直接映射
-        if burn_filters:
-            command += [
-                "-filter:v", ",".join(burn_filters),
-                "-c:v", "libx264", "-preset", config.preset, "-crf", str(config.crf),
-                "-pix_fmt", "yuv420p", "-fps_mode", "cfr", "-r", str(config.fps),
-            ]
-        else:
-            command += ["-c:v", "copy"]
-        command += [
-            "-map", "0:v:0", "-map", "1:a:0",
-            "-c:a", "aac", "-b:a", config.audio_bitrate,
-            "-movflags", "+faststart", str(output),
-        ]
-        _run(command, "叠加整轨配音" + ("+烧录字幕" if burn_filters else ""))
+        if not has_fill:
+            # 原快路径：单轨 master 直接映射（有字幕走 -filter:v，无则视频直拷）
+            command += (["-filter:v", ",".join(burn_filters), *venc] if burn_filters
+                        else ["-c:v", "copy"])
+            command += ["-map", "0:v:0", "-map", "1:a:0",
+                        "-c:a", "aac", "-b:a", config.audio_bitrate,
+                        "-movflags", "+faststart", str(output)]
+            _run(command, "叠加整轨配音" + burn_note)
+            return
+        # 有进度条填充：视频走 filter_complex，音频仍直接映射 master
+        command += ["-filter_complex", _build_video_graph(below, pb_fill, pb_above),
+                    "-map", "[vout]", *venc,
+                    "-map", "1:a:0", "-c:a", "aac", "-b:a", config.audio_bitrate,
+                    "-movflags", "+faststart", str(output)]
+        _run(command, "叠加整轨配音" + burn_note + pb_note)
         return
 
     # 混流路径：master 之后追加 BGM/音效输入，音频走 filter_complex
     for extra in build_audio_inputs(mix):
         command += extra
     audio_graph, aout = build_audio_filtergraph(mix, master_input=1)
-    if burn_filters:
-        video_graph = "[0:v]" + ",".join(burn_filters) + "[vout]"
+    if below or has_fill:
+        video_graph = _build_video_graph(below, pb_fill, pb_above)
         command += ["-filter_complex", audio_graph + ";" + video_graph,
-                    "-map", "[vout]",
-                    "-c:v", "libx264", "-preset", config.preset, "-crf", str(config.crf),
-                    "-pix_fmt", "yuv420p", "-fps_mode", "cfr", "-r", str(config.fps)]
+                    "-map", "[vout]", *venc]
     else:
         command += ["-filter_complex", audio_graph, "-map", "0:v:0", "-c:v", "copy"]
     command += [
@@ -405,7 +439,7 @@ def _overlay_master(
         bits.append("BGM")
     if mix.sfx:
         bits.append(f"{len(mix.sfx)}个音效")
-    _run(command, "混流(" + "+".join(bits) + ")" + ("+烧录字幕" if burn_filters else ""))
+    _run(command, "混流(" + "+".join(bits) + ")" + burn_note + pb_note)
 
 
 # ------------------------------------------------------------------ ffmpeg 预检
