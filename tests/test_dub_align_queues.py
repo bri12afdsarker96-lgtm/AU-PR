@@ -109,6 +109,26 @@ class EditQueueTests(unittest.TestCase):
         self.assertTrue(edit_queue.remove(item_id, store=self.store))
         self.assertEqual(edit_queue.list_active(store=self.store, now=1), [])
 
+    def test_concurrent_add_list_no_loss(self):
+        # D#1：ThreadingHTTPServer 下并发 add/list 曾会丢条目/清空整队；加锁+原子写后应 0 丢失
+        import threading
+        films = []
+        for i in range(16):
+            films.append(_touch_file(self.root / f"c{i}" / "成片.mp4"))
+        errs = []
+
+        def work(i):
+            try:
+                for _ in range(12):
+                    edit_queue.add(f"c{i}", films[i], str(Path(films[i]).parent), store=self.store)
+                    edit_queue.list_active(store=self.store)
+            except Exception as e:  # noqa: BLE001
+                errs.append(repr(e))
+        ts = [threading.Thread(target=work, args=(i,)) for i in range(16)]
+        [t.start() for t in ts]; [t.join() for t in ts]
+        self.assertEqual(errs, [])
+        self.assertEqual(len(edit_queue.list_active(store=self.store)), 16)   # 16 条一条不丢
+
     def test_stores_and_returns_settings(self):
         f = self._film("带设置")
         edit_queue.add("带设置", f, str(Path(f).parent),

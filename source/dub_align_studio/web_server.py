@@ -148,6 +148,10 @@ def _start_task(action: str, payload: dict) -> tuple[JobState | None, str]:
                 job.action, job.label = action, label
                 job.log = [f"══ {action} 开始 ══"]
                 job.stage, job.progress = "", 0
+                # 清掉上一次任务的残留，避免串味：例如试听(voice_try)把 result 设成 dict，
+                # 随后「导出剪映草稿」会拿它当 DubBResult 取 .shots 崩；或上一集的 timings 套到
+                # 新输出目录。清空后各 action 走磁盘回读(load_timings/分镜段)，按当前输出目录取。
+                job.timings, job.result, job.cancelled = None, None, False
         else:
             job = JobState(slot=slot, label=label, running=True, action=action,
                            log=[f"══ {label} 开始 ══"])
@@ -174,6 +178,11 @@ def _remember_edit_item(output_dir: Path, canvas: tuple[int, int], payload: dict
             "overlays": payload.get("overlays") or [],
             "audio": payload.get("audio") or {},
             "aspect": payload.get("aspect") or "",
+            # 重烧要按**这条成片原本的分镜来源**重新取画面（flat 模式不复用选片清单），
+            # 否则会套到当前界面里别的一集的画面。故一并存 shots_dir/素材模式/seed。
+            "shots_dir": str(payload.get("shots_dir") or ""),
+            "material_mode": str(payload.get("material_mode") or "flat"),
+            "seed": payload.get("seed"),
         }
         edit_queue.add(str(payload.get("title") or output_dir.name),
                        str(film), str(output_dir), canvas, settings)
@@ -244,11 +253,11 @@ def _gen_worker_loop() -> None:
             with job.lock:
                 job.running, job.done, job.ok = False, True, False
         with GEN_COND:
-            if job.cancelled:
+            if job.ok:
+                entry["status"] = "done"              # 已成功优先：取消若在收尾后到达，不误标已取消
+            elif job.cancelled:
                 entry["status"] = "cancelled"         # 用户取消 → 跳过，不自动重试
                 entry["error"] = "已取消"
-            elif job.ok:
-                entry["status"] = "done"
             elif entry["retries"] < entry["auto_max"]:
                 entry["retries"] += 1                  # 自动重试：重置为待办，worker 稍后再取
                 entry["job"] = JobState(slot=job.slot, label=entry["title"], action="run_all")
@@ -281,6 +290,8 @@ def _gen_queue_set_paused(paused: bool) -> None:
     global GEN_PAUSED
     with GEN_COND:
         GEN_PAUSED = bool(paused)
+        if not GEN_PAUSED:
+            _ensure_gen_worker_locked()                # 继续前确保 worker 存活（万一曾意外退出）
         GEN_COND.notify_all()                          # 继续时唤醒 worker 取下一个
 
 
@@ -308,6 +319,7 @@ def _gen_queue_retry(task_id: str) -> bool:
             if e["id"] == task_id and e["status"] in ("failed", "done", "cancelled"):
                 e["job"] = JobState(slot=f"queue:{task_id}", label=e["title"], action="run_all")
                 e["status"], e["error"], e["retries"] = "pending", "", 0
+                _ensure_gen_worker_locked()            # 重试前确保 worker 存活
                 GEN_COND.notify()
                 return True
     return False
@@ -386,6 +398,7 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
         if action == "run_all":
             from integrated_workbench.semantic_match import parse_script
 
+            JOB.check_cancel()   # 开跑前先看是否已被取消（队列任务）
             shots_dir = Path(str(payload.get("shots_dir") or ""))
             lines = parse_script(text)
             log(f"素材模式：{ {'flat':'平铺顺序','folder_order':'文件夹顺序','keyword':'关键字匹配'}.get(material_mode, material_mode) }")
@@ -415,6 +428,7 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                                            progress=_dub_progress)
                 log(f"  ✅ master {master.seconds:.2f}s（引擎 {master.engine}）")
 
+            JOB.check_cancel()   # 配音后、量时长前的取消检查点
             JOB.set_progress("② 量时长 · 逐行对齐", 78)
             log("② 量时长 · 逐行对齐…")
             timings, notes = pipeline.step_timing(text, master_path, aligner_key, output_dir)
@@ -729,7 +743,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(_gen_queue_snapshot())
             return
         if route == "/api/edit_queue":                  # ⑧ 待编辑队列（顺带清过期）
-            self._json({"items": edit_queue.list_active()})
+            items = edit_queue.list_active()
+            for it in items:                            # 重启后重新放行各成片所在目录，否则预览/试听 403
+                _allow_media_root(str(it.get("output_dir") or ""))
+            self._json({"items": items})
             return
         if route == "/api/audio":
             query = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
@@ -934,14 +951,17 @@ class _Handler(BaseHTTPRequestHandler):
             # 并回带 folder 供前端把「分镜目录/输出目录」默认设为文档所在文件夹。
             src_path = (query.get("path") or "").strip()
             folder = ""
-            if src_path:
-                p = Path(src_path)
-                if not p.is_file():
-                    self._json({"error": f"文件不存在：{p}"}, 400)
-                    return
-                data = p.read_bytes()
-                folder = str(p.parent)
             try:
+                if src_path:
+                    p = Path(src_path)
+                    if not p.is_file():
+                        self._json({"error": f"文件不存在：{p}"}, 400)
+                        return
+                    if p.stat().st_size > _MAX_UPLOAD:
+                        self._json({"error": f"文件过大（>{_MAX_UPLOAD // (1024*1024)}MB）：{p.name}"}, 400)
+                        return
+                    data = p.read_bytes()   # 读盘放进 try：权限/损坏也返回 JSON 而非 500 断连
+                    folder = str(p.parent)
                 if kind == "xlsx":
                     lines = xlsx_reader.read_column(data, query.get("column") or "B")
                 elif kind == "txt":
@@ -1296,8 +1316,8 @@ def _browse(path_text: str, files_ext: str = "") -> dict:
                 dirs.append(child.name)
             elif exts and child.is_file() and child.name.lower().endswith(exts):
                 files.append(child.name)
-    except PermissionError:
-        return {"error": f"无权限访问：{current}", "path": str(current), "dirs": [], "files": []}
+    except OSError as exc:   # 无权限/断链/ELOOP 等都返回 JSON，不要抛成 500 断连
+        return {"error": f"无法访问：{current}（{exc.__class__.__name__}）", "path": str(current), "dirs": [], "files": []}
     parent = str(current.parent) if current.parent != current else ""
     return {"path": str(current), "parent": parent, "dirs": dirs, "files": files, "roots": False}
 

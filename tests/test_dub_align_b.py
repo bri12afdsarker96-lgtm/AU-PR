@@ -15,6 +15,58 @@ from dub_align_studio.render_b import (
 )
 
 
+@unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "需要 ffmpeg/ffprobe")
+class RenderAuditRegressionTests(unittest.TestCase):
+    """复审确认的两处渲染 bug 回归：B#1 水印不能被字幕覆盖丢弃；B#2 进度条整秒 master 不掉末帧。"""
+
+    def _make(self, work, sec, fps):
+        import subprocess
+        m = work / "m.wav"
+        subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono",
+                        "-t", str(sec), str(m)], capture_output=True)
+        vids = []
+        for i in (1, 2):
+            v = work / f"{i}.mp4"
+            subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", f"color=c=0x101010:s=360x640:d={sec/2}",
+                            "-r", str(fps), str(v)], capture_output=True)
+            vids.append(v)
+        return m, vids
+
+    def test_progressbar_framelock_on_exact_second_master(self):
+        from dub_align_studio.progressbar import ProgressBar
+        w = Path(tempfile.mkdtemp()); m, vids = self._make(w, 6.0, 30)   # 6.0s×30fps=180 整帧
+        lines = [timing.LineTiming(index=1, text="甲", duration=3.0),
+                 timing.LineTiming(index=2, text="乙", duration=3.0)]
+        r = render_b(m, lines, vids, w / "成片.mp4", config=RenderConfig(width=360, height=640, fps=30),
+                     progress_bar=ProgressBar(text="看全集", position="顶部"))
+        self.assertTrue(r.frame_locked, "进度条不应因色块源少一帧而砍掉成片末帧")
+        self.assertEqual(r.total_frames, r.expected_frames)
+
+    def test_watermark_survives_subtitles(self):
+        # B#1 根因：字幕分支曾用 = 覆盖 burn_filters 把水印丢了（note 却仍谎报「已加水印」）。
+        # 故不能只看 note——渲染字幕(底部)+水印(四角跳，无进度条)，扫**顶部角**（字幕永不在此），
+        # 若某帧顶部有亮字即证明水印真的进了链；若被丢弃则顶部全黑。
+        import subprocess
+        from dub_align_studio.subtitles import SubtitleStyle
+        from dub_align_studio.watermark import Watermark
+        w = Path(tempfile.mkdtemp()); m, vids = self._make(w, 4.0, 25)
+        out = w / "成片.mp4"
+        lines = [timing.LineTiming(index=1, text="第一句", duration=2.0),
+                 timing.LineTiming(index=2, text="第二句", duration=2.0)]
+        r = render_b(m, lines, vids, out, config=RenderConfig(width=360, height=640, fps=25),
+                     subtitle_style=SubtitleStyle(position="底部"),
+                     watermark=Watermark(text="@水印", seed=1, interval_seconds=1.0, opacity=0.95, margin_px=20))
+        self.assertIn("已加动态水印", r.subtitle_note)
+
+        def top_bright(frame):
+            raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(out), "-vf",
+                                  f"select=eq(n\\,{frame}),crop=360:80:0:0,format=gray", "-frames:v", "1",
+                                  "-f", "rawvideo", "-"], capture_output=True).stdout
+            return sum(1 for b in raw if b > 150)
+        self.assertTrue(any(top_bright(f) > 5 for f in range(0, 100, 7)),
+                        "字幕在底部、顶部本应只有水印；顶部全黑 = 水印被丢弃（B#1 回归）")
+
+
 class FfmpegPreflightTests(unittest.TestCase):
     """3050 实测：配音成功后渲染成片抛裸 FileNotFoundError [WinError 2]。
     根因是本机无 ffmpeg/ffprobe；应给看得懂的中文指引，且不裸抛。"""

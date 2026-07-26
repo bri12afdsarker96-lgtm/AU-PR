@@ -288,7 +288,8 @@ def render_b(
             font = pick_font(subtitle_style.font_name)
             if font:
                 safe_font = _staged_font(font, work_dir)  # 规避 Windows drawtext 坏路径→□□□
-                burn_filters = drawtext_filters(entries, subtitle_style, safe_font, work_dir, config.width)
+                # 必须 +=，不能 =：否则会把已在最底层的动态水印覆盖丢弃（用户实测「水印不显示」根因）
+                burn_filters += drawtext_filters(entries, subtitle_style, safe_font, work_dir, config.width)
                 subtitle_note = f"已烧录字幕（字号 {subtitle_style.font_size_px}px，字体 {font.name}）"
             else:
                 subtitle_note = "字体缺失，未烧字幕（SRT 已导出，可导入剪映）"
@@ -316,7 +317,8 @@ def render_b(
         if pb_font:
             pb_font = _staged_font(pb_font, work_dir)
         pb_below, pb_fill, pb_above = progressbar_layers(
-            progress_bar, pb_font, work_dir, config.width, config.height, master_seconds)
+            progress_bar, pb_font, work_dir, config.width, config.height, master_seconds,
+            fps=config.fps, video_seconds=expected_frames / config.fps)
         subtitle_note = (subtitle_note + "；" if subtitle_note else "") + "已加视频进度条"
 
     if wm_added:

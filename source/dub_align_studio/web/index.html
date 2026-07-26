@@ -1110,6 +1110,10 @@ function selectEditItem(id){
     body:JSON.stringify({action:'touch',id})});   // 点开编辑=续期 12h
   // B 还原该成片生成时的烧录设置 → 「按当前样式重烧」与首次一致
   const s=it.settings||{};
+  // 还原该成片原本的分镜来源，重烧才会套回同一批画面（flat 模式不复用选片清单）
+  if(s.shots_dir&&$('shots'))$('shots').value=s.shots_dir;
+  if(s.material_mode&&$('matMode'))$('matMode').value=s.material_mode;
+  if(s.seed!=null&&$('seed'))$('seed').value=s.seed;
   if(s.sub)applySubObj(s.sub);
   if(s.burn!=null&&$('burn'))$('burn').checked=!!s.burn;
   if(s.pb)applyPbObj(s.pb);
@@ -1505,15 +1509,50 @@ async function pollQueue(){
       <span style="flex:1;min-width:0"><b>${esc(t.title)}</b>${stg}${dir}${err}${stuck}</span>
       <span class="mini" style="flex:none;color:${col}">${lab}${pct}</span>${btns.join('')}</div>`;
   }).join('');
-  // 把正在跑的队列任务镜像到「执行」区，进度/日志照常可见（生成成片已并入队列）
+  // 检测队列任务完成（running/pending → done/failed/cancelled）→ 补齐「执行」区完成态
+  tasks.forEach(t=>{
+    const prev=_prevQ[t.id];
+    if(prev&&prev!==t.status&&['done','failed','cancelled'].includes(t.status))onQueueDone(t);
+    _prevQ[t.id]=t.status;
+  });
+  Object.keys(_prevQ).forEach(id=>{ if(!tasks.some(t=>t.id===id))delete _prevQ[id]; });
+  // 把正在跑的队列任务镜像到「执行」区（main 槽有任务在跑时让位，避免互相盖日志/进度）
   const running=tasks.find(t=>t.status==='running');
-  if(running){
+  if(running&&!window._mainBusy){
     if(running.log&&running.log.length)paint(running.log);
     const wrap=$('progWrap');
     if(wrap){wrap.style.display='block';
       $('progStage').textContent=running.stage||'进行中…';
       $('progPct').textContent=(running.progress||0)+'%';
-      $('progBar').style.width=(running.progress||0)+'%';}
+      $('progBar').style.width=(running.progress||0)+'%';
+      $('progBar').style.background='linear-gradient(90deg,var(--gold-hi),var(--gold))';}
+  }
+}
+const _prevQ={};
+// 队列任务完成：补上「执行」区的成片按钮/master 试听/进度收尾/日志/分段（原先只钉在 main 槽）
+function onQueueDone(t){
+  const out=t.output_dir||'';
+  if(!window._mainBusy){
+    if(t.log&&t.log.length)paint(t.log);            // 镜像终态日志（含「✅ 成片完成」）
+    const wrap=$('progWrap');
+    if(wrap){wrap.style.display='block';
+      $('progStage').textContent=t.status==='done'?'✅ 完成':(t.status==='cancelled'?'⏹ 已取消':'❌ 未通过');
+      $('progPct').textContent=(t.status==='done'?100:(t.progress||0))+'%';
+      $('progBar').style.width=(t.status==='done'?100:(t.progress||0))+'%';
+      $('progBar').style.background=t.status==='done'?'linear-gradient(90deg,var(--gold-hi),var(--gold))':'var(--bad)';}
+  }
+  if(t.status==='done'&&out){
+    const sep=out.includes('\\')?'\\':'/';
+    if($('mediaRow'))$('mediaRow').style.display='flex';
+    const murl='/api/audio?path='+encodeURIComponent(out+sep+'master.wav');
+    if($('masterAudio')&&$('masterAudio').dataset.src!==murl){$('masterAudio').src=murl;$('masterAudio').dataset.src=murl;}
+    const film='/api/audio?path='+encodeURIComponent(out+sep+'成片.mp4');
+    if($('filmBtn')){$('filmBtn').href=film;$('filmBtn').style.display='';}
+    if($('filmBtn2')){$('filmBtn2').href=film;$('filmBtn2').style.display='';}
+    if(typeof loadClones==='function')loadClones();
+    toast('✅ 已完成 · '+esc(t.title)+'（可去「文本框」精修）','ok');
+  }else if(t.status==='failed'){
+    toast('❌ 失败 · '+esc(t.title),'bad');
   }
 }
 async function pauseResumeQueue(){
@@ -1551,6 +1590,7 @@ const _prevRun={};
 async function pollAll(){
   let s;try{s=await (await fetch('/api/jobs')).json();}catch(e){return;}
   const main=s.jobs.find(j=>j.id==='main');
+  window._mainBusy=!!(main&&main.running);   // main 槽在跑时，队列镜像让位，避免抢「执行」区
   if(main&&main.log&&main.log.length&&(main.running||main.done)){
     paint(main.log);
     if(main.timings&&main.timings.length)renderLane(main.timings);
