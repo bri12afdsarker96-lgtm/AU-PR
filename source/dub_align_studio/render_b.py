@@ -211,6 +211,7 @@ def render_b(
     有台词的行始终导出 .srt（剪映可直接导入）。
     """
     config = config or RenderConfig()
+    _require_binaries(config)
     master_wav = Path(master_wav)
     output_path = Path(output_path)
     if len(lines) != len(videos):
@@ -407,16 +408,45 @@ def _overlay_master(
     _run(command, "混流(" + "+".join(bits) + ")" + ("+烧录字幕" if burn_filters else ""))
 
 
+# ------------------------------------------------------------------ ffmpeg 预检
+_FFMPEG_HINT = (
+    "未找到 {miss}：渲染成片需要 ffmpeg（配音克隆不需要，所以前面几步能过）。\n"
+    "请把 ffmpeg.exe、ffprobe.exe 放到软件目录（「启动.bat」旁边）或加入系统 PATH，再重试。\n"
+    "下载：https://www.gyan.dev/ffmpeg/builds/ 里的 ffmpeg-release-essentials.zip，"
+    "解压后 bin 目录内的 ffmpeg.exe / ffprobe.exe 两个文件拷过去即可。"
+)
+
+
+def _require_binaries(config: "RenderConfig") -> None:
+    """渲染前预检 ffmpeg/ffprobe；缺失时给看得懂的中文指引，而非裸 WinError 2。"""
+    missing = [name for name, exe in (("ffmpeg", config.ffmpeg), ("ffprobe", config.ffprobe))
+               if shutil.which(exe) is None]
+    if missing:
+        raise RuntimeError(_FFMPEG_HINT.format(miss=" 与 ".join(missing)))
+
+
+def _guard_missing(exc: FileNotFoundError, command: list[str]) -> RuntimeError:
+    """把子进程「找不到可执行文件」(WinError 2) 翻译成 ffmpeg 缺失指引。"""
+    exe = command[0] if command else "ffmpeg"
+    return RuntimeError(_FFMPEG_HINT.format(miss=Path(exe).name))
+
+
 # ------------------------------------------------------------------ 子进程
 def _run(command: list[str], label: str) -> None:
-    completed = run_silent(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    try:
+        completed = run_silent(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    except FileNotFoundError as exc:
+        raise _guard_missing(exc, command) from exc
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "").strip()[-2000:]
         raise RuntimeError(f"{label}失败：{detail or '未知错误'}")
 
 
 def _run_out(command: list[str], label: str, allow_empty: bool = False) -> str:
-    completed = run_silent(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    try:
+        completed = run_silent(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    except FileNotFoundError as exc:
+        raise _guard_missing(exc, command) from exc
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "").strip()[-2000:]
         raise RuntimeError(f"{label}失败：{detail or '未知错误'}")

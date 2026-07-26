@@ -27,8 +27,17 @@ def main() -> int:
     multiprocessing.freeze_support()  # Windows 冻结环境守则
 
     app_dir = _app_dir()
-    # exe 同目录优先进 PATH：用户把 ffmpeg.exe 放旁边即可用（轻量安装纪律）
-    os.environ["PATH"] = str(app_dir) + os.pathsep + os.environ.get("PATH", "")
+    # 让「放 ffmpeg.exe 旁边即可用」在两种启动方式下都成立（轻量安装纪律）：
+    #   - 冻结 exe：app_dir 就是 exe 目录；
+    #   - 整合离线包：启动.bat 跑 source\dub_align_studio\launcher.py，app_dir 是深层包目录，
+    #     真正让人放 ffmpeg 的是「启动.bat 旁」= 包根目录（parents[2]），也一并进 PATH。
+    extra_dirs = [app_dir]
+    if not getattr(sys, "frozen", False):
+        pkg_root = Path(__file__).resolve().parents[2]  # …\<整合包>\source\dub_align_studio → 包根
+        extra_dirs.append(pkg_root)
+        extra_dirs.append(pkg_root / "bin")             # 也支持放进 bin\ 子目录
+    prefix = os.pathsep.join(str(d) for d in extra_dirs if d)
+    os.environ["PATH"] = prefix + os.pathsep + os.environ.get("PATH", "")
 
     try:
         from dub_align_studio import syspy

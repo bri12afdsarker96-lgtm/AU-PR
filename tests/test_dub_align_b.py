@@ -6,7 +6,38 @@ import unittest
 from pathlib import Path
 
 from dub_align_studio import frames, timing
-from dub_align_studio.render_b import _staged_font, shot_video_filter
+from dub_align_studio.render_b import (
+    RenderConfig,
+    _require_binaries,
+    _staged_font,
+    render_b,
+    shot_video_filter,
+)
+
+
+class FfmpegPreflightTests(unittest.TestCase):
+    """3050 实测：配音成功后渲染成片抛裸 FileNotFoundError [WinError 2]。
+    根因是本机无 ffmpeg/ffprobe；应给看得懂的中文指引，且不裸抛。"""
+
+    _MISSING = RenderConfig(ffmpeg="ffmpeg_no_such_bin_xyz", ffprobe="ffprobe_no_such_bin_xyz")
+
+    def test_preflight_names_missing_binaries(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            _require_binaries(self._MISSING)
+        msg = str(ctx.exception)
+        self.assertIn("ffmpeg", msg)
+        self.assertIn("ffprobe", msg)
+        self.assertNotIn("WinError", msg)
+
+    def test_render_b_fails_friendly_before_touching_files(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            render_b(
+                master_wav="x.wav", lines=[timing.LineTiming(index=1, text="a", duration=1.0)],
+                videos=["v.mp4"], output_path="o.mp4", config=self._MISSING,
+            )
+        self.assertIn("ffmpeg", str(ctx.exception))
+        # 不能是裸 FileNotFoundError 冒泡
+        self.assertNotIsInstance(ctx.exception, FileNotFoundError)
 
 
 class StagedFontTests(unittest.TestCase):
