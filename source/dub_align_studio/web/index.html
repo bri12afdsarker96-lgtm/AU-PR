@@ -1767,15 +1767,22 @@ async function updateShotsCount(){
   if(!dir){ el.textContent=lines?`文案 ${lines} 行 · 请选择分镜目录`:''; el.style.color='var(--faint)'; return; }
   let vids=0,subs=0;
   try{
-    const s=await (await fetch('/api/browse?files=mp4,mov,mkv,webm&path='+encodeURIComponent(dir))).json();
-    vids=(s.files||[]).length; subs=(s.dirs||[]).length;
+    const s=await (await fetch('/api/browse?files=mp4,mov,mkv,avi,webm&path='+encodeURIComponent(dir))).json();
+    // 排除上一轮生成的成片（输出目录默认=分镜目录），别把它算成一个分镜
+    vids=(s.files||[]).filter(n=>n!=='成片.mp4').length; subs=(s.dirs||[]).length;
   }catch(e){ el.textContent=''; return; }
   const mode=$('matMode')?$('matMode').value:'flat';
-  const avail = mode==='flat' ? vids : Math.max(vids,subs);   // 平铺看视频数；文件夹/关键字看子夹数
-  const unit = mode==='flat' ? `${vids} 个视频` : `${vids} 个视频 / ${subs} 个子夹`;
-  const ok = avail>=lines && lines>0;
-  el.textContent=`文案 ${lines} 行 · 分镜 ${unit}` + (lines? (ok?' ✓ 数量匹配':(avail<lines?` ⚠ 分镜不足（缺 ${lines-avail} 个，会在渲染前报错）`:'')) : '');
-  el.style.color = lines&&!ok ? 'var(--bad)' : 'var(--faint)';
+  if(mode==='flat'){
+    const ok = vids>=lines && lines>0;
+    el.textContent=`文案 ${lines} 行 · 分镜 ${vids} 个视频` + (lines? (ok?' ✓ 数量匹配':(vids<lines?` ⚠ 分镜不足（缺 ${lines-vids} 个，会在渲染前报错）`:'')) : '');
+    el.style.color = lines&&!ok ? 'var(--bad)' : 'var(--faint)';
+  }else{
+    // 文件夹顺序/关键字：子夹循环复用，只要有 1 个子夹就够，不按行数报「不足」
+    const ok = subs>=1 && lines>0;
+    const tail = !lines ? '' : (ok ? (subs<lines?' ✓ 子夹循环复用':' ✓ 数量匹配') : ' ⚠ 该模式需要按内容分好的子文件夹');
+    el.textContent=`文案 ${lines} 行 · 分镜 ${subs} 个子夹`+tail;
+    el.style.color = lines&&!ok ? 'var(--bad)' : 'var(--faint)';
+  }
 }
 function _joinPath(base,name){ return base.replace(/[\\/]+$/,'')+((base.includes('\\')||name.includes(':'))?'\\':'/')+name; }
 async function pickDir(targetId){

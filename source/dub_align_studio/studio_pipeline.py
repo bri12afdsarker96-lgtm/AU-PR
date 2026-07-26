@@ -119,11 +119,17 @@ def make_engine(key: str) -> DubEngine:
 
 
 def list_shot_videos(directory: Path) -> list[Path]:
-    """分镜目录里按文件名自然序收视频（数字名优先按数值排）。"""
+    """分镜目录里按文件名自然序收视频（数字名优先按数值排）。
+
+    排除本工具生成的 成片.mp4：输出目录默认就是分镜目录（① 需求），上一轮渲染的
+    成片会留在目录里，若不剔除会被当成一个分镜——轻则虚增计数掩盖缺片，重则把整段
+    旧成片选成某一行的画面。
+    """
     directory = Path(directory)
     if not directory.is_dir():
         raise FileNotFoundError(f"分镜目录不存在：{directory}")
-    videos = [p for p in directory.iterdir() if p.suffix.lower() in VIDEO_EXTENSIONS]
+    videos = [p for p in directory.iterdir()
+              if p.suffix.lower() in VIDEO_EXTENSIONS and p.name != FILM_NAME]
 
     def sort_key(path: Path):
         stem = path.stem

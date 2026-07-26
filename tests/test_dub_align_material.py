@@ -109,6 +109,32 @@ class SelectTests(unittest.TestCase):
             shutil.rmtree(out, ignore_errors=True)
 
 
+class FlatShotListTests(unittest.TestCase):
+    """flat 模式（输出目录默认=分镜目录）：上一轮生成的 成片.mp4 不能被当成一个分镜。"""
+
+    def setUp(self):
+        self.work = Path(tempfile.mkdtemp(prefix="flat_"))
+
+    def tearDown(self):
+        shutil.rmtree(self.work, ignore_errors=True)
+
+    def test_generated_film_excluded_from_shot_list(self):
+        for i in (1, 2, 3):
+            (self.work / f"{i}.mp4").write_bytes(b"x")
+        (self.work / pipeline.FILM_NAME).write_bytes(b"film")   # 上一轮渲染留下的成片
+        vids = pipeline.list_shot_videos(self.work)
+        self.assertEqual([p.name for p in vids], ["1.mp4", "2.mp4", "3.mp4"])
+        self.assertNotIn(pipeline.FILM_NAME, [p.name for p in vids])
+
+    def test_missing_shot_not_masked_by_film(self):
+        # 只有 1.mp4、2.mp4 两个真分镜，外加成片；3 行文案应报「不足」而非把成片选给第 3 行
+        (self.work / "1.mp4").write_bytes(b"x")
+        (self.work / "2.mp4").write_bytes(b"x")
+        (self.work / pipeline.FILM_NAME).write_bytes(b"film")
+        with self.assertRaises(ValueError):
+            pipeline.select_shot_videos(self.work, ["甲", "乙", "丙"], "flat", 42, self.work)
+
+
 class UiContractTests(unittest.TestCase):
     def test_material_mode_wired(self):
         from dub_align_studio import web_server
