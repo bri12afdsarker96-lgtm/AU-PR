@@ -331,7 +331,7 @@ footer b{color:var(--muted);font-weight:600}
       </div>
       <div class="row" style="gap:22px;flex-wrap:wrap">
         <label class="row mini" style="gap:7px"><input type="checkbox" id="burn" checked>烧录字幕</label>
-        <span class="mini" style="color:var(--faint)">字幕位置/字号/字体 → 在「文本框」页设置并实时预览</span>
+        <span class="mini" style="color:var(--faint)">字幕位置/字号/字体/进度条 → 下方「烧录列表」设置</span>
         <span class="row mini" style="gap:7px">Seed <input type="number" id="seed" value="42" style="width:92px"></span>
         <span class="mini" style="color:var(--faint)">剪映草稿导出 → 成片后在「文本框」页校对完成时一并导出</span>
       </div>
@@ -347,7 +347,10 @@ footer b{color:var(--muted);font-weight:600}
 
     <div class="card">
       <h2>执行</h2>
-      <button class="btn gold big" onclick="run('run_all')">▶&nbsp;&nbsp;生 成 成 片</button>
+      <div class="row" style="gap:10px;align-items:stretch">
+        <button class="btn gold big" style="flex:1;margin:0" onclick="run('run_all')">▶&nbsp;&nbsp;生 成 成 片</button>
+        <button class="btn line" style="flex:none;padding:0 16px;white-space:nowrap" onclick="enqueueTask()" title="把当前整份配置冻结成一个任务加入队列，后台顺序克隆；之后可继续改设置提交下一个，互不影响">＋ 加入队列</button>
+      </div>
       <label class="row mini" style="gap:7px;margin-top:8px;cursor:pointer;color:var(--faint)">
         <input type="checkbox" id="reuseDub">
         <span>复用已有配音（改<b>音量 / BGM / 字幕 / 进度条</b>后再点「生成成片」，<b>跳过克隆</b>只重渲染，秒出）</span></label>
@@ -380,6 +383,75 @@ footer b{color:var(--muted);font-weight:600}
       </div>
     </div>
   </div>
+
+  <!-- 烧录列表（④⑥）：字幕样式 + 视频进度条，点「生成成片」时套用；不加字幕样式则用默认 -->
+  <div class="card" style="margin-top:16px">
+    <h2>烧录列表 · 生成成片时套用</h2>
+    <p class="mini" style="color:var(--faint);margin:-4px 0 12px">「生成成片」时按这里的样式一次烧入。<b>不设字幕样式则用默认：思源黑体 · 描边 6px</b>。到「文本框」页可对已生成的成片二次精修文字层并重烧。</p>
+
+    <!-- 字幕样式 -->
+    <div class="row sp" style="gap:20px;flex-wrap:wrap;align-items:flex-end">
+      <div style="flex:none;min-width:150px"><span class="f">字幕位置</span><select id="subPos" onchange="syncPv()"></select></div>
+      <div style="flex:none"><span class="f">字幕字号 <span class="val" id="subSizeV" style="padding:2px 8px">64</span></span>
+        <input type="range" id="subsize" min="32" max="140" step="4" value="64" style="width:150px" oninput="syncPv()"></div>
+      <div style="flex:none;min-width:170px"><span class="f">字幕字体（在「字体库」页下载或自备）</span>
+        <select id="subFont" onchange="syncPv()"></select></div>
+      <div style="flex:none"><span class="f">字幕颜色</span>
+        <div class="row" id="subSwatches">
+          <div class="sw on" data-c="#FFFFFF" style="background:#FFFFFF"></div>
+          <div class="sw" data-c="#FFE14D" style="background:#FFE14D"></div>
+          <div class="sw" data-c="#E4B963" style="background:#E4B963"></div>
+          <div class="sw" data-c="#FF5A4D" style="background:#FF5A4D"></div>
+          <div class="sw" data-c="#111111" style="background:#111"></div>
+          <span id="subMyColors" style="display:contents"></span>
+          <input type="text" id="subColor" value="#FFFFFF" style="width:104px;flex:none" oninput="syncPv(true)">
+        </div></div>
+      <div style="flex:none"><span class="f">描边</span>
+        <div class="row" style="gap:8px"><input type="number" id="subBorder" value="6" min="0" max="20" style="width:74px" oninput="syncPv()">
+        <span class="mini" style="color:var(--faint)">像素 · 0=无</span></div></div>
+    </div>
+
+    <!-- 视频进度条 -->
+    <div style="border-top:1px solid var(--line);margin-top:14px;padding-top:14px">
+      <h2 style="font-size:15px">视频进度条 <label class="mini" style="float:right;font-weight:400;cursor:pointer"><input type="checkbox" id="pbEnable"> 启用</label></h2>
+      <p class="mini" style="color:var(--faint);margin:-4px 0 12px">
+        底色条带 + 半透明进度图层<b>随播放丝滑从左往右</b>（片尾正好走满）；<b>文字在进度条内</b>显示（可用「 | 」分段）。顶部时贴满上沿。</p>
+      <div class="sp"><span class="f">进度条文字（自定义内容）</span>
+        <input type="text" id="pbText" placeholder="例：全文在哪里看？ | 完整版《负面天道》 | 追更不迷路" style="width:100%"></div>
+      <div class="row sp" style="gap:20px;flex-wrap:wrap;align-items:flex-end">
+        <div style="flex:none"><span class="f">位置</span>
+          <select id="pbPos" style="width:120px"><option value="顶部">顶部</option><option value="底部">底部</option></select></div>
+        <div style="flex:none"><span class="f">字号</span>
+          <input type="number" id="pbSize" value="40" min="20" max="120" style="width:82px"></div>
+        <div style="flex:none"><span class="f">条带高（0=自动）</span>
+          <input type="number" id="pbStripH" value="0" min="0" max="400" style="width:82px" title="0=按字号自动"></div>
+        <div style="flex:none"><span class="f">条带底色</span>
+          <div class="row" style="gap:6px">
+            <input type="color" id="pbTrack" value="#000000" style="width:44px;height:30px;padding:2px;flex:none" oninput="$('pbTrackHex').value=this.value">
+            <input type="text" id="pbTrackHex" value="#000000" style="width:88px" oninput="if(/^#[0-9a-fA-F]{6}$/.test(this.value))$('pbTrack').value=this.value"></div></div>
+        <div style="flex:none"><span class="f">条带透明 <span class="val" id="pbTrackOpV" style="padding:1px 6px">0.45</span></span>
+          <input type="range" id="pbTrackOp" min="0" max="1" step="0.05" value="0.45" style="width:120px" oninput="$('pbTrackOpV').textContent=(+this.value).toFixed(2)"></div>
+        <div style="flex:none"><span class="f">进度条颜色</span>
+          <div class="row" style="gap:6px">
+            <input type="color" id="pbFill" value="#FFC24B" style="width:44px;height:30px;padding:2px;flex:none" oninput="$('pbFillHex').value=this.value">
+            <input type="text" id="pbFillHex" value="#FFC24B" style="width:88px" oninput="if(/^#[0-9a-fA-F]{6}$/.test(this.value))$('pbFill').value=this.value"></div></div>
+        <div style="flex:none"><span class="f">进度透明 <span class="val" id="pbFillOpV" style="padding:1px 6px">0.38</span></span>
+          <input type="range" id="pbFillOp" min="0" max="1" step="0.05" value="0.38" style="width:120px" oninput="$('pbFillOpV').textContent=(+this.value).toFixed(2)"></div>
+        <div style="flex:none"><span class="f">文字颜色</span>
+          <div class="row" style="gap:6px">
+            <input type="color" id="pbColor" value="#FFFFFF" style="width:44px;height:30px;padding:2px;flex:none" oninput="$('pbColorHex').value=this.value">
+            <input type="text" id="pbColorHex" value="#FFFFFF" style="width:88px" oninput="if(/^#[0-9a-fA-F]{6}$/.test(this.value))$('pbColor').value=this.value"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 生成任务队列（⑨ 串行后台）：加入队列后台顺序克隆，可继续提交下一个，互不影响 -->
+  <div class="card" id="genQueueCard" style="margin-top:16px;display:none">
+    <h2>生成任务队列 · 后台顺序克隆
+      <button class="btn" style="float:right;padding:6px 12px;font-weight:400" onclick="clearQueueDone()">清除已完成</button></h2>
+    <p class="mini" style="color:var(--faint);margin:-4px 0 12px">点「＋加入队列」把当前配置<b>整份冻结</b>成一个任务；队列在后台一个个克隆，期间你可照常改设置、提交下一个、或去「文本框」精修别的成片——<b>已入队任务参数不受影响</b>。完成的成片自动进「文本框」页的待编辑队列。</p>
+    <div id="genQueueList" class="vlist"></div>
+  </div>
 </section>
 
 <!-- ════ 文本框 ════ -->
@@ -391,12 +463,26 @@ footer b{color:var(--muted);font-weight:600}
 
   <div class="g3ov">
     <div class="card">
-      <h2>实时预览</h2>
+      <h2>实时预览 <span class="mini" style="float:right;font-weight:400;color:var(--faint)">真视频 · 可播放/拖动</span></h2>
       <div class="phone" id="phone">
+        <video id="pvVideo" playsinline preload="metadata"
+               style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#000;display:none"></video>
         <div class="scan" style="top:33%"></div><div class="scan" style="top:66%"></div>
         <div class="hud"><i></i><i></i><i></i></div>
+        <!-- 预览进度条（跟随视频时间，位置/颜色随烧录列表设置） -->
+        <div id="pvBar" style="display:none;position:absolute;left:0;right:0;height:26px;overflow:hidden;pointer-events:none">
+          <div id="pvBarFill" style="position:absolute;left:0;top:0;bottom:0;width:0%"></div>
+          <div id="pvBarText" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:700;white-space:nowrap"></div>
+        </div>
+      </div>
+      <div class="row" id="pvTransport" style="margin-top:10px;gap:10px;display:none">
+        <button class="btn gold" id="pvPlay" style="padding:6px 12px;flex:none" onclick="pvToggle()">▶</button>
+        <span class="val" id="pvCur" style="flex:none;font-variant-numeric:tabular-nums">0:00</span>
+        <input type="range" id="pvSeek" min="0" max="1000" value="0" style="flex:1" oninput="pvScrub()">
+        <span class="val" id="pvDur" style="flex:none;font-variant-numeric:tabular-nums">0:00</span>
       </div>
       <p style="text-align:center;font-size:10.5px;color:var(--faint);letter-spacing:2px;margin-top:10px" id="pvInfo">实时预览</p>
+      <p id="pvNoVideo" class="mini" style="text-align:center;color:var(--faint);margin-top:4px">还没有可预览的成片 —— 在右侧「待编辑队列」点一条载入，或先在「一键成片」生成。</p>
       <div class="row" style="margin-top:8px">
         <span class="mini" style="flex:none">预览大小</span>
         <input type="range" id="pvScale" min="40" max="100" step="2" value="70" style="flex:1 1 120px" oninput="syncPv()">
@@ -449,69 +535,21 @@ footer b{color:var(--muted);font-weight:600}
       </div>
     </div>
 
-    <!-- 右列：字幕样式 + 已添加（窄列堆叠） -->
+    <!-- 右列：待编辑队列 + 已添加（窄列堆叠） -->
     <div>
       <div class="card" style="margin-bottom:16px">
-        <h2>字幕样式（烧录时生效）</h2>
-        <div class="sp"><span class="f">字幕位置</span><select id="subPos" onchange="syncPv()"></select></div>
-        <div class="sp"><span class="f">字幕字号 <span class="val" id="subSizeV" style="padding:2px 8px">64</span></span>
-          <input type="range" id="subsize" min="32" max="140" step="4" value="64" oninput="syncPv()"></div>
-        <div class="sp"><span class="f">字幕字体（在「字体库」页下载或自备）</span>
-          <select id="subFont" onchange="syncPv()"></select></div>
-        <div class="sp"><span class="f">字幕颜色</span>
-          <div class="row" id="subSwatches">
-            <div class="sw on" data-c="#FFFFFF" style="background:#FFFFFF"></div>
-            <div class="sw" data-c="#FFE14D" style="background:#FFE14D"></div>
-            <div class="sw" data-c="#E4B963" style="background:#E4B963"></div>
-            <div class="sw" data-c="#FF5A4D" style="background:#FF5A4D"></div>
-            <div class="sw" data-c="#111111" style="background:#111"></div>
-            <span id="subMyColors" style="display:contents"></span>
-            <input type="text" id="subColor" value="#FFFFFF" style="width:104px;flex:none" oninput="syncPv(true)">
-          </div></div>
-        <div class="row sp" style="gap:10px"><span class="f" style="margin:0;flex:none">描边</span>
-          <input type="number" id="subBorder" value="3" min="0" max="20" style="width:74px" oninput="syncPv()">
-          <span class="mini" style="color:var(--faint)">像素 · 0 = 无描边</span></div>
+        <h2>待编辑队列 <span class="badge" id="eqN">0</span>
+          <button class="btn" style="float:right;padding:6px 10px;font-weight:400" onclick="loadEditQueue()">↻</button></h2>
+        <p class="mini" style="color:var(--faint);margin:-4px 0 10px">一键成片烧完字幕的成片自动进这里，<b>12 小时</b>无操作自动移除。点一条即载入下方预览与编辑，重烧只影响它。</p>
+        <div id="eqList" class="vlist"></div>
       </div>
       <div class="card">
-        <h2>已添加 <span class="badge" id="ovN">0</span></h2>
+        <h2>已添加文本框 <span class="badge" id="ovN">0</span></h2>
         <table><thead><tr><th>文本</th><th>位置</th><th>字号</th><th>颜色</th><th></th></tr></thead>
           <tbody id="ovList"></tbody></table>
-        <p style="font-size:11px;color:var(--faint);margin-top:12px;letter-spacing:.5px">渲染「③ / 生成成片」时全部烧入。</p>
+        <p style="font-size:11px;color:var(--faint);margin-top:12px;letter-spacing:.5px">重烧成片时全部烧入（字幕样式在「一键成片」页的烧录列表设置）。</p>
       </div>
 
-    </div>
-  </div>
-
-  <!-- 视频进度条（满宽一行：控件横向铺开，不再挤在窄列）-->
-  <div class="card" style="margin-top:16px">
-    <h2>视频进度条 <label class="mini" style="float:right;font-weight:400;cursor:pointer"><input type="checkbox" id="pbEnable"> 启用</label></h2>
-    <p class="mini" style="color:var(--faint);margin:-4px 0 12px">
-      原理：先铺一层<b>底色条带</b>，再叠一层<b>半透明进度图层从左往右扫</b>（片尾正好扫满）；<b>自定义文字在进度条内</b>显示（可用「 | 」分段）。生成成片 / 重烧成片时烧入。<b>进度条在最上层</b>：若和「文本框」都放顶部、字号又大可能相叠，把文本框改到「中上/中部」即可错开。</p>
-    <div class="sp"><span class="f">进度条文字（自定义内容）</span>
-      <input type="text" id="pbText" placeholder="例：全文在哪里看？ | 完整版《负面天道》 | 追更不迷路" style="width:100%"></div>
-    <div class="row sp" style="gap:20px;flex-wrap:wrap;align-items:flex-end">
-      <div style="flex:none"><span class="f">位置</span>
-        <select id="pbPos" style="width:120px"><option value="顶部">顶部</option><option value="底部">底部</option></select></div>
-      <div style="flex:none"><span class="f">字号</span>
-        <input type="number" id="pbSize" value="40" min="20" max="120" style="width:82px"></div>
-      <div style="flex:none"><span class="f">条带高（0=自动）</span>
-        <input type="number" id="pbStripH" value="0" min="0" max="400" style="width:82px" title="0=按字号自动"></div>
-      <div style="flex:none"><span class="f">条带底色</span>
-        <div class="row" style="gap:6px">
-          <input type="color" id="pbTrack" value="#000000" style="width:44px;height:30px;padding:2px;flex:none" oninput="$('pbTrackHex').value=this.value" title="点击选底色">
-          <input type="text" id="pbTrackHex" value="#000000" style="width:88px" oninput="if(/^#[0-9a-fA-F]{6}$/.test(this.value))$('pbTrack').value=this.value" title="或直接填十六进制色值"></div></div>
-      <div style="flex:none"><span class="f">条带透明 <span class="val" id="pbTrackOpV" style="padding:1px 6px">0.45</span></span>
-        <input type="range" id="pbTrackOp" min="0" max="1" step="0.05" value="0.45" style="width:120px" oninput="$('pbTrackOpV').textContent=(+this.value).toFixed(2)"></div>
-      <div style="flex:none"><span class="f">进度条颜色</span>
-        <div class="row" style="gap:6px">
-          <input type="color" id="pbFill" value="#FFC24B" style="width:44px;height:30px;padding:2px;flex:none" oninput="$('pbFillHex').value=this.value" title="点击选进度色">
-          <input type="text" id="pbFillHex" value="#FFC24B" style="width:88px" oninput="if(/^#[0-9a-fA-F]{6}$/.test(this.value))$('pbFill').value=this.value" title="或直接填十六进制色值"></div></div>
-      <div style="flex:none"><span class="f">进度透明 <span class="val" id="pbFillOpV" style="padding:1px 6px">0.38</span></span>
-        <input type="range" id="pbFillOp" min="0" max="1" step="0.05" value="0.38" style="width:120px" oninput="$('pbFillOpV').textContent=(+this.value).toFixed(2)"></div>
-      <div style="flex:none"><span class="f">文字颜色</span>
-        <div class="row" style="gap:6px">
-          <input type="color" id="pbColor" value="#FFFFFF" style="width:44px;height:30px;padding:2px;flex:none" oninput="$('pbColorHex').value=this.value" title="点击选文字色">
-          <input type="text" id="pbColorHex" value="#FFFFFF" style="width:88px" oninput="if(/^#[0-9a-fA-F]{6}$/.test(this.value))$('pbColor').value=this.value" title="或直接填十六进制色值"></div></div>
     </div>
   </div>
 
@@ -816,6 +854,7 @@ const still=matchMedia('(prefers-reduced-motion: reduce)').matches;
 function showPage(p){
   document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('on',x.dataset.p===p));
   document.querySelectorAll('main section').forEach(s=>s.classList.toggle('on',s.id===p));
+  if(p==='p2'&&typeof loadEditQueue==='function')loadEditQueue();  // 进文本框刷新待编辑队列
 }
 $('nav').addEventListener('click',e=>{const b=e.target.closest('button');if(b){showPage(b.dataset.p);syncPv();}});
 window.addEventListener('resize',()=>syncPv());
@@ -955,6 +994,82 @@ async function stopComponent(key){
   setTimeout(()=>{pollAll();loadComponents();},800);
 }
 
+/* ── ⑧ 待编辑队列 + ⑦ 真视频预览 ── */
+let _curEdit=null;
+async function loadEditQueue(){
+  let items;try{items=(await (await fetch('/api/edit_queue')).json()).items||[];}catch(e){return;}
+  const list=$('eqList');if(!list)return;
+  if($('eqN'))$('eqN').textContent=items.length;
+  if(!items.length){list.innerHTML='<p class="empty" style="color:var(--faint);font-size:12px;padding:6px 2px">还没有成片进队列 —— 先在「一键成片」生成。</p>';return;}
+  list.innerHTML=items.map(it=>{
+    const cw=(it.canvas&&it.canvas[0])||1080, ch=(it.canvas&&it.canvas[1])||1920;
+    const sel=(it.id===_curEdit)?' style="border-color:var(--gold);box-shadow:0 0 0 1px var(--gold);cursor:pointer"':' style="cursor:pointer"';
+    return `<div class="row" data-id="${it.id}"${sel} onclick="selectEditItem('${it.id}','${encodeURIComponent(it.film_path)}','${encodeURIComponent(it.output_dir)}',${cw},${ch},'${esc(it.title)}')">
+      <span style="flex:1;min-width:0"><b>${esc(it.title)}</b><div class="mini" style="color:var(--faint)">已烧字幕 · 点此载入编辑</div></span>
+      <button class="btn" style="padding:4px 10px;flex:none" onclick="event.stopPropagation();removeEditItem('${it.id}')">移除</button></div>`;
+  }).join('');
+}
+async function removeEditItem(id){
+  await fetch('/api/edit_queue',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({action:'remove',id})});
+  if(_curEdit===id)_curEdit=null;
+  loadEditQueue();
+}
+function selectEditItem(id,filmEnc,outEnc,cw,ch,title){
+  _curEdit=id;
+  const film=decodeURIComponent(filmEnc), out=decodeURIComponent(outEnc);
+  if($('outdir'))$('outdir').value=out;          // 重烧/导出作用到这条成片
+  fetch('/api/edit_queue',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({action:'touch',id})});   // 点开编辑=续期 12h
+  loadPreviewVideo('/api/audio?path='+encodeURIComponent(film));
+  loadEditQueue();
+  if($('pvInfo'))$('pvInfo').textContent='编辑中 · '+title;
+}
+function loadPreviewVideo(url){
+  const v=$('pvVideo');if(!v)return;
+  if(!v.dataset.bound){
+    v.dataset.bound='1';
+    v.addEventListener('timeupdate',pvTick);
+    v.addEventListener('loadedmetadata',pvTick);
+    v.addEventListener('play',pvTick); v.addEventListener('pause',pvTick);
+  }
+  v.style.display='block'; if($('pvTransport'))$('pvTransport').style.display='flex';
+  if($('pvNoVideo'))$('pvNoVideo').style.display='none';
+  if(v.dataset.src!==url){v.src=url;v.dataset.src=url;v.load();}
+  stylePvBar();
+}
+function pvToggle(){const v=$('pvVideo');if(!v||!v.src)return; if(v.paused)v.play();else v.pause();}
+function pvScrub(){const v=$('pvVideo');if(!v||!v.duration)return; v.currentTime=(+$('pvSeek').value/1000)*v.duration; pvTick();}
+function _fmt(s){s=Math.max(0,s|0);return (s/60|0)+':'+String(s%60).padStart(2,'0');}
+function _rgba(hex,op){const m=/^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec((hex||'').trim());
+  if(!m)return `rgba(0,0,0,${op})`; return `rgba(${parseInt(m[1],16)},${parseInt(m[2],16)},${parseInt(m[3],16)},${op})`;}
+// 预览进度条样式（位置/颜色/文字随烧录列表设置；宽度由 pvTick 随播放推进）
+function stylePvBar(){
+  const bar=$('pvBar');if(!bar)return;
+  const on=$('pbEnable')&&$('pbEnable').checked && $('pvVideo')&&$('pvVideo').style.display!=='none';
+  bar.style.display=on?'block':'none'; if(!on)return;
+  const top=($('pbPos')?.value||'顶部')==='底部';
+  bar.style.top=top?'auto':'0'; bar.style.bottom=top?'0':'auto';
+  const ph=$('phone'); const h=Math.max(14,Math.round((ph?.clientHeight||480)*0.045));
+  bar.style.height=h+'px';
+  bar.style.background=_rgba($('pbTrack')?.value,+($('pbTrackOp')?.value||0.45));
+  const fill=$('pvBarFill'); if(fill)fill.style.background=_rgba($('pbFill')?.value,+($('pbFillOp')?.value||0.38));
+  const txt=$('pvBarText');
+  if(txt){txt.textContent=$('pbText')?.value||''; txt.style.color=($('pbColor')?.value||'#fff');
+    txt.style.fontSize=Math.max(9,Math.round(h*0.5))+'px';}
+}
+function pvTick(){
+  const v=$('pvVideo');if(!v)return;
+  if($('pvPlay'))$('pvPlay').textContent=v.paused?'▶':'⏸';
+  stylePvBar();
+  if(v.duration){
+    if($('pvSeek')&&document.activeElement!==$('pvSeek'))$('pvSeek').value=Math.round(v.currentTime/v.duration*1000);
+    if($('pvCur'))$('pvCur').textContent=_fmt(v.currentTime);
+    if($('pvDur'))$('pvDur').textContent=_fmt(v.duration);
+    const fill=$('pvBarFill'); if(fill)fill.style.width=(v.currentTime/v.duration*100).toFixed(2)+'%';
+  }
+}
+
 /* ── 手机实时预览：已添加的 + 正在编辑的（虚线框） ── */
 const POS_RATIO={'顶部':6,'中上':30,'中部':47,'中下':66,'底部':84};
 function pvCanvas(){ return ASPECT_CANVAS[$('aspect')?.value] || [1080,1920]; }
@@ -1035,6 +1150,7 @@ function syncPv(fromInput){
     sub.textContent='字幕示意 · '+($('subFont')?.selectedOptions[0]?.textContent||'默认');
     phone.appendChild(sub);
   }
+  stylePvBar();
 }
 function editorOverlay(){
   return {text:$('edText').value.trim(),position:$('edPos').value||'中部',
@@ -1154,11 +1270,14 @@ function applyVoiceDefaults(){
 }
 
 /* ── 任务（多槽并发：main 主流程互斥，组件/字体/fish 服务各自独立并行） ── */
-async function run(action,target){
-  logTarget=target||'mainlog';
-  const payload={action,text:$('text').value,engine:$('engine').value,aligner:$('aligner').value,
+function _baseName(p){ p=(p||'').replace(/[\\/]+$/,''); const i=Math.max(p.lastIndexOf('\\'),p.lastIndexOf('/')); return i>=0?p.slice(i+1):p; }
+// 整份配置 → payload（run 与「加入队列」共用同一份，保证冻结的就是当前所见）
+function buildPayload(action){
+  const out=$('outdir').value.trim();
+  return {action,text:$('text').value,engine:$('engine').value,aligner:$('aligner').value,
     material_mode:$('matMode')?$('matMode').value:'flat',
-    voice_id:$('voice').value,shots_dir:$('shots').value.trim(),output_dir:$('outdir').value.trim(),
+    voice_id:$('voice').value,shots_dir:$('shots').value.trim(),output_dir:out,
+    title:_baseName(out)||'成片',
     max_pause:+$('pause').value,speed:+$('speed').value,seed:+$('seed').value,
     burn_subtitles:$('burn').checked,subtitle_size:+$('subsize').value||64,
     subtitle_position:$('subPos').value||'底部',subtitle_font:$('subFont')?.value||'',
@@ -1166,7 +1285,45 @@ async function run(action,target){
     subtitle_border:+($('subBorder')&&$('subBorder').value)||0,
     aspect:$('aspect').value,overlays,audio:collectAudio(),progressbar:collectProgressBar(),
     reuse_dub:$('reuseDub')?$('reuseDub').checked:false};
-  if(await postRun(payload))pollAll();
+}
+async function run(action,target){
+  logTarget=target||'mainlog';
+  if(await postRun(buildPayload(action)))pollAll();
+}
+/* ── ⑨ 生成任务队列（串行后台）：加入队列 / 拉状态 / 移除 / 清完成 ── */
+async function enqueueTask(){
+  if(!$('outdir').value.trim()){alert('请先选择「输出目录」再加入队列。');return;}
+  if(!$('text').value.trim()){alert('请先填写「待合成文案」再加入队列。');return;}
+  const p=buildPayload('run_all'); p.action='add';
+  const j=await (await fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(p)})).json();
+  if(j.error){alert(j.error);return;}
+  pollQueue();
+}
+async function removeQueueTask(id){
+  await fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({action:'remove',id})}); pollQueue();
+}
+async function clearQueueDone(){
+  await fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({action:'clear'})}); pollQueue();
+}
+const _QSTAT={pending:['排队中','var(--faint)'],running:['克隆中','var(--gold)'],
+  done:['✅ 已完成','var(--ok)'],failed:['❌ 失败','var(--bad)']};
+async function pollQueue(){
+  let tasks;try{tasks=(await (await fetch('/api/queue')).json()).tasks||[];}catch(e){return;}
+  const card=$('genQueueCard'),list=$('genQueueList');if(!card||!list)return;
+  card.style.display=tasks.length?'block':'none';
+  list.innerHTML=tasks.map(t=>{
+    const [lab,col]=_QSTAT[t.status]||[t.status,'var(--faint)'];
+    const pct=t.status==='running'?` ${t.progress||0}%`:'';
+    const stg=t.status==='running'&&t.stage?` · ${esc(t.stage)}`:'';
+    const err=t.status==='failed'&&t.error?`<div class="mini" style="color:var(--bad)">${esc(t.error)}</div>`:'';
+    const rm=t.status==='pending'?`<button class="btn" style="padding:4px 10px;flex:none" onclick="removeQueueTask('${t.id}')">移除</button>`:'';
+    return `<div class="row" style="gap:10px;align-items:center;border:1px solid var(--line);border-radius:10px;padding:9px 12px">
+      <span style="flex:1;min-width:0"><b>${esc(t.title)}</b>${stg}${err}</span>
+      <span class="mini" style="flex:none;color:${col}">${lab}${pct}</span>${rm}</div>`;
+  }).join('');
 }
 // 视频进度条配置（未启用 → enabled:false，后端返回 None 不烧）
 function collectProgressBar(){
@@ -1211,6 +1368,7 @@ async function pollAll(){
   });
   if(comps)loadComponents();
   if(fonts){loadFonts();loadComponents();}
+  pollQueue();
 }
 // 生成成片进度条：显示阶段文字 + 百分比
 function updateProgress(main){
@@ -1568,26 +1726,31 @@ function applyTpl(){
   if(s.border_width!=null)$('edBorder').value=s.border_width;
   if(s.boxed!=null)$('edBox').checked=s.boxed;
   // 字幕样式（旧模板无 sub 字段时跳过，向后兼容）
-  if(s.sub){const u=s.sub;
-    if(u.size!=null){$('subsize').value=u.size;if($('subSizeV'))$('subSizeV').textContent=u.size;}
-    if(u.pos!=null&&$('subPos'))$('subPos').value=u.pos;
-    if(u.font!=null&&$('subFont')&&[...$('subFont').options].some(o=>o.value===u.font))$('subFont').value=u.font;
-    if(u.color!=null&&$('subColor'))$('subColor').value=u.color;
-    if(u.border!=null&&$('subBorder'))$('subBorder').value=u.border;
-  }
+  if(s.sub)applySubObj(s.sub);
   // 视频进度条（旧模板无 pb 字段时跳过）
-  if(s.pb){const p=s.pb;
-    if($('pbEnable'))$('pbEnable').checked=!!p.enabled;
-    if(p.text!=null)$('pbText').value=p.text;
-    if(p.position!=null)$('pbPos').value=p.position;
-    if(p.font_size_px!=null)$('pbSize').value=p.font_size_px;
-    if(p.strip_height_px!=null)$('pbStripH').value=p.strip_height_px;
-    const setC=(id,v)=>{if(v!=null){$(id).value=v;const h=$(id+'Hex');if(h)h.value=v;}};
-    setC('pbColor',p.text_color);setC('pbTrack',p.track_color);setC('pbFill',p.fill_color);
-    if(p.track_opacity!=null){$('pbTrackOp').value=p.track_opacity;$('pbTrackOpV').textContent=(+p.track_opacity).toFixed(2);}
-    if(p.fill_opacity!=null){$('pbFillOp').value=p.fill_opacity;$('pbFillOpV').textContent=(+p.fill_opacity).toFixed(2);}
-  }
+  if(s.pb)applyPbObj(s.pb);
   syncPv(true);
+}
+// 还原字幕样式（sub{}）与进度条（pb{}）——模板与作品预设共用，避免两处逻辑漂移
+function applySubObj(u){
+  if(!u)return;
+  if(u.size!=null){$('subsize').value=u.size;if($('subSizeV'))$('subSizeV').textContent=u.size;}
+  if(u.pos!=null&&$('subPos'))$('subPos').value=u.pos;
+  if(u.font!=null&&$('subFont')&&[...$('subFont').options].some(o=>o.value===u.font))$('subFont').value=u.font;
+  if(u.color!=null&&$('subColor'))$('subColor').value=u.color;
+  if(u.border!=null&&$('subBorder'))$('subBorder').value=u.border;
+}
+function applyPbObj(p){
+  if(!p)return;
+  if($('pbEnable'))$('pbEnable').checked=!!p.enabled;
+  if(p.text!=null)$('pbText').value=p.text;
+  if(p.position!=null)$('pbPos').value=p.position;
+  if(p.font_size_px!=null)$('pbSize').value=p.font_size_px;
+  if(p.strip_height_px!=null)$('pbStripH').value=p.strip_height_px;
+  const setC=(id,v)=>{if(v!=null){$(id).value=v;const h=$(id+'Hex');if(h)h.value=v;}};
+  setC('pbColor',p.text_color);setC('pbTrack',p.track_color);setC('pbFill',p.fill_color);
+  if(p.track_opacity!=null){$('pbTrackOp').value=p.track_opacity;$('pbTrackOpV').textContent=(+p.track_opacity).toFixed(2);}
+  if(p.fill_opacity!=null){$('pbFillOp').value=p.fill_opacity;$('pbFillOpV').textContent=(+p.fill_opacity).toFixed(2);}
 }
 function renameTpl(){
   const old=$('tplSel').value;const t=tpls();if(!t[old]){alert('请选择一个模板');return;}
@@ -1773,6 +1936,10 @@ function collectConfig(){
     voice:$('voice').value,burn:$('burn').checked,seed:+$('seed').value,
     pause:+$('pause').value,speed:+$('speed').value,
     subPos:$('subPos').value,subsize:+$('subsize').value,subFont:$('subFont').value,
+    // ⑤ 作品预设纳入完整字幕样式 + 视频进度条设定
+    sub:{size:+$('subsize').value||64,pos:$('subPos').value,font:$('subFont')?.value||'',
+         color:($('subColor')?.value||'#FFFFFF').trim(),border:+($('subBorder')?.value)||0},
+    pb:collectProgressBar(),
     audio:collectAudio(),overlays:overlays};
 }
 function applyConfigObj(c){
@@ -1783,6 +1950,8 @@ function applyConfigObj(c){
   if(c.burn!=null)$('burn').checked=c.burn;
   set('seed',c.seed);set('pause',c.pause);set('speed',c.speed);
   set('subPos',c.subPos);set('subsize',c.subsize);set('subFont',c.subFont);
+  if(c.sub)applySubObj(c.sub);     // ⑤ 还原完整字幕样式（颜色/描边）
+  if(c.pb)applyPbObj(c.pb);        // ⑤ 还原视频进度条设定
   if($('pv'))$('pv').textContent=(+$('pause').value).toFixed(2);
   if($('sv'))$('sv').textContent=(+$('speed').value).toFixed(2);
   if(c.audio){

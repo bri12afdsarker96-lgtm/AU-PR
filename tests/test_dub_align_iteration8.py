@@ -23,9 +23,9 @@ class UiContractV8Tests(unittest.TestCase):
             self.assertIn(m, self.html, m)
 
     def test_p2_layout_three_columns(self):
-        # 编辑文本框为独立主列；字幕样式 + 已添加 堆叠在同一（右）列
+        # 编辑文本框为独立主列；右列堆叠（2026-07-26：字幕样式移到一键成片，右列改为待编辑队列 + 已添加）
         self.assertIn("主列：编辑文本框", self.html)
-        self.assertIn("右列：字幕样式 + 已添加", self.html)
+        self.assertIn("右列：待编辑队列 + 已添加", self.html)
         # 已添加表格去掉时间窗列后为 5 列（4 表头 + 操作列）
         self.assertIn('colspan="5"', self.html)
 
