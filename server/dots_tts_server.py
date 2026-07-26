@@ -57,6 +57,9 @@ MGL_OUTPUT_BUDGET = 800   # 与客户端一致：参考音频较长时 max_gener
 app = FastAPI(title="dots.tts remote", version="1.0")
 _runtime = None
 _runtime_lock = threading.Lock()
+# 推理串行锁：单卡上 dots.generate 非线程安全，多用户并发会串音/报错 → 必须一次只跑一句。
+# 多个请求同时来会在这里排队，按到达顺序逐个处理（这才是单 GPU 的正确行为）。
+_infer_lock = threading.Lock()
 _mgl_cache: dict[str, int] = {}
 
 
@@ -242,6 +245,7 @@ def _auth(x_api_key: str | None):
 def health(x_api_key: str | None = Header(default=None, alias="X-API-Key")):
     _auth(x_api_key)
     return {"status": "ok", "gpu": _gpu_name(), "model_loaded": _runtime is not None,
+            "busy": _infer_lock.locked(),   # True = 正在配一句，其它请求会排队
             "checkpoint": CHECKPOINT, "sample_rate": EXPECTED_SAMPLE_RATE}
 
 
@@ -251,7 +255,8 @@ def synthesize(req: SynthReq, x_api_key: str | None = Header(default=None, alias
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="text 为空。")
     try:
-        wav = _generate_wav_bytes(req)
+        with _infer_lock:                 # 串行：多用户/多请求在此排队，一次只跑一句，杜绝并发串音
+            wav = _generate_wav_bytes(req)
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
