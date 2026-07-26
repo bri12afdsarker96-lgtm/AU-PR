@@ -157,12 +157,26 @@ def _start_task(action: str, payload: dict) -> tuple[JobState | None, str]:
 
 
 def _remember_edit_item(output_dir: Path, canvas: tuple[int, int], payload: dict) -> None:
-    """成片烧完字幕后登记进「待编辑队列」（⑧），供文本框二次精修选取。失败不阻塞成片。"""
+    """成片烧完字幕后登记进「待编辑队列」（⑧），供文本框二次精修选取。失败不阻塞成片。
+
+    连同生成时的烧录设置一并存下（B），文本框选中它时可原样还原，重烧与首次一致。"""
     try:
         film = output_dir / pipeline.FILM_NAME
-        if film.is_file():
-            edit_queue.add(str(payload.get("title") or output_dir.name),
-                           str(film), str(output_dir), canvas)
+        if not film.is_file():
+            return
+        settings = {
+            "sub": {"size": payload.get("subtitle_size"), "pos": payload.get("subtitle_position"),
+                    "font": payload.get("subtitle_font"), "color": payload.get("subtitle_color"),
+                    "border": payload.get("subtitle_border")},
+            "burn": bool(payload.get("burn_subtitles", True)),
+            "pb": payload.get("progressbar") or {},
+            "wm": payload.get("watermark") or {},
+            "overlays": payload.get("overlays") or [],
+            "audio": payload.get("audio") or {},
+            "aspect": payload.get("aspect") or "",
+        }
+        edit_queue.add(str(payload.get("title") or output_dir.name),
+                       str(film), str(output_dir), canvas, settings)
     except Exception:
         pass
 

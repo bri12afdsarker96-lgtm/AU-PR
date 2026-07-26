@@ -64,8 +64,12 @@ def _prune(items: list[dict], now: float, ttl: float) -> list[dict]:
 
 def add(title: str, film_path: str, output_dir: str,
         canvas: tuple[int, int] | list[int] | None = None,
+        settings: dict | None = None,
         *, store: Path | None = None, now: float | None = None) -> dict:
-    """把一条已烧字幕的成片加入待编辑队列（按 film_path 去重：已存在则刷新时效/标题）。"""
+    """把一条已烧字幕的成片加入待编辑队列（按 film_path 去重：已存在则刷新时效/标题）。
+
+    settings：生成该成片时的烧录设置（字幕/进度条/水印/文本框/音频/比例），供文本框选中它时
+    还原，保证「按当前样式重烧」与首次一致（用户 2026-07-26 B）。"""
     store = _store_path(store)
     now = time.time() if now is None else float(now)
     items = _prune(_load(store), now, TTL_SECONDS)
@@ -77,6 +81,8 @@ def add(title: str, film_path: str, output_dir: str,
     row["title"] = str(title or Path(output_dir).name or "成片")
     row["output_dir"] = str(output_dir)
     row["canvas"] = list(canvas) if canvas else row.get("canvas") or []
+    if settings is not None:
+        row["settings"] = settings
     row["last_active"] = now
     _save(store, items)
     return row

@@ -326,8 +326,9 @@ footer b{color:var(--muted);font-weight:600}
         <div><span class="f">画面比例</span><select id="aspect"></select></div>
       </div>
       <div class="sp"><span class="f">分镜目录 <span class="mini" style="color:var(--faint)">（输出目录默认跟随此目录）</span></span>
-        <div class="row"><input type="text" id="shots" placeholder="D:\素材\分镜（1.mp4、2.mp4 …）" oninput="mirrorOut()">
-        <button class="btn" onclick="pickDir('shots')">📁 选择</button></div></div>
+        <div class="row"><input type="text" id="shots" placeholder="D:\素材\分镜（1.mp4、2.mp4 …）" oninput="mirrorOut();scheduleShotsCount()">
+        <button class="btn" onclick="pickDir('shots')">📁 选择</button></div>
+        <div class="mini" id="shotsCount" style="margin-top:5px"></div></div>
       <div class="sp"><span class="f">素材模式（第 i 行文案用什么画面）</span>
         <select id="matMode">
           <option value="flat">平铺顺序 · 目录下 1.mp4、2.mp4…，第 i 行用第 i 个</option>
@@ -1008,6 +1009,8 @@ async function loadState(){
   $('voice').addEventListener('change',()=>{try{localStorage.setItem('dubLastVoice',$('voice').value)}catch(e){}});
   $('aspect').addEventListener('change',()=>{try{localStorage.setItem('dubLastAspect',$('aspect').value)}catch(e){}});
   loadBurnPresets();   // ③ 烧录预设列表
+  if($('text'))$('text').addEventListener('input',scheduleShotsCount);   // A 文案变→更新分镜匹配
+  if($('matMode'))$('matMode').addEventListener('change',updateShotsCount);
   $('vRootHint').textContent='库目录：'+s.voice_root;
   $('vCount').textContent=s.voices.length;
   const list=$('vList');list.innerHTML='';
@@ -1078,16 +1081,15 @@ async function stopComponent(key){
 }
 
 /* ── ⑧ 待编辑队列 + ⑦ 真视频预览 ── */
-let _curEdit=null;
+let _curEdit=null, _editItems=[];
 async function loadEditQueue(){
-  let items;try{items=(await (await fetch('/api/edit_queue')).json()).items||[];}catch(e){return;}
+  try{_editItems=(await (await fetch('/api/edit_queue')).json()).items||[];}catch(e){return;}
   const list=$('eqList');if(!list)return;
-  if($('eqN'))$('eqN').textContent=items.length;
-  if(!items.length){list.innerHTML='<p class="empty" style="color:var(--faint);font-size:12px;padding:6px 2px">还没有成片进队列 —— 先在「一键成片」生成。</p>';return;}
-  list.innerHTML=items.map(it=>{
-    const cw=(it.canvas&&it.canvas[0])||1080, ch=(it.canvas&&it.canvas[1])||1920;
+  if($('eqN'))$('eqN').textContent=_editItems.length;
+  if(!_editItems.length){list.innerHTML='<p class="empty" style="color:var(--faint);font-size:12px;padding:6px 2px">还没有成片进队列 —— 先在「一键成片」生成。</p>';return;}
+  list.innerHTML=_editItems.map(it=>{
     const sel=(it.id===_curEdit)?' style="border-color:var(--gold);box-shadow:0 0 0 1px var(--gold);cursor:pointer"':' style="cursor:pointer"';
-    return `<div class="row" data-id="${it.id}"${sel} onclick="selectEditItem('${it.id}','${encodeURIComponent(it.film_path)}','${encodeURIComponent(it.output_dir)}',${cw},${ch},'${esc(it.title)}')">
+    return `<div class="row" data-id="${it.id}"${sel} onclick="selectEditItem('${it.id}')">
       <span style="flex:1;min-width:0"><b>${esc(it.title)}</b><div class="mini" style="color:var(--faint)">已烧字幕 · 点此载入编辑</div></span>
       <button class="btn" style="padding:4px 10px;flex:none" onclick="event.stopPropagation();removeEditItem('${it.id}')">移除</button></div>`;
   }).join('');
@@ -1099,21 +1101,31 @@ async function removeEditItem(id){
   toast('已移出待编辑队列');
   loadEditQueue();
 }
-function selectEditItem(id,filmEnc,outEnc,cw,ch,title){
+function selectEditItem(id){
+  const it=_editItems.find(x=>x.id===id); if(!it)return;
   _curEdit=id;
-  const film=decodeURIComponent(filmEnc), out=decodeURIComponent(outEnc);
-  if($('outdir'))$('outdir').value=out;          // 重烧/导出作用到这条成片
+  const film=it.film_path, out=it.output_dir, title=it.title||'成片';
+  if($('outdir')){$('outdir').value=out;_outdirManual=true;}   // 重烧/导出作用到这条成片
   fetch('/api/edit_queue',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({action:'touch',id})});   // 点开编辑=续期 12h
+  // B 还原该成片生成时的烧录设置 → 「按当前样式重烧」与首次一致
+  const s=it.settings||{};
+  if(s.sub)applySubObj(s.sub);
+  if(s.burn!=null&&$('burn'))$('burn').checked=!!s.burn;
+  if(s.pb)applyPbObj(s.pb);
+  if(s.wm)applyWmObj(s.wm);
+  if(Array.isArray(s.overlays)){overlays=s.overlays;renderOverlays();}
+  if(s.aspect&&$('aspect')&&[...$('aspect').options].some(o=>o.value===s.aspect))$('aspect').value=s.aspect;
+  if(s.audio&&typeof restoreAudio==='function')restoreAudio(s.audio);
   loadPreviewVideo('/api/audio?path='+encodeURIComponent(film));
   // ⑦ 配音切到这条队列任务：主轨播放器指向该任务的 master.wav（预览视频本身也带该任务的配音）
   const sep=out.includes('\\')?'\\':'/';
   const murl='/api/audio?path='+encodeURIComponent(out+sep+'master.wav');
   if($('masterAudio')){$('masterAudio').src=murl;$('masterAudio').dataset.src=murl;}
   if($('mediaRow'))$('mediaRow').style.display='flex';
-  loadEditQueue();
+  loadEditQueue(); syncPv();
   if($('pvInfo'))$('pvInfo').textContent='编辑中 · '+title;
-  toast('已载入 · '+title+'（配音已切到本任务）','ok');
+  toast('已载入 · '+title+'（配音+烧录设置已切到本任务）','ok');
 }
 function loadPreviewVideo(url){
   const v=$('pvVideo');if(!v)return;
@@ -1439,6 +1451,14 @@ async function enqueueTask(primary){
   if(!$('outdir').value.trim()){alert('请先选择「输出目录」（默认跟随分镜目录）。');return;}
   if(!$('text').value.trim()){alert('请先填写「待合成文案」。');return;}
   if(!$('shots').value.trim()){alert('请先选择「分镜目录」。');return;}
+  // C 输出覆盖防护：队列里已有未完成任务写同一输出目录 → 成片会互相覆盖，先确认
+  const out=$('outdir').value.trim();
+  try{
+    const cur=(await (await fetch('/api/queue')).json()).tasks||[];
+    if(cur.some(t=>(t.status==='pending'||t.status==='running')&&t.output_dir===out)){
+      if(!confirm('队列里已有任务写到同一「输出目录」：\n'+out+'\n\n它们的成片会互相覆盖。建议给每集用不同输出目录（或在输出目录后加子文件夹）。\n\n仍要加入吗？'))return;
+    }
+  }catch(e){}
   const p=buildPayload('run_all'); p.action='add';
   _busy(900);
   const j=await (await fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -1697,6 +1717,26 @@ let dirTarget=null, dirCurrent='', dirFilesExt='', docKind='';
 // ① 输出目录默认跟随分镜目录（未手动改过时镜像）；手动改了就尊重手动值
 let _outdirManual=false;
 function mirrorOut(){ if(!_outdirManual){const s=$('shots').value.trim(); if(s&&$('outdir'))$('outdir').value=s;} }
+// A 文案行数 vs 分镜数量 实时校验：数量不匹配提前提醒，避免克隆完才在渲染前报错白等一轮
+let _shotsCountTimer=null;
+function scheduleShotsCount(){ clearTimeout(_shotsCountTimer); _shotsCountTimer=setTimeout(updateShotsCount,400); }
+async function updateShotsCount(){
+  const el=$('shotsCount'); if(!el)return;
+  const lines=($('text').value||'').split('\n').map(s=>s.trim()).filter(Boolean).length;
+  const dir=$('shots').value.trim();
+  if(!dir){ el.textContent=lines?`文案 ${lines} 行 · 请选择分镜目录`:''; el.style.color='var(--faint)'; return; }
+  let vids=0,subs=0;
+  try{
+    const s=await (await fetch('/api/browse?files=mp4,mov,mkv,webm&path='+encodeURIComponent(dir))).json();
+    vids=(s.files||[]).length; subs=(s.dirs||[]).length;
+  }catch(e){ el.textContent=''; return; }
+  const mode=$('matMode')?$('matMode').value:'flat';
+  const avail = mode==='flat' ? vids : Math.max(vids,subs);   // 平铺看视频数；文件夹/关键字看子夹数
+  const unit = mode==='flat' ? `${vids} 个视频` : `${vids} 个视频 / ${subs} 个子夹`;
+  const ok = avail>=lines && lines>0;
+  el.textContent=`文案 ${lines} 行 · 分镜 ${unit}` + (lines? (ok?' ✓ 数量匹配':(avail<lines?` ⚠ 分镜不足（缺 ${lines-avail} 个，会在渲染前报错）`:'')) : '');
+  el.style.color = lines&&!ok ? 'var(--bad)' : 'var(--faint)';
+}
 function _joinPath(base,name){ return base.replace(/[\\/]+$/,'')+((base.includes('\\')||name.includes(':'))?'\\':'/')+name; }
 async function pickDir(targetId){
   dirTarget=targetId; dirFilesExt=''; docKind='';   // 纯选目录
@@ -2173,6 +2213,15 @@ function collectConfig(){
     pb:collectProgressBar(),wm:collectWatermark(),
     audio:collectAudio(),overlays:overlays};
 }
+// 还原音频设置（总音量/BGM/音效）——作品预设与待编辑队列选中项共用
+function restoreAudio(a){
+  if(!a)return;
+  $('mVol').value=Math.round((a.master_volume??1)*100);
+  if(a.bgm){$('bgmSel').value=a.bgm.file||'';$('bVol').value=Math.round((a.bgm.volume??.35)*100);$('bLoop').checked=a.bgm.loop!==false;}
+  else{$('bgmSel').value='';}
+  sfxCues=(a.sfx||[]).map(s=>({file:s.file,at:+s.at||0,volume:+s.volume||1}));
+  onMixChange();renderSfxPins();renderSfxRows();
+}
 function applyConfigObj(c){
   if(!c)return;
   const set=(id,v)=>{const el=$(id);if(el!=null&&v!=null)el.value=v;};
@@ -2186,12 +2235,7 @@ function applyConfigObj(c){
   if(c.wm)applyWmObj(c.wm);        // 还原动态水印设定
   if($('pv'))$('pv').textContent=(+$('pause').value).toFixed(2);
   if($('sv'))$('sv').textContent=(+$('speed').value).toFixed(2);
-  if(c.audio){
-    $('mVol').value=Math.round((c.audio.master_volume??1)*100);
-    if(c.audio.bgm){$('bgmSel').value=c.audio.bgm.file||'';$('bVol').value=Math.round((c.audio.bgm.volume??.35)*100);$('bLoop').checked=c.audio.bgm.loop!==false;}
-    else{$('bgmSel').value='';}
-    sfxCues=(c.audio.sfx||[]).map(s=>({file:s.file,at:+s.at||0,volume:+s.volume||1}));
-  }
+  if(c.audio)restoreAudio(c.audio);
   if(Array.isArray(c.overlays)){overlays=c.overlays;renderOverlays();}
   onMixChange();renderSfxPins();renderSfxRows();syncPv();
 }
