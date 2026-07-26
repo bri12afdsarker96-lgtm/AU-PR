@@ -39,7 +39,6 @@ from .timing import (
     LineTiming,
     MockAligner,
     TIMING_TABLE_NAME,
-    floor_violations,
     read_timing_table,
     write_timing_table,
 )
@@ -228,9 +227,6 @@ def step_timing(
     if exact is not None:
         # 逐行分段成片：每行时长=该行克隆音频真实时长，最精确，优先于任何估算尺子
         write_timing_table(Path(output_dir) / TIMING_TABLE_NAME, exact)
-        low = floor_violations(exact)
-        if low:
-            notes.append(f"第 {low} 行时长低于 5s 业务下限，请检查文案或停顿设置。")
         notes.append("逐行音频精确对齐：每个分镜时长按该行克隆音频实际时长。")
         return exact, notes
     if aligner_key == "whisper":
@@ -243,9 +239,6 @@ def step_timing(
     else:
         raise KeyError(f"未知尺子：{aligner_key}（可选：{'、'.join(ALIGNER_KEYS)}）")
 
-    low = floor_violations(timings)
-    if low:
-        notes.append(f"第 {low} 行时长低于 5s 业务下限，请检查文案或停顿设置。")
     write_timing_table(Path(output_dir) / TIMING_TABLE_NAME, timings)
     return timings, notes
 
