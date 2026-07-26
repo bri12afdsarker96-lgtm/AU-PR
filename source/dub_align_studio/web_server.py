@@ -700,7 +700,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if route == "/api/browse":
             query = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
-            self._json(_browse(query.get("path") or ""))
+            self._json(_browse(query.get("path") or "", query.get("files") or ""))
             return
         if route == "/api/settings":
             root = studio_settings.data_root()
@@ -865,6 +865,17 @@ class _Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length") or 0)
             data = self.rfile.read(length) if 0 < length <= _MAX_UPLOAD else b""
             kind = (query.get("kind") or "").lower()
+            # 本机路径导入（导入表格/TXT 走服务端选文件）：直接按真实路径读取，
+            # 并回带 folder 供前端把「分镜目录/输出目录」默认设为文档所在文件夹。
+            src_path = (query.get("path") or "").strip()
+            folder = ""
+            if src_path:
+                p = Path(src_path)
+                if not p.is_file():
+                    self._json({"error": f"文件不存在：{p}"}, 400)
+                    return
+                data = p.read_bytes()
+                folder = str(p.parent)
             try:
                 if kind == "xlsx":
                     lines = xlsx_reader.read_column(data, query.get("column") or "B")
@@ -877,7 +888,7 @@ class _Handler(BaseHTTPRequestHandler):
                     lines = lines[1:]  # 跳过表头行（如「口播文稿内容」这类列标题）
                 if not lines:
                     raise ValueError("没有读到任何文案行（xlsx 请确认列号；txt 请确认一行一句）。")
-                self._json({"ok": True, "lines": lines})
+                self._json({"ok": True, "lines": lines, "folder": folder})
             except Exception as exc:
                 self._json({"error": str(exc)}, 400)
             return
@@ -1187,28 +1198,36 @@ def _open_folder(target: Path) -> None:
         subprocess.Popen(["xdg-open", str(target)])
 
 
-def _browse(path_text: str) -> dict:
-    """本机目录浏览（选择文件夹用）：空路径给根列表（Windows 盘符 / Linux 根）。"""
+def _browse(path_text: str, files_ext: str = "") -> dict:
+    """本机浏览：选文件夹用；files_ext 非空（如 "xlsx,txt"）时**同时列出匹配文件**（选文档用）。
+
+    空路径给根列表（Windows 盘符 / Linux 根）。返回 dirs（子目录）+ files（匹配文件，仅在
+    files_ext 给定时）。文件项供「导入表格/TXT」在本机选文档 → 拿到真实路径 → 反推所在文件夹。"""
     import os
     import string
 
+    exts = tuple("." + e.strip().lower().lstrip(".") for e in files_ext.split(",") if e.strip())
     if not path_text.strip():
         if os.name == "nt":
             drives = [f"{d}:\\" for d in string.ascii_uppercase if Path(f"{d}:\\").exists()]
-            return {"path": "", "parent": None, "dirs": drives, "roots": True}
+            return {"path": "", "parent": None, "dirs": drives, "files": [], "roots": True}
         path_text = "/"
     current = Path(path_text)
     if not current.is_dir():
-        return {"error": f"目录不存在：{current}", "path": str(current), "dirs": []}
-    dirs = []
+        return {"error": f"目录不存在：{current}", "path": str(current), "dirs": [], "files": []}
+    dirs, files = [], []
     try:
         for child in sorted(current.iterdir(), key=lambda x: x.name.lower()):
-            if child.is_dir() and not child.name.startswith((".", "$")):
+            if child.name.startswith((".", "$")):
+                continue
+            if child.is_dir():
                 dirs.append(child.name)
+            elif exts and child.is_file() and child.name.lower().endswith(exts):
+                files.append(child.name)
     except PermissionError:
-        return {"error": f"无权限访问：{current}", "path": str(current), "dirs": []}
+        return {"error": f"无权限访问：{current}", "path": str(current), "dirs": [], "files": []}
     parent = str(current.parent) if current.parent != current else ""
-    return {"path": str(current), "parent": parent, "dirs": dirs, "roots": False}
+    return {"path": str(current), "parent": parent, "dirs": dirs, "files": files, "roots": False}
 
 
 def _state_payload() -> dict:

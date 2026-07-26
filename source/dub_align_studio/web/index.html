@@ -309,13 +309,11 @@ footer b{color:var(--muted);font-weight:600}
       <h2>文案与配置</h2>
       <div class="sp"><span class="f">待合成文案 · 一行一句（长短不限）</span>
         <div class="row" style="margin-bottom:8px">
-          <button class="btn" onclick="xlsxFile.click()">📊 导入表格(xlsx)</button>
+          <button class="btn" onclick="pickDoc('xlsx')">📊 导入表格(xlsx)</button>
           <span class="mini" style="flex:none">列</span>
           <select id="xlsxCol" style="width:76px;flex:none"></select>
           <label class="row mini" style="gap:6px;flex:none"><input type="checkbox" id="xlsxHeader" checked>跳过表头(首行)</label>
-          <button class="btn" onclick="txtFile.click()">📄 导入TXT</button>
-          <input type="file" id="xlsxFile" accept=".xlsx" style="display:none" onchange="importScript(this,'xlsx')">
-          <input type="file" id="txtFile" accept=".txt" style="display:none" onchange="importScript(this,'txt')">
+          <button class="btn" onclick="pickDoc('txt')">📄 导入TXT</button>
         </div>
         <textarea id="text" placeholder="第一句台词……&#10;第二句台词……&#10;第三句台词……&#10;也可点上方按钮从 xlsx（默认 B 列）或 TXT 导入"></textarea></div>
       <div class="grid g2e sp">
@@ -327,8 +325,8 @@ footer b{color:var(--muted);font-weight:600}
         <div><span class="f">计时尺子</span><select id="aligner"></select></div>
         <div><span class="f">画面比例</span><select id="aspect"></select></div>
       </div>
-      <div class="sp"><span class="f">分镜目录</span>
-        <div class="row"><input type="text" id="shots" placeholder="D:\素材\分镜（1.mp4、2.mp4 …）">
+      <div class="sp"><span class="f">分镜目录 <span class="mini" style="color:var(--faint)">（输出目录默认跟随此目录）</span></span>
+        <div class="row"><input type="text" id="shots" placeholder="D:\素材\分镜（1.mp4、2.mp4 …）" oninput="mirrorOut()">
         <button class="btn" onclick="pickDir('shots')">📁 选择</button></div></div>
       <div class="sp"><span class="f">素材模式（第 i 行文案用什么画面）</span>
         <select id="matMode">
@@ -338,8 +336,8 @@ footer b{color:var(--muted);font-weight:600}
         </select>
         <p class="mini" style="color:var(--faint);margin-top:5px">夹内按 Seed 确定性随机选片（换 Seed 同文案换一套画面，矩阵去重）；
           选片结果写「输出目录\选片清单.csv」，重渲染复用同一份——删除该文件即重新选片。</p></div>
-      <div class="sp"><span class="f">输出目录</span>
-        <div class="row"><input type="text" id="outdir" placeholder="D:\输出\第01集">
+      <div class="sp"><span class="f">输出目录 <span class="mini" style="color:var(--faint)">（配音克隆/成片等全部产物默认写这里 · 默认=分镜目录，可改）</span></span>
+        <div class="row"><input type="text" id="outdir" placeholder="默认跟随分镜目录，可自定义" oninput="_outdirManual=true">
         <button class="btn" onclick="pickDir('outdir')">📁 选择</button></div></div>
       <div class="grid g2e sp">
         <div><span class="f">停顿上限（秒）· 0 = 不压缩</span>
@@ -405,7 +403,16 @@ footer b{color:var(--muted);font-weight:600}
   <!-- 烧录列表（④⑥）：字幕样式 + 视频进度条，点「生成成片」时套用；不加字幕样式则用默认 -->
   <div class="card" style="margin-top:16px">
     <h2>烧录列表 · 生成成片时套用</h2>
-    <p class="mini" style="color:var(--faint);margin:-4px 0 12px">「生成成片」时按这里的样式一次烧入。<b>不设字幕样式则用默认：思源黑体 · 描边 6px</b>。到「文本框」页可对已生成的成片二次精修文字层并重烧。</p>
+    <p class="mini" style="color:var(--faint);margin:-4px 0 10px">「生成成片」时按这里的样式一次烧入。<b>不设字幕样式则用默认：思源黑体 · 描边 6px</b>。到「文本框」页可对已生成的成片二次精修文字层并重烧。</p>
+    <!-- ③ 烧录预设：只存/取「字幕样式 + 视频进度条」这两块，独立于作品预设 -->
+    <div class="row sp" style="gap:8px;background:var(--field);border:1px solid var(--line);border-radius:10px;padding:9px 11px">
+      <span class="f" style="margin:0;flex:none">🎨 烧录预设</span>
+      <select id="burnPreset" style="flex:1 1 130px"></select>
+      <button class="btn" style="padding:8px 12px;flex:none" onclick="applyBurnPreset()">载入</button>
+      <button class="btn" style="padding:8px 12px;flex:none" onclick="delBurnPreset()">删除</button>
+      <button class="btn gold" style="padding:8px 12px;flex:none" onclick="saveBurnPreset()">存为预设</button>
+      <span class="mini" style="color:var(--faint);flex:none">只含字幕样式 + 进度条</span>
+    </div>
 
     <!-- 字幕样式 -->
     <div class="row sp" style="gap:20px;flex-wrap:wrap;align-items:flex-end">
@@ -873,12 +880,12 @@ footer b{color:var(--muted);font-weight:600}
 
 <div class="modal" id="dirModal">
   <div class="box">
-    <h2 style="font-size:13px;color:var(--gold);letter-spacing:2px">选择文件夹</h2>
+    <h2 style="font-size:13px;color:var(--gold);letter-spacing:2px" id="dirTitle">选择文件夹</h2>
     <div class="cur" id="dirCur">—</div>
     <div class="list" id="dirList"></div>
     <div class="foot">
       <button class="btn" onclick="dirModal.classList.remove('on')">取消</button>
-      <button class="btn gold" onclick="chooseDir()">✔ 选择此文件夹</button>
+      <button class="btn gold" id="dirChoose" onclick="chooseDir()">✔ 选择此文件夹</button>
     </div>
   </div>
 </div>
@@ -990,6 +997,16 @@ async function loadState(){
   fill('subPos', Object.keys(SUB_POS_RATIO).map(k=>[k,k])); $('subPos').value='底部';
   fill('xlsxCol', 'ABCDEFGH'.split('').map(c=>[c,c+' 列'])); $('xlsxCol').value='B';
   $('aspect').addEventListener('change',()=>syncPv());
+  // ② 记住上一轮使用的音色 + 画面比例：下拉填好后回填上次值，并在切换时持久化
+  try{
+    const lv=localStorage.getItem('dubLastVoice');
+    if(lv!==null && [...$('voice').options].some(o=>o.value===lv))$('voice').value=lv;
+    const la=localStorage.getItem('dubLastAspect');
+    if(la && [...$('aspect').options].some(o=>o.value===la))$('aspect').value=la;
+  }catch(e){}
+  $('voice').addEventListener('change',()=>{try{localStorage.setItem('dubLastVoice',$('voice').value)}catch(e){}});
+  $('aspect').addEventListener('change',()=>{try{localStorage.setItem('dubLastAspect',$('aspect').value)}catch(e){}});
+  loadBurnPresets();   // ③ 烧录预设列表
   $('vRootHint').textContent='库目录：'+s.voice_root;
   $('vCount').textContent=s.voices.length;
   const list=$('vList');list.innerHTML='';
@@ -1643,19 +1660,30 @@ async function openFolder(){
 }
 
 /* ── 目录选择浮层 ── */
-let dirTarget=null, dirCurrent='';
+let dirTarget=null, dirCurrent='', dirFilesExt='', docKind='';
+// ① 输出目录默认跟随分镜目录（未手动改过时镜像）；手动改了就尊重手动值
+let _outdirManual=false;
+function mirrorOut(){ if(!_outdirManual){const s=$('shots').value.trim(); if(s&&$('outdir'))$('outdir').value=s;} }
+function _joinPath(base,name){ return base.replace(/[\\/]+$/,'')+((base.includes('\\')||name.includes(':'))?'\\':'/')+name; }
 async function pickDir(targetId){
-  dirTarget=targetId;
-  const start=$(targetId).value.trim();
-  await browseDir(start||'');
+  dirTarget=targetId; dirFilesExt=''; docKind='';   // 纯选目录
+  await browseDir($(targetId).value.trim()||'');
+  $('dirModal').classList.add('on');
+}
+// ① 导入表格/TXT：本机选文档 → 拿到真实路径 → 解析 + 把分镜/输出目录设为文档所在文件夹
+function pickDoc(kind){
+  docKind=kind; dirFilesExt=(kind==='xlsx'?'xlsx':'txt'); dirTarget='';
+  browseDir($('shots').value.trim()||$('outdir').value.trim()||'');
   $('dirModal').classList.add('on');
 }
 async function browseDir(path){
-  const q=path?('?path='+encodeURIComponent(path)):'';
-  const s=await (await fetch('/api/browse'+q)).json();
-  if(s.error&&!s.dirs?.length){alert(s.error);}
+  const parts=[]; if(path)parts.push('path='+encodeURIComponent(path)); if(dirFilesExt)parts.push('files='+encodeURIComponent(dirFilesExt));
+  const s=await (await fetch('/api/browse'+(parts.length?('?'+parts.join('&')):''))).json();
+  if(s.error&&!(s.dirs||[]).length){alert(s.error);}
   dirCurrent=s.path||'';
   $('dirCur').textContent=dirCurrent||'（选择磁盘）';
+  const btn=$('dirChoose'); if(btn)btn.style.display=dirFilesExt?'none':'';   // 选文档模式：点文件即完成，无「选此目录」
+  const ttl=$('dirTitle'); if(ttl)ttl.textContent=dirFilesExt?('选择'+(docKind==='xlsx'?'表格(xlsx)':'TXT')+'文档（点文件即导入，目录自动设为其所在文件夹）'):'选择文件夹';
   const list=$('dirList');list.innerHTML='';
   if(!s.roots&&s.parent!==null&&s.parent!==undefined&&s.parent!==dirCurrent){
     const up=document.createElement('div');up.className='item';up.textContent='⬆ 上一级';
@@ -1663,28 +1691,34 @@ async function browseDir(path){
   }
   (s.dirs||[]).forEach(name=>{
     const el=document.createElement('div');el.className='item';el.textContent='📁 '+name;
-    el.onclick=()=>browseDir(s.roots?name:(dirCurrent.replace(/[\\/]+$/,'')+(dirCurrent.includes('\\')||name.includes(':')?'\\':'/')+name));
+    el.onclick=()=>browseDir(s.roots?name:_joinPath(dirCurrent,name));
     list.appendChild(el);
   });
-  if(!(s.dirs||[]).length){const e=document.createElement('div');e.className='item';e.style.color='var(--faint)';e.textContent='（没有子文件夹）';list.appendChild(e);}
+  (s.files||[]).forEach(name=>{
+    const el=document.createElement('div');el.className='item';el.style.color='var(--gold)';
+    el.textContent=(docKind==='xlsx'?'📊 ':'📄 ')+name;
+    el.onclick=()=>chooseDoc(_joinPath(dirCurrent,name));
+    list.appendChild(el);
+  });
+  if(!(s.dirs||[]).length&&!(s.files||[]).length){const e=document.createElement('div');e.className='item';e.style.color='var(--faint)';e.textContent=dirFilesExt?'（此文件夹没有该类型文档，进子文件夹找）':'（没有子文件夹）';list.appendChild(e);}
 }
 function chooseDir(){
-  if(dirTarget&&dirCurrent)$(dirTarget).value=dirCurrent;
+  if(dirTarget&&dirCurrent){ $(dirTarget).value=dirCurrent; if(dirTarget==='shots')mirrorOut(); }
   $('dirModal').classList.remove('on');
   if(dirTarget==='vBatchDir'&&$('vBatchDir').value.trim()){ // 批量建音色：选完目录直接开跑
     postRun({action:'voice_batch',folder:$('vBatchDir').value.trim(),engine:'dots_local'}).then(ok=>{if(ok){pollAll();setTimeout(loadState,1500);}});
   }
 }
-
-/* ── 文案导入（xlsx / txt）── */
-async function importScript(input,kind){
-  const f=input.files[0]; input.value=''; if(!f)return;
-  const q=new URLSearchParams({kind, column:$('xlsxCol').value, header:(kind==='xlsx'&&$('xlsxHeader')?.checked)?'1':'0'});
-  const r=await fetch('/api/script/parse?'+q,{method:'POST',body:f});
-  const j=await r.json();
+// 选中文档 → 按真实路径解析，并把分镜+输出目录默认设为文档所在文件夹（用户 2026-07-26 ①）
+async function chooseDoc(fullpath){
+  $('dirModal').classList.remove('on');
+  const q=new URLSearchParams({kind:docKind, column:$('xlsxCol').value,
+    header:(docKind==='xlsx'&&$('xlsxHeader')?.checked)?'1':'0', path:fullpath});
+  const j=await (await fetch('/api/script/parse?'+q,{method:'POST'})).json();
   if(j.error){alert(j.error);return;}
   $('text').value=j.lines.join('\n');
-  alert(`已导入 ${j.lines.length} 行文案`+(kind==='xlsx'?`（${$('xlsxCol').value} 列）`:''));
+  if(j.folder){ $('shots').value=j.folder; _outdirManual=false; if($('outdir'))$('outdir').value=j.folder; }
+  toast(`已导入 ${j.lines.length} 行 · 分镜/输出目录已设为文档所在文件夹`,'ok');
 }
 
 /* ── 设置：数据总目录 ── */
@@ -1885,6 +1919,36 @@ function applyPbObj(p){
   setC('pbColor',p.text_color);setC('pbTrack',p.track_color);setC('pbFill',p.fill_color);
   if(p.track_opacity!=null){$('pbTrackOp').value=p.track_opacity;$('pbTrackOpV').textContent=(+p.track_opacity).toFixed(2);}
   if(p.fill_opacity!=null){$('pbFillOp').value=p.fill_opacity;$('pbFillOpV').textContent=(+p.fill_opacity).toFixed(2);}
+}
+
+/* ── ③ 烧录预设：只存/取「字幕样式 + 视频进度条」两块（localStorage，独立于作品预设） ── */
+function collectBurnStyle(){return {
+  sub:{size:+$('subsize').value||64,pos:$('subPos').value,font:$('subFont')?.value||'',
+       color:($('subColor')?.value||'#FFFFFF').trim(),border:+($('subBorder')?.value)||0},
+  pb:collectProgressBar()};}
+function burnPresets(){try{return JSON.parse(localStorage.getItem('dubBurnPresets')||'{}');}catch(e){return{};}}
+function loadBurnPresets(){
+  const names=Object.keys(burnPresets());
+  fill('burnPreset', names.length?names.map(n=>[n,n]):[['','（暂无烧录预设）']]);
+}
+function saveBurnPreset(){
+  const name=prompt('给这套「字幕样式 + 视频进度条」起个名（如 书单·顶部导流）：');
+  if(!name||!name.trim())return;
+  const p=burnPresets();p[name.trim()]=collectBurnStyle();
+  localStorage.setItem('dubBurnPresets',JSON.stringify(p));
+  loadBurnPresets();$('burnPreset').value=name.trim();toast('已存烧录预设 · '+name.trim(),'ok');
+}
+function applyBurnPreset(){
+  const n=$('burnPreset').value;const s=burnPresets()[n];
+  if(!s){alert('请选择一个烧录预设');return;}
+  if(s.sub)applySubObj(s.sub); if(s.pb)applyPbObj(s.pb); syncPv(true);
+  toast('已载入烧录预设 · '+n,'ok');
+}
+function delBurnPreset(){
+  const n=$('burnPreset').value;const p=burnPresets();
+  if(!p[n]){alert('请选择一个烧录预设');return;}
+  if(!confirm('删除烧录预设「'+n+'」？'))return;
+  delete p[n];localStorage.setItem('dubBurnPresets',JSON.stringify(p));loadBurnPresets();toast('已删除');
 }
 function renameTpl(){
   const old=$('tplSel').value;const t=tpls();if(!t[old]){alert('请选择一个模板');return;}
