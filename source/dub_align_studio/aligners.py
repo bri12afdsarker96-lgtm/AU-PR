@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
 import re
 import shutil
 import subprocess
@@ -165,7 +167,10 @@ class WhisperAligner:
         executable = _whisper_cli()
         model = _best_model()
         runtime_root = studio_settings.whisper_home()
-        scratch = Path(tempfile.mkdtemp(prefix="dub_align_whisper_"))
+        # whisper-cli.exe 是 C 程序，读不了含中文的路径（会把 -m 模型路径的中文变成乱码而加载失败）。
+        # 故：① 工作目录放到纯 ASCII 根（wav/输出 SRT 都在此）；② 模型路径转 8.3 短路径，
+        # 仍非 ASCII 则复制到 ASCII 缓存。数据总目录（含「水星配音数据/组件」中文）不受影响。
+        scratch = Path(tempfile.mkdtemp(prefix="dub_align_whisper_", dir=str(_ascii_tmp_root())))
         try:
             wav16k = scratch / "master_16k.wav"
             _run(
@@ -174,7 +179,8 @@ class WhisperAligner:
             )
             out_base = scratch / "whisper_output"
             timeout = max(60, int(total_seconds * 3 + 60))
-            command = [str(executable), "-m", str(model), "-f", str(wav16k), "-osrt", "-of", str(out_base)]
+            command = [str(executable), "-m", _ascii_model_arg(model), "-f", str(wav16k),
+                       "-osrt", "-of", str(out_base)]
             completed = run_silent(
                 command, capture_output=True, text=True, encoding="utf-8",
                 errors="replace", timeout=timeout, cwd=str(runtime_root) if runtime_root.exists() else None,
@@ -195,6 +201,55 @@ class WhisperAligner:
 def _whisper_cli() -> Path | None:
     """whisper-cli：软件设置的组件根优先，其次 PATH（settings.whisper_cli_path 已含两者）。"""
     return studio_settings.whisper_cli_path()
+
+
+def _ascii_tmp_root() -> Path:
+    """保证 ASCII 的临时根：whisper-cli 读不了中文路径，故把工作目录放到纯 ASCII 处。
+    优先系统盘根下（如 C:\\dub_align_ascii），失败回退到系统临时目录。"""
+    candidates = [os.environ.get("SystemDrive", "C:") + os.sep, tempfile.gettempdir()]
+    for base in candidates:
+        try:
+            root = Path(base) / "dub_align_ascii"
+            root.mkdir(parents=True, exist_ok=True)
+            if str(root).isascii():
+                return root
+        except Exception:  # noqa: BLE001
+            continue
+    return Path(tempfile.gettempdir())
+
+
+def _short_path(p) -> str:
+    """Windows：把（已存在的）可能含中文的路径转成 8.3 短路径（纯 ASCII）。非 Windows / 失败 / 8.3
+    被禁用则原样返回。"""
+    s = str(p)
+    if os.name != "nt":
+        return s
+    try:
+        import ctypes
+
+        buf = ctypes.create_unicode_buffer(4096)
+        if ctypes.windll.kernel32.GetShortPathNameW(s, buf, 4096) and buf.value:
+            return buf.value
+    except Exception:  # noqa: BLE001
+        pass
+    return s
+
+
+def _ascii_model_arg(model: Path) -> str:
+    """把 whisper 模型路径变成 whisper-cli 读得了的 ASCII 路径：先试 8.3 短路径；仍含非 ASCII
+    则复制到 ASCII 缓存（按源路径+大小缓存，仅复制一次）。"""
+    s = _short_path(model)
+    if os.name != "nt" or s.isascii():
+        return s
+    try:
+        cache = _ascii_tmp_root() / "models"
+        cache.mkdir(parents=True, exist_ok=True)
+        dst = cache / (hashlib.md5(str(model).encode("utf-8")).hexdigest()[:12] + model.suffix)
+        if not dst.exists() or dst.stat().st_size != model.stat().st_size:
+            shutil.copy2(model, dst)
+        return str(dst) if str(dst).isascii() else _short_path(dst)
+    except Exception:  # noqa: BLE001
+        return s
 
 
 def _best_model() -> Path | None:
