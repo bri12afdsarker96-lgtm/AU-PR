@@ -178,6 +178,10 @@ td.mut{color:var(--muted)} tr:hover td{background:rgba(228,185,99,.035)}
 
 /* ───────── 音色卡 ───────── */
 .vlist{display:flex;flex-direction:column;gap:10px}
+/* 克隆音频列表（分段试听/克隆存档）行数多时锁高度、内部滚轮滑动，不再把整块面板撑爆 */
+#chunkList,#clList{max-height:360px;overflow-y:auto;overflow-x:hidden;padding-right:4px}
+#chunkList::-webkit-scrollbar,#clList::-webkit-scrollbar{width:8px}
+#chunkList::-webkit-scrollbar-thumb,#clList::-webkit-scrollbar-thumb{background:var(--line2);border-radius:4px}
 .vcard{border:1px solid var(--line);border-radius:var(--rs);padding:14px 16px;background:var(--panel2);
   display:flex;align-items:center;gap:13px;transition:.16s}
 .vcard:hover{border-color:var(--gold-deep)}
@@ -1249,7 +1253,11 @@ function syncPv(fromInput){
   const pct=+($('pvScale')?.value||70);
   if($('pvScaleV'))$('pvScaleV').textContent=pct+'%';
   const avail=Math.max(180,(phone.parentElement?.clientWidth||320)-46);
-  const pvW=Math.round(avail*pct/100);
+  // 同时按高度封顶：9:16 竖屏在满卡宽下会高得离谱（用户反馈「大小不合理」）。
+  // 预览高度不超过视口的 ~68%，据此反推最大宽度，宽/高两者取小，任何比例都不过大。
+  const maxH=Math.max(320,Math.round((window.innerHeight||900)*0.68));
+  const wByH=Math.round(maxH*cw/ch);
+  const pvW=Math.min(Math.round(avail*pct/100),wByH);
   phone.style.width=pvW+'px';
   phone.style.aspectRatio=cw+'/'+ch;
   const info=$('pvInfo'); if(info)info.textContent=`实时预览 · ${cw} × ${ch}（${$('aspect')?.value||'9:16 竖屏'}）`;
