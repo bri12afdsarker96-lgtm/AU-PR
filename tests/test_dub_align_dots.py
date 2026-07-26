@@ -290,5 +290,59 @@ class TnStubTests(unittest.TestCase):
         self.assertIs(sys.modules["tn"], fake_tn)
 
 
+class _LongRefRuntime:
+    """模拟 dots.tts：参考音频 patch=870，max_generate_length 需 > 870 才成功。"""
+    PATCH = 870
+    calls = []
+
+    @classmethod
+    def from_pretrained(cls, model_name_or_path, **kw):
+        return cls()
+
+    def generate(self, **kwargs):
+        mgl = int(kwargs.get("max_generate_length") or 500)
+        _LongRefRuntime.calls.append(mgl)
+        if mgl <= self.PATCH:
+            raise ValueError(
+                "max_generate_length must exceed prompt audio patch count when prompt_text "
+                f"is provided: max_generate_length={mgl} prompt_audio_patch_count={self.PATCH}.")
+        return {"audio": _FakeAudio(), "sample_rate": 48000}
+
+
+class DotsLongReferenceRetryTests(unittest.TestCase):
+    """长参考音频（patch 870 > 默认 500）：应解析报错里的 patch 数、抬高 max_generate_length
+    精确重试成功，并对同一参考缓存、后续行不再先失败。"""
+
+    def setUp(self):
+        _LongRefRuntime.calls = []
+        self._saved = {n: sys.modules.get(n) for n in ("dots_tts", "dots_tts.runtime", "soundfile")}
+        pkg = types.ModuleType("dots_tts"); rt = types.ModuleType("dots_tts.runtime")
+        rt.DotsTtsRuntime = _LongRefRuntime; pkg.runtime = rt
+        sf = types.ModuleType("soundfile"); sf.write = lambda p, d, s: Path(p).write_bytes(b"RIFFfake")
+        sys.modules.update({"dots_tts": pkg, "dots_tts.runtime": rt, "soundfile": sf})
+        from dub_align_studio.engines import dots_local
+        dots_local._RUNTIME_CACHE.clear(); dots_local._MGL_CACHE.clear()
+        self.dots_local = dots_local
+
+    def tearDown(self):
+        for n, m in self._saved.items():
+            if m is None: sys.modules.pop(n, None)
+            else: sys.modules[n] = m
+
+    def test_retries_with_patch_count_and_caches(self):
+        engine = DotsLocalEngine(checkpoint="x")
+        base = Path(tempfile.mkdtemp())
+        voice = VoiceRef(voice_id="长参考", reference_wav=base / "ref.wav", transcript="参考", name="长参考")
+        # 第一行：先默认失败 → 解析 870 → 用 870+预算 重试成功
+        engine._generate("第一句", voice, base / "1.wav", SynthesisOptions())
+        self.assertGreater(_LongRefRuntime.calls[-1], _LongRefRuntime.PATCH)  # 重试值 > patch 数
+        self.assertTrue((base / "1.wav").exists())
+        first_calls = len(_LongRefRuntime.calls)
+        # 第二行：应直接带缓存的 max_generate_length 一次成功（不再先失败）
+        engine._generate("第二句", voice, base / "2.wav", SynthesisOptions())
+        self.assertEqual(len(_LongRefRuntime.calls), first_calls + 1)  # 只多一次调用=没有 fail+retry
+        self.assertGreater(_LongRefRuntime.calls[-1], _LongRefRuntime.PATCH)
+
+
 if __name__ == "__main__":
     unittest.main()

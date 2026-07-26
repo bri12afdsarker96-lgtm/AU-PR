@@ -364,7 +364,7 @@ footer b{color:var(--muted);font-weight:600}
     <div class="card">
       <h2>执行</h2>
       <div class="row" style="gap:10px;align-items:stretch">
-        <button class="btn gold big" style="flex:1;margin:0" onclick="run('run_all')">▶&nbsp;&nbsp;生 成 成 片</button>
+        <button class="btn gold big" style="flex:1;margin:0" onclick="enqueueTask(true)" title="进入生成任务队列后台克隆（串行·一次只跑一个，避免 GPU 抢占卡死）">▶&nbsp;&nbsp;生 成 成 片</button>
         <button class="btn line" style="flex:none;padding:0 16px;white-space:nowrap" onclick="enqueueTask()" title="把当前整份配置冻结成一个任务加入队列，后台顺序克隆；之后可继续改设置提交下一个，互不影响">＋ 加入队列</button>
       </div>
       <label class="row mini" style="gap:7px;margin-top:8px;cursor:pointer;color:var(--faint)">
@@ -473,7 +473,8 @@ footer b{color:var(--muted);font-weight:600}
   <!-- 生成任务队列（⑨ 串行后台）：加入队列后台顺序克隆，可继续提交下一个，互不影响 -->
   <div class="card" id="genQueueCard" style="margin-top:16px;display:none">
     <h2>生成任务队列 · 后台顺序克隆
-      <button class="btn" style="float:right;padding:6px 12px;font-weight:400" onclick="clearQueueDone()">清除已完成</button></h2>
+      <button class="btn" style="float:right;padding:6px 12px;font-weight:400" onclick="clearQueueDone()">清除已完成</button>
+      <button class="btn" id="queuePauseBtn" style="float:right;padding:6px 12px;font-weight:400;margin-right:8px" onclick="pauseResumeQueue()">⏸ 暂停队列</button></h2>
     <p class="mini" style="color:var(--faint);margin:-4px 0 12px">点「＋加入队列」把当前配置<b>整份冻结</b>成一个任务；队列在后台一个个克隆，期间你可照常改设置、提交下一个、或去「文本框」精修别的成片——<b>已入队任务参数不受影响</b>。完成的成片自动进「文本框」页的待编辑队列。</p>
     <div id="genQueueList" class="vlist"></div>
   </div>
@@ -1432,17 +1433,20 @@ async function run(action,target){
   _busy(1400);
   if(await postRun(buildPayload(action))){toast('已开始 · '+(_ACTION_LABEL[action]||action),'ok');pollAll();}
 }
-/* ── ⑨ 生成任务队列（串行后台）：加入队列 / 拉状态 / 移除 / 清完成 ── */
-async function enqueueTask(){
-  if(!$('outdir').value.trim()){alert('请先选择「输出目录」再加入队列。');return;}
-  if(!$('text').value.trim()){alert('请先填写「待合成文案」再加入队列。');return;}
+/* ── ⑨ 生成任务队列（串行后台）：生成成片=入队即跑；加入队列=排后面。二者同一条串行队列，
+      一次只克隆一个，杜绝 GPU 抢占卡死与「run_all 正在执行」冲突 ── */
+async function enqueueTask(primary){
+  if(!$('outdir').value.trim()){alert('请先选择「输出目录」（默认跟随分镜目录）。');return;}
+  if(!$('text').value.trim()){alert('请先填写「待合成文案」。');return;}
+  if(!$('shots').value.trim()){alert('请先选择「分镜目录」。');return;}
   const p=buildPayload('run_all'); p.action='add';
   _busy(900);
   const j=await (await fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify(p)})).json();
   if(j.error){alert(j.error);return;}
-  toast('已加入队列 · '+(j.title||''),'ok');
+  toast((primary?'已开始生成（进队列后台克隆）· ':'已加入队列 · ')+(j.title||''),'ok');
   pollQueue();
+  if($('genQueueCard'))$('genQueueCard').scrollIntoView({behavior:'smooth',block:'nearest'});
 }
 async function removeQueueTask(id){
   await fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -1457,22 +1461,51 @@ async function clearQueueDone(){
     body:JSON.stringify({action:'clear'})}); toast('已清除完成项'); pollQueue();
 }
 const _QSTAT={pending:['排队中','var(--faint)'],running:['克隆中','var(--gold)'],
-  done:['✅ 已完成','var(--ok)'],failed:['❌ 失败','var(--bad)']};
+  done:['✅ 已完成','var(--ok)'],failed:['❌ 失败','var(--bad)'],cancelled:['⏹ 已取消','var(--faint)']};
 async function pollQueue(){
-  let tasks;try{tasks=(await (await fetch('/api/queue')).json()).tasks||[];}catch(e){return;}
+  let s;try{s=await (await fetch('/api/queue')).json();}catch(e){return;}
+  const tasks=s.tasks||[], paused=!!s.paused;
   const card=$('genQueueCard'),list=$('genQueueList');if(!card||!list)return;
-  card.style.display=tasks.length?'block':'none';
+  card.style.display=(tasks.length||paused)?'block':'none';
+  const pauseBtn=$('queuePauseBtn');
+  if(pauseBtn)pauseBtn.textContent=paused?'▶ 继续队列':'⏸ 暂停队列';
+  const F=(id,l,col,extra='')=>`<button class="btn" style="padding:4px 10px;flex:none;${extra}" onclick="${l}('${id}')">${col}</button>`;
   list.innerHTML=tasks.map(t=>{
     const [lab,col]=_QSTAT[t.status]||[t.status,'var(--faint)'];
     const pct=t.status==='running'?` ${t.progress||0}%`:'';
     const stg=t.status==='running'&&t.stage?` · ${esc(t.stage)}`:'';
-    const err=t.status==='failed'&&t.error?`<div class="mini" style="color:var(--bad)">${esc(t.error)}</div>`:'';
-    const rm=t.status==='pending'?`<button class="btn" style="padding:4px 10px;flex:none" onclick="removeQueueTask('${t.id}')">移除</button>`:'';
-    const retry=(t.status==='failed'||t.status==='done')?`<button class="btn" style="padding:4px 10px;flex:none;border-color:var(--gold)" onclick="retryQueueTask('${t.id}')">重试</button>`:'';
-    return `<div class="row" style="gap:10px;align-items:center;border:1px solid var(--line);border-radius:10px;padding:9px 12px">
-      <span style="flex:1;min-width:0"><b>${esc(t.title)}</b>${stg}${err}</span>
-      <span class="mini" style="flex:none;color:${col}">${lab}${pct}</span>${retry}${rm}</div>`;
+    const dir=t.output_dir?`<div class="mini" style="color:var(--faint)">→ ${esc(t.output_dir)}</div>`:'';
+    const err=(t.status==='failed'||t.status==='cancelled')&&t.error?`<div class="mini" style="color:var(--bad)">${esc(t.error)}</div>`:'';
+    const stuck=t.stuck?`<div class="mini" style="color:var(--bad)">⚠ 疑似卡死（${t.idle_seconds}s 无进度）——可点「取消」跳过</div>`:'';
+    const btns=[];
+    if(t.status==='pending')btns.push(F(t.id,'removeQueueTask','移除'));
+    if(t.status==='running')btns.push(F(t.id,'cancelQueueTask','取消',t.stuck?'border-color:var(--bad);color:var(--bad)':''));
+    if(t.status==='failed'||t.status==='done'||t.status==='cancelled')btns.push(F(t.id,'retryQueueTask','重试','border-color:var(--gold)'));
+    return `<div class="row" style="gap:10px;align-items:center;border:1px solid ${t.stuck?'var(--bad)':'var(--line)'};border-radius:10px;padding:9px 12px">
+      <span style="flex:1;min-width:0"><b>${esc(t.title)}</b>${stg}${dir}${err}${stuck}</span>
+      <span class="mini" style="flex:none;color:${col}">${lab}${pct}</span>${btns.join('')}</div>`;
   }).join('');
+  // 把正在跑的队列任务镜像到「执行」区，进度/日志照常可见（生成成片已并入队列）
+  const running=tasks.find(t=>t.status==='running');
+  if(running){
+    if(running.log&&running.log.length)paint(running.log);
+    const wrap=$('progWrap');
+    if(wrap){wrap.style.display='block';
+      $('progStage').textContent=running.stage||'进行中…';
+      $('progPct').textContent=(running.progress||0)+'%';
+      $('progBar').style.width=(running.progress||0)+'%';}
+  }
+}
+async function pauseResumeQueue(){
+  const s=await (await fetch('/api/queue')).json();
+  const act=s.paused?'resume':'pause';
+  await fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:act})});
+  toast(act==='pause'?'队列已暂停（当前任务跑完不再启动新的）':'队列已继续'); pollQueue();
+}
+async function cancelQueueTask(id){
+  if(!confirm('取消这个任务？（正在克隆的会在当前步骤间隙中止，队列继续跑后面的）'))return;
+  await fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'cancel',id})});
+  toast('已发出取消'); pollQueue();
 }
 // 视频进度条配置（未启用 → enabled:false，后端返回 None 不烧）
 function collectProgressBar(){

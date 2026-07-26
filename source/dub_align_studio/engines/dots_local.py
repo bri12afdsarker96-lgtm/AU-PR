@@ -54,6 +54,11 @@ LOCAL_CHECKPOINT_DIR = "dots.tts-soar"
 # 切掉，正文以自己完整的自然起音开头。留空则关闭整套兜底。
 _ONSET_LEAD_IN = "嗯。"
 
+# 长参考音频适配：max_generate_length 需 > 参考 patch 数（默认 500 太小）。按报错里的真实
+# patch 数 + 此预算精确抬高，并按参考路径缓存（同一参考后续行不再 fail+retry）。
+_MGL_OUTPUT_BUDGET = 800
+_MGL_CACHE: dict[str, int] = {}
+
 _SILENCE_THRESHOLD = 0.015     # 归一化幅度阈值（相对峰值）：低于视为静音
 _LEADING_KEEP_MS = 20          # 兜底裁静音时起音前保留的余量
 _MAX_LEADING_TRIM_S = 0.8      # 兜底裁静音的封顶
@@ -311,10 +316,16 @@ class DotsLocalEngine:
         }
         if options.normalize_text:
             kwargs["normalize_text"] = True
+        ref_key = ""
         if voice is not None:
-            kwargs["prompt_audio_path"] = Path(voice.reference_wav).as_posix()
+            ref_key = Path(voice.reference_wav).as_posix()
+            kwargs["prompt_audio_path"] = ref_key
             if voice.transcript.strip():
                 kwargs["prompt_text"] = voice.transcript.strip()  # 带转写：克隆相似度最高
+        # 参考音频较长时 dots.tts 要求 max_generate_length > 参考 patch 数（默认 500 不够，实测 870
+        # 直接失败）。这里对同一参考记住上次算出的可用值，后续行直接带上、不再 fail+retry。
+        if ref_key and ref_key in _MGL_CACHE:
+            kwargs["max_generate_length"] = _MGL_CACHE[ref_key]
         try:
             result = runtime.generate(**_supported_generate_kwargs(runtime, kwargs))
         except TypeError as exc:
@@ -322,8 +333,32 @@ class DotsLocalEngine:
                 f"dots.tts generate() 参数不匹配（{exc}）。请核对 dots.tts 版本或重新安装 dots.tts 组件。"
             ) from exc
         except Exception as exc:
-            raise EngineUnavailable(f"dots.tts 整篇合成失败：{exc}") from exc
+            result = self._retry_with_longer_generate(runtime, kwargs, ref_key, exc)
         self._save_result(result, output)
+
+    def _retry_with_longer_generate(self, runtime, kwargs: dict, ref_key: str, exc: Exception):
+        """针对「max_generate_length must exceed prompt audio patch count」——从报错里取真实
+        patch 数，把 max_generate_length 抬到「patch 数 + 预算」精确重试一次（不猜编码率）。"""
+        import re
+
+        m = re.search(r"prompt_audio_patch_count\s*=\s*(\d+)", str(exc))
+        if not m or int(kwargs.get("max_generate_length") or 0) > int(m.group(1)):
+            raise EngineUnavailable(f"dots.tts 整篇合成失败：{exc}") from exc
+        need = int(m.group(1)) + _MGL_OUTPUT_BUDGET
+        kwargs["max_generate_length"] = need
+        supported = _supported_generate_kwargs(runtime, kwargs)
+        if "max_generate_length" not in supported:
+            raise EngineUnavailable(
+                f"dots.tts 版本不支持 max_generate_length，无法适配较长的参考音频（{exc}）。"
+                "建议改用 5–30 秒的干净参考音频，或更新 dots.tts。"
+            ) from exc
+        try:
+            result = runtime.generate(**supported)
+        except Exception as exc2:  # noqa: BLE001
+            raise EngineUnavailable(f"dots.tts 整篇合成失败：{exc2}") from exc2
+        if ref_key:
+            _MGL_CACHE[ref_key] = need   # 同一参考后续行直接带上此值，避免每行都先失败再重试
+        return result
 
     @staticmethod
     def _save_result(result, output: Path) -> None:
