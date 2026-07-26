@@ -1453,9 +1453,25 @@ function applyWmObj(w){
 const _ACTION_LABEL={run_all:'生成成片',dub:'配音',timing:'量时长',render:'渲染',
   finalize:'按当前样式重烧成片',capcut:'导出剪映草稿',premiere:'导出 Premiere 工程',cleanup:'清理缓存'};
 async function run(action,target){
+  // 队列后台有任务在克隆时，点 ①配音/②量时长/③渲染 不另起会冲突/报错的单步任务，
+  // 而是跳到「生成任务队列」看那条任务的实时进度（用户反馈：点①配音应进入对应队列进度）。
+  if(['dub','timing','render'].includes(action)&&window._queueRunning){
+    focusRunningQueue(window._queueRunning);
+    return;
+  }
   logTarget=target||'mainlog';
   _busy(1400);
   if(await postRun(buildPayload(action))){toast('已开始 · '+(_ACTION_LABEL[action]||action),'ok');pollAll();}
+}
+function focusRunningQueue(t){
+  const card=$('genQueueCard');
+  if(card){
+    card.scrollIntoView({behavior:'smooth',block:'center'});
+    card.style.transition='box-shadow .25s';
+    card.style.boxShadow='0 0 0 2px var(--gold)';
+    setTimeout(()=>{card.style.boxShadow='';},1400);
+  }
+  toast('「'+((t&&t.title)||'')+'」正在队列后台克隆'+((t&&t.stage)?' · '+t.stage:'')+'，进度见此','ok');
 }
 /* ── ⑨ 生成任务队列（串行后台）：生成成片=入队即跑；加入队列=排后面。二者同一条串行队列，
       一次只克隆一个，杜绝 GPU 抢占卡死与「run_all 正在执行」冲突 ── */
@@ -1526,6 +1542,7 @@ async function pollQueue(){
   Object.keys(_prevQ).forEach(id=>{ if(!tasks.some(t=>t.id===id))delete _prevQ[id]; });
   // 把正在跑的队列任务镜像到「执行」区（main 槽有任务在跑时让位，避免互相盖日志/进度）
   const running=tasks.find(t=>t.status==='running');
+  window._queueRunning=running||null;   // 供 ①②③ 步骤按钮判断：队列在跑时点它们跳去看进度而非另起冲突任务
   if(running&&!window._mainBusy){
     if(running.log&&running.log.length)paint(running.log);
     const wrap=$('progWrap');
