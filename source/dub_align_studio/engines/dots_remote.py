@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import array as _array
 import base64
+import getpass
+import hashlib
 import io
 import json
 import socket
@@ -46,6 +48,19 @@ from .voice_ref import VoiceRef
 DEFAULT_TIMEOUT_S = 300   # 单行合成上限。正常一行几秒~几十秒；300s 仍很宽裕，但云端卡死时
                           # 最多 5 分钟即报错，不再干等 15 分钟冻住整条队列。首行含模型加载见下方重试。
 _HEALTH_TIMEOUT_S = 30
+
+
+def _stable_user_id() -> str:
+    """每台安装稳定唯一的用户标识（主机名+用户名 → 短哈希）。供云端多用户公平队列区分不同用户，
+    即便大家共用同一把 API Key 也能各自排队限流、人人平等轮流。"""
+    try:
+        raw = f"{socket.gethostname()}|{getpass.getuser()}"
+    except Exception:  # noqa: BLE001
+        raw = "unknown"
+    return hashlib.sha1(raw.encode("utf-8", "ignore")).hexdigest()[:16]
+
+
+_USER_ID = _stable_user_id()
 
 
 class DotsRemoteEngine:
@@ -148,7 +163,8 @@ class DotsRemoteEngine:
 
     # --------------------------------------------------------------- HTTP
     def _headers(self) -> dict:
-        headers = {"Content-Type": "application/json", "Accept": "audio/wav, application/json"}
+        headers = {"Content-Type": "application/json", "Accept": "audio/wav, application/json",
+                   "X-User-Id": _USER_ID}   # 供云端公平队列区分用户
         if self.api_key:
             headers["X-API-Key"] = self.api_key
         return headers
@@ -202,6 +218,8 @@ def _http_error_hint(exc: urllib.error.HTTPError) -> str:
         return f"云端鉴权失败（HTTP {exc.code}）。请检查 API Key 是否与服务器一致。"
     if exc.code == 404:
         return f"云端地址无该接口（HTTP 404）。请确认地址填到服务根（不含 /synthesize）。{body}"
+    if exc.code == 429:   # 单用户排队已满（公平队列限流）
+        return "云端排队已满（你的在队请求过多）。多为同时提交太多，请等前面的配音完成后再试。"
     return f"云端返回错误（HTTP {exc.code}）：{body}"
 
 
