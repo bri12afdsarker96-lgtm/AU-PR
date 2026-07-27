@@ -49,9 +49,12 @@ API_KEY = os.environ.get("DOTS_SERVER_API_KEY", "").strip()
 CHECKPOINT = os.environ.get("DOTS_CHECKPOINT", "").strip() or "rednote-hilab/dots.tts-soar"
 RUNTIME_MODULE = os.environ.get("DOTS_RUNTIME_MODULE", "dots_tts.runtime").strip()
 PRECISION = os.environ.get("DOTS_PRECISION", "bf16").strip()
-# optimize=True 会走 torch.compile(inductor)，在 torch 2.9 上会崩（flex_attention「duplicate
-# template name」）。dots.tts 本身默认就是 False，这里也默认关；确要开可设 DOTS_OPTIMIZE=1。
-OPTIMIZE = os.environ.get("DOTS_OPTIMIZE", "0").strip() not in ("0", "false", "False", "")
+# optimize=True 走 torch.compile(inductor)，能显著提速(单卡 AR 的主要加速手段)，但在 torch 2.9 上
+# 曾崩(flex_attention「duplicate template name」)。DOTS_OPTIMIZE:
+#   auto(默认) = 尝试开启 torch.compile；预热若崩则**自动回退 eager**(不影响可用，只是慢一点)
+#   1/true     = 强制开启(崩了就报错)
+#   0/false    = 强制关闭(纯 eager，最稳)
+_OPT_MODE = os.environ.get("DOTS_OPTIMIZE", "auto").strip().lower()
 EXPECTED_SAMPLE_RATE = 48000
 MGL_OUTPUT_BUDGET = 800   # 与客户端一致：参考音频较长时 max_generate_length 的额外预算
 MAX_INFLIGHT_PER_USER = int(os.environ.get("DOTS_MAX_INFLIGHT_PER_USER", "6"))  # 单用户排队上限，防刷占满
@@ -188,7 +191,23 @@ def _load_runtime():
         cls = getattr(mod, "DotsTtsRuntime", None)
         if cls is None:
             raise RuntimeError(f"{RUNTIME_MODULE} 中未找到 DotsTtsRuntime，请核对 dots.tts 版本。")
-        _runtime = cls.from_pretrained(CHECKPOINT, precision=PRECISION, optimize=OPTIMIZE)
+
+        want_opt = _OPT_MODE in ("auto", "1", "true", "yes", "on")
+        if want_opt:
+            try:
+                print(f"[optimize] 尝试开启 torch.compile 加速（DOTS_OPTIMIZE={_OPT_MODE}）…")
+                rt = cls.from_pretrained(CHECKPOINT, precision=PRECISION, optimize=True)
+                # 预热一小句真正触发编译；auto 模式下若崩→回退 eager，1/true 模式下崩→抛错
+                rt.generate(**_supported_kwargs(rt, {
+                    "text": "嗯。你好。", "num_steps": 4, "guidance_scale": 1.0}))
+                _runtime = rt
+                print("[optimize] torch.compile 已启用（加速生效）。")
+                return _runtime
+            except Exception as exc:  # noqa: BLE001
+                if _OPT_MODE not in ("auto",):
+                    raise
+                print(f"[optimize] torch.compile 预热失败，自动回退 eager（不影响可用，仅速度）：{exc}")
+        _runtime = cls.from_pretrained(CHECKPOINT, precision=PRECISION, optimize=False)
         return _runtime
 
 

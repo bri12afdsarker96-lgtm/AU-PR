@@ -75,7 +75,7 @@ if [ -z "${DOTS_SERVER_API_KEY:-}" ]; then
 fi
 export DOTS_SERVER_API_KEY
 export DOTS_CHECKPOINT="${DOTS_CHECKPOINT:-rednote-hilab/dots.tts-soar}"
-export DOTS_OPTIMIZE="${DOTS_OPTIMIZE:-0}"   # 关 torch.compile：torch 2.9 的 inductor 会崩(flex_attention duplicate template)
+export DOTS_OPTIMIZE="${DOTS_OPTIMIZE:-auto}"   # auto=尝试 torch.compile 加速，崩了自动回退 eager（详见 dots_tts_server）
 
 # 4.5) 注入 tn 桩包：dots_tts 导入时硬性 `from tn.chinese.normalizer import Normalizer`，
 #      tn 来自 WeTextProcessing(--no-deps 跳过)。真 tn 不在时，写一个「原样返回」的 tn 包到
