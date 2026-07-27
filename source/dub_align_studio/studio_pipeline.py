@@ -62,7 +62,9 @@ def make_render_config(aspect: str | None = None) -> RenderConfig:
     """按画面比例名生成渲染配置（宽高来自内核 aspect_canvas，基准 1080）。"""
     name = aspect if aspect in ASPECT_KEYS else DEFAULT_ASPECT
     width, height = aspect_canvas(name, base=1080)
-    return RenderConfig(width=width, height=height)
+    return RenderConfig(width=width, height=height,
+                        ffmpeg=studio_settings.ffmpeg_tool("ffmpeg"),
+                        ffprobe=studio_settings.ffmpeg_tool("ffprobe"))
 
 
 def segments_from_output(output_dir: Path, count: int) -> list[Path]:

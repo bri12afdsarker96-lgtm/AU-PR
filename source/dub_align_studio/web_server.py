@@ -701,7 +701,7 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             with JOB.lock:
                 JOB.ok = True
         elif action == "envcheck":
-            import shutil as _sh
+            from pathlib import Path as _P
 
             from .version import full_version
 
@@ -714,7 +714,7 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                                 ("克隆音频", root / studio_settings.DIR_CLONES),
                                 ("字体", root / studio_settings.DIR_FONTS)):
                 log(f"  {label}：{path}（{'存在' if path.is_dir() else '将在首次使用时创建'}）")
-            ff = bool(_sh.which("ffmpeg") and _sh.which("ffprobe"))
+            ff = _P(studio_settings.ffmpeg_tool("ffmpeg")).is_file() and _P(studio_settings.ffmpeg_tool("ffprobe")).is_file()
             log(("✅ " if ff else "⛔ ") + "ffmpeg / ffprobe" + ("" if ff else "：未找到，请放到软件目录旁或加入 PATH"))
             for c in toolbox.component_statuses():
                 log(("✅ " if c["installed"] else "⛔ ") + f"{c['name']}：{c['detail']}")
@@ -894,9 +894,9 @@ class _Handler(BaseHTTPRequestHandler):
             aligner = WhisperAligner().probe()
             statuses.append({"key": aligner.key, "name": "whisper 尺子",
                              "available": aligner.available, "detail": aligner.detail})
-            import shutil as _sh
+            from pathlib import Path as _P
 
-            ff = bool(_sh.which("ffmpeg") and _sh.which("ffprobe"))
+            ff = _P(studio_settings.ffmpeg_tool("ffmpeg")).is_file() and _P(studio_settings.ffmpeg_tool("ffprobe")).is_file()
             statuses.insert(0, {"key": "ffmpeg", "name": "ffmpeg / ffprobe",
                                 "available": ff,
                                 "detail": "渲染就绪。" if ff else "未找到 ffmpeg/ffprobe，无法渲染成片。"})

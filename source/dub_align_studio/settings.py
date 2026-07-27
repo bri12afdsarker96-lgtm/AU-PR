@@ -69,6 +69,40 @@ def save_settings(update: dict) -> dict:
     return settings
 
 
+def ffmpeg_tool(name: str = "ffmpeg") -> str:
+    """把 ffmpeg / ffprobe 解析成**绝对路径**：依次找 启动.bat/exe 旁边、数据总目录、组件目录、
+    exe 所在目录及其上级、当前目录，最后查系统 PATH；都没有则原样返回名字（交上层给缺失指引）。
+
+    根因（2026-07-28 用户实测）：旧逻辑只 shutil.which(依赖 PATH/当前目录)，用户把 ffmpeg 放在
+    启动项旁边但启动时的当前目录并非该文件夹 → 找不到。改为主动搜已知目录并返回绝对路径，
+    渲染/量时长子进程无论当前目录是什么都能用。"""
+    import shutil
+
+    exe = name + (".exe" if sys.platform == "win32" else "")
+    dirs: list[Path] = []
+    for producer in (
+        lambda: _app_dir(),                    # 启动.bat / exe 旁边（用户最常见放置处）
+        lambda: data_root(),
+        lambda: components_root(),
+        lambda: data_root() / DIR_COMPONENTS,
+        lambda: Path(sys.executable).resolve().parent,
+        lambda: Path(sys.executable).resolve().parent.parent,
+        lambda: Path.cwd(),
+    ):
+        try:
+            dirs.append(producer())
+        except Exception:  # noqa: BLE001
+            continue
+    for d in dirs:
+        try:
+            cand = d / exe
+            if cand.is_file():
+                return str(cand)
+        except Exception:  # noqa: BLE001
+            continue
+    return shutil.which(name) or name
+
+
 def dots_remote_config() -> tuple[str, str]:
     """云 dots.tts 远程引擎配置：(服务器地址, API Key)。
     环境变量优先（DOTS_REMOTE_ENDPOINT / DOTS_REMOTE_API_KEY），其次 settings.json
