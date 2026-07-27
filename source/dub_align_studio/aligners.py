@@ -21,7 +21,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from integrated_workbench.model_registry import MODEL_REGISTRY, validate_component_file
@@ -136,7 +136,8 @@ class AlignerStatus:
 class WhisperAligner:
     """whisper-cli 尺子：复用水星 whisper 组件（vendor_tools/whisper.cpp + ggml 模型）。"""
 
-    ffmpeg: str = "ffmpeg"
+    # 解析成绝对路径：启动项旁/数据目录/PATH 都找（不再只靠当前目录，见 settings.ffmpeg_tool）
+    ffmpeg: str = field(default_factory=lambda: studio_settings.ffmpeg_tool("ffmpeg"))
 
     key: str = "whisper"
 
