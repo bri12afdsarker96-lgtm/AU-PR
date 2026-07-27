@@ -45,6 +45,79 @@ class UiContractPhase3Tests(unittest.TestCase):
         finally:
             ws._gen_queue_set_paused(False)
 
+    def test_pipeline_overlaps_dub_and_render(self):
+        """流水线：任务 A 渲染时任务 B 应能并行配音（配音串行、渲染串行，但两阶段跨任务重叠）。"""
+        import tempfile
+        import threading
+        import time
+        from pathlib import Path
+
+        from dub_align_studio import web_server as ws
+
+        ws._gen_queue_set_paused(False)
+        events: list[tuple] = []
+        elock = threading.Lock()
+
+        def rec(label: str, phase: str, kind: str) -> None:
+            with elock:
+                events.append((time.time(), label, phase, kind))
+
+        orig = {n: getattr(ws.pipeline, n) for n in ("select_shot_videos", "step_dub", "step_timing", "step_render")}
+        orig_remember = ws._remember_edit_item
+
+        def fake_select(*a, **k):
+            return []
+
+        def fake_dub(text, engine_key, output_dir, voice, options, log=None, progress=None, heartbeat=None):
+            label = Path(output_dir).name
+            rec(label, "dub", "start"); time.sleep(0.3); rec(label, "dub", "end")
+            (Path(output_dir) / ws.pipeline.MASTER_NAME).write_bytes(b"")
+            return type("M", (), {"seconds": 1.0, "engine": engine_key, "path": Path(output_dir) / ws.pipeline.MASTER_NAME})()
+
+        def fake_timing(text, master_path, aligner_key, output_dir):
+            return [], []
+
+        def fake_render(master_path, timings, videos, output_dir, style, **k):
+            label = Path(output_dir).name
+            rec(label, "render", "start"); time.sleep(0.3); rec(label, "render", "end")
+            return type("R", (), {"ok": True, "output_path": Path(output_dir) / "成片.mp4", "subtitle_note": ""})()
+
+        ws.pipeline.select_shot_videos = fake_select
+        ws.pipeline.step_dub = fake_dub
+        ws.pipeline.step_timing = fake_timing
+        ws.pipeline.step_render = fake_render
+        ws._remember_edit_item = lambda *a, **k: None
+        try:
+            root = Path(tempfile.mkdtemp())
+            ids = []
+            for name in ("A", "B"):
+                out = root / name
+                out.mkdir()
+                ids.append(ws._gen_enqueue(
+                    {"text": "一\n二", "engine": "mock", "aligner": "均分兜底",
+                     "output_dir": str(out), "shots_dir": str(root), "burn_subtitles": False},
+                    name))
+            deadline = time.time() + 20
+            while time.time() < deadline:
+                snap = {t["id"]: t["status"] for t in ws._gen_queue_snapshot()["tasks"]}
+                if all(snap.get(i) in ("done", "failed", "cancelled") for i in ids):
+                    break
+                time.sleep(0.1)
+            # 取每个任务的 dub / render 区间
+            def interval(label, phase):
+                st = next(t for t, l, p, k in events if l == label and p == phase and k == "start")
+                en = next(t for t, l, p, k in events if l == label and p == phase and k == "end")
+                return st, en
+            a_render = interval("A", "render")
+            b_dub = interval("B", "dub")
+            # 重叠判定：B 配音 与 A 渲染 时间区间相交 → 证明并行(串行则不会相交)
+            overlap = a_render[0] < b_dub[1] and b_dub[0] < a_render[1]
+            self.assertTrue(overlap, f"未发生重叠(退化为串行)：A渲染={a_render} B配音={b_dub}")
+        finally:
+            for n, f in orig.items():
+                setattr(ws.pipeline, n, f)
+            ws._remember_edit_item = orig_remember
+
     def test_browse_lists_files_and_parse_by_path(self):
         import tempfile
         from pathlib import Path
