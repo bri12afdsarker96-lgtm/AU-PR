@@ -48,6 +48,10 @@ echo "使用 Python：$PY"; "$PY" --version
 "$PY" -c "import torch;print('torch',torch.__version__,'CUDA可用',torch.cuda.is_available())" 2>/dev/null \
   || echo "⚠ 选中的 Python 仍没有 torch（会继续，但配音可能起不来）。请把窗口截图发我。"
 
+# SKIP_INSTALL=1 → 只启动、不重装（关机重开后用，依赖/模型都还在硬盘上，秒起）
+if [ -n "${SKIP_INSTALL:-}" ]; then
+  echo "[跳过安装] SKIP_INSTALL 已设，直接拉起服务（依赖与模型沿用已装好的）。"
+else
 # 1) dots.tts 本体（--no-deps，与本地 App 完全一致：绕开 Windows 装不了的 pynini）
 echo "[1/4] 安装 dots.tts 本体…"
 $PY -m pip install -q --no-deps dots.tts
@@ -61,6 +65,7 @@ $PY -m pip install -q transformers==4.57.0 accelerate==1.12.0 huggingface-hub lo
 # 3) 服务端框架
 echo "[3/4] 安装服务端框架（fastapi/uvicorn/…）…"
 $PY -m pip install -q "fastapi>=0.110" "uvicorn[standard]>=0.29" "soundfile>=0.12" "pydantic>=2.0"
+fi
 
 # 4) API Key（已存则复用，保证客户端填的 Key 长期不变）
 if [ -f .env ]; then set -a; source .env; set +a; fi
@@ -102,6 +107,17 @@ pkill -f dots_tts_server.py 2>/dev/null || true
 sleep 1
 nohup "$PY" dots_tts_server.py --host 0.0.0.0 --port "$PORT" --preload > "$LOG" 2>&1 &
 sleep 3
+
+# 5.1) 开机自启（best-effort）：登记 @reboot cron，关机重开后自动拉起服务，无需再点 bat。
+#      容器无 cron/crond 时会失败——不影响本次启动，仍可用「一键启动服务.bat」手动拉起。
+if command -v crontab >/dev/null 2>&1; then
+  SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+  LINE="@reboot cd $(dirname "$SELF") && SKIP_INSTALL=1 SERVER_PORT=$PORT bash $SELF >/root/server/boot.log 2>&1"
+  ( crontab -l 2>/dev/null | grep -v "cloud_bootstrap.sh"; echo "$LINE" ) | crontab - 2>/dev/null \
+    && echo "已登记开机自启（@reboot）——下次开机自动拉起服务。" \
+    || echo "（开机自启登记失败，可忽略；重开后用『一键启动服务.bat』手动拉起）"
+  command -v service >/dev/null 2>&1 && service cron start >/dev/null 2>&1 || true
+fi
 
 # 尽力探测公网 IP（拿不到就用占位，不影响启动）
 PUBIP="$(curl -s --max-time 5 https://api.ipify.org 2>/dev/null || curl -s --max-time 5 https://ifconfig.me 2>/dev/null || echo '你的公网IP')"
