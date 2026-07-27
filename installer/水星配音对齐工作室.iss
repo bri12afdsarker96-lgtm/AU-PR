@@ -11,14 +11,24 @@
   #define SrcDir "整合离线包\_请先用打包安装程序.bat_"
 #endif
 #define MyApp "水星配音对齐工作室"
+#ifndef Lite
+  #define Lite "0"
+#endif
+#if Lite == "1"
+  #define Edition "（云配版）"
+  #define OutName "水星配音对齐工作室_云配版安装程序_v" + MyVer
+#else
+  #define Edition ""
+  #define OutName "水星配音对齐工作室_安装程序_v" + MyVer
+#endif
 
 [Setup]
 AppName={#MyApp}
 AppVersion={#MyVer}
-AppVerName={#MyApp} v{#MyVer}
+AppVerName={#MyApp} v{#MyVer}{#Edition}
 AppPublisher=水星（非商用 · 个人使用）
-DefaultDirName={autopf}\{#MyApp}
-DefaultGroupName={#MyApp}
+DefaultDirName={autopf}\{#MyApp}{#Edition}
+DefaultGroupName={#MyApp}{#Edition}
 DisableProgramGroupPage=yes
 DisableDirPage=no
 PrivilegesRequired=lowest
@@ -27,7 +37,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 SourceDir={#RepoDir}
 OutputDir=发布包
-OutputBaseFilename=水星配音对齐工作室_安装程序_v{#MyVer}
+OutputBaseFilename={#OutName}
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
@@ -53,4 +63,8 @@ Name: "{autodesktop}\{#MyApp}"; Filename: "{app}\启动.bat"; WorkingDir: "{app}
 Filename: "{app}\启动.bat"; Description: "立即启动 {#MyApp}"; WorkingDir: "{app}"; Flags: shellexec postinstall skipifsilent nowait
 
 [Messages]
+#if Lite == "1"
+WelcomeLabel2=即将安装 [name/ver]（轻量云配版）。%n%n配音走云 GPU（装好后在「设置-云配音」填云地址+API Key、引擎选 dots.tts 云GPU 远程）；本机无需独立显卡，集成显卡即可，渲染所需 ffmpeg 已随包。
+#else
 WelcomeLabel2=即将安装 [name/ver]（整合离线版，自带运行环境与模型）。%n%n注意：本机需 NVIDIA 显卡（配音走 CUDA）；渲染成片还需 ffmpeg。安装体量较大，请预留磁盘空间。
+#endif
