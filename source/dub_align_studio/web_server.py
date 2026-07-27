@@ -643,8 +643,10 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                 JOB.ok = True
                 JOB.result = None  # 分镜段已删，作废内存结果 → 后续导出走磁盘回读并给出友好提示
         elif action == "probe":
-            for status in (MockEngine().probe(), DotsLocalEngine().probe(),
-                           DotsRemoteEngine().probe(), FishLocalEngine().probe()):
+            _engines = ((DotsRemoteEngine().probe(),) if studio_settings.cloud_only()
+                        else (MockEngine().probe(), DotsLocalEngine().probe(),
+                              DotsRemoteEngine().probe(), FishLocalEngine().probe()))
+            for status in _engines:
                 log(("✅ " if status.available else "⛔ ") + f"{status.key}：{status.detail}")
             aligner = WhisperAligner().probe()
             log(("✅ " if aligner.available else "⛔ ") + f"whisper：{aligner.detail}")
@@ -882,14 +884,16 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({"components": toolbox.component_statuses()})
             return
         if route == "/api/probe":
+            _probe_pairs = (((DotsRemoteEngine().probe(), "dots.tts 云端"),)
+                            if studio_settings.cloud_only() else (
+                                (MockEngine().probe(), "mock 引擎"),
+                                (DotsLocalEngine().probe(), "dots.tts"),
+                                (DotsRemoteEngine().probe(), "dots.tts 云端"),
+                                (FishLocalEngine().probe(), "fish-speech"),
+                            ))
             statuses = [
                 {"key": s.key, "name": n, "available": s.available, "detail": s.detail}
-                for s, n in (
-                    (MockEngine().probe(), "mock 引擎"),
-                    (DotsLocalEngine().probe(), "dots.tts"),
-                    (DotsRemoteEngine().probe(), "dots.tts 云端"),
-                    (FishLocalEngine().probe(), "fish-speech"),
-                )
+                for s, n in _probe_pairs
             ]
             aligner = WhisperAligner().probe()
             statuses.append({"key": aligner.key, "name": "whisper 尺子",
@@ -1402,7 +1406,8 @@ def _state_payload() -> dict:
               for v in voice_library.list_voices(_vroot())]
     return {
         "version": full_version(),
-        "engines": pipeline.ENGINE_KEYS,
+        "engines": (["dots_remote"] if studio_settings.cloud_only() else pipeline.ENGINE_KEYS),
+        "cloud_only": studio_settings.cloud_only(),
         "aligners": pipeline.ALIGNER_KEYS,
         "aspects": pipeline.ASPECT_KEYS,
         "positions": list(POSITION_PRESETS),

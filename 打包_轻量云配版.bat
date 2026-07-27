@@ -42,11 +42,11 @@ echo [3/6] 拷贝软件源码 + 云配音部署脚本 ...
 robocopy "source" "%PKG%\source" /e /nfl /ndl /njh /njs /nc /ns /xd __pycache__ >nul
 if exist "server" robocopy "server" "%PKG%\server" /e /nfl /ndl /njh /njs /nc /ns >nul
 
-echo [4/6] 拷贝数据总目录(仅 whisper/字体/音色/音效；剔除 dots.tts/fish-speech/torch 大件) ...
+echo [4/6] 拷贝数据总目录(仅 whisper/音效；剔除 dots.tts/fish-speech/torch/字体/音色 —— 字体音色请自行导入) ...
 set "DATADIR="
 for /f "usebackq delims=" %%d in (`python -c "import sys;sys.path.insert(0,'source');from dub_align_studio.settings import data_root;print(data_root())"`) do set "DATADIR=%%d"
 if defined DATADIR if exist "%DATADIR%" (
-  robocopy "%DATADIR%" "%PKG%\水星配音数据" /e /nfl /ndl /njh /njs /nc /ns /xd "dots.tts" "fish-speech" "torch" >nul
+  robocopy "%DATADIR%" "%PKG%\水星配音数据" /e /nfl /ndl /njh /njs /nc /ns /xd "dots.tts" "fish-speech" "torch" "字体" "音色库" >nul
 ) else ( echo   （未找到数据总目录，跳过） )
 
 echo [5/6] 打包 ffmpeg/ffprobe(渲染必需，本机 CPU) ...
@@ -62,6 +62,7 @@ echo [6/6] 生成 启动.bat 与 首次使用说明 ...
 >> "%PKG%\启动.bat" echo cd /d "%%~dp0"
 >> "%PKG%\启动.bat" echo title 水星配音对齐工作室(轻量云配版)
 >> "%PKG%\启动.bat" echo set "PYTHONPATH=source"
+>> "%PKG%\启动.bat" echo set "MERCURY_CLOUD_ONLY=1"
 >> "%PKG%\启动.bat" echo set "PATH=%%~dp0;%%PATH%%"
 >> "%PKG%\启动.bat" echo if not exist "%%~dp0python\python.exe" goto NOPY
 >> "%PKG%\启动.bat" echo echo 启动中(轻量云配版)…浏览器会自动打开，勿关本窗口。配音请在设置里填云地址+APIKey、引擎选 dots.tts 云GPU 远程。

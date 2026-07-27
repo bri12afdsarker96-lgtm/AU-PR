@@ -75,5 +75,26 @@ class InstallGuardTests(unittest.TestCase):
         self.assertFalse(components._pip_installed("绝对不存在的包名xyz"))
 
 
+class CloudOnlyModeTests(unittest.TestCase):
+    """轻量云配版：隐藏本地模型组件/引擎，不影响正式版。"""
+
+    def test_cloud_only_hides_local_model_components(self):
+        import os
+
+        from dub_align_studio import settings
+
+        os.environ["MERCURY_CLOUD_ONLY"] = "1"
+        try:
+            self.assertTrue(settings.cloud_only())
+            keys = {c["key"] for c in components.component_statuses()}
+            self.assertFalse({"torch_cuda", "dots_tts", "fish_speech"} & keys, "云配版不应出现本地模型组件")
+            self.assertLessEqual({"whisper_cli", "small", "pycapcut"}, keys, "whisper/pycapcut 应保留")
+        finally:
+            os.environ.pop("MERCURY_CLOUD_ONLY", None)
+        # 正式版(未设环境变量)照旧含 dots_tts
+        self.assertFalse(settings.cloud_only())
+        self.assertIn("dots_tts", {c["key"] for c in components.component_statuses()})
+
+
 if __name__ == "__main__":
     unittest.main()

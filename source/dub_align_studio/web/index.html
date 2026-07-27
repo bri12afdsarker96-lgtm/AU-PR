@@ -992,6 +992,10 @@ async function loadState(){
   if(s.version){$('verFlag').textContent=s.version.split(' · ')[0];$('verFlag').title=s.version;
     $('verFoot').textContent='· '+s.version+' ';document.title='水星配音对齐工作室 '+s.version.split(' · ')[0];
     const vi=$('verInfo');if(vi)vi.textContent=s.version;}
+  window._cloudOnly=!!s.cloud_only;
+  if(window._cloudOnly){document.title='水星配音对齐工作室（云配版）';
+    const vf=$('verFoot');if(vf)vf.textContent+='· 云配版 ';
+    const vi=$('verInfo');if(vi)vi.textContent=(vi.textContent||'')+'（轻量云配版：配音走云 GPU，本机无需独显；本地模型组件已隐藏）';}
   const engs=s.engines.filter(k=>k!=='fish_local');  // 隐藏 fish-speech（会顶掉 dots.tts 的 CUDA torch）
   fill('engine',engs.map(k=>[k,ENGINE_LABEL[k]||k]));
   $('engine').value=engs.includes('dots_local')?'dots_local':engs[0];
