@@ -69,6 +69,19 @@ def save_settings(update: dict) -> dict:
     return settings
 
 
+def cloud_only() -> bool:
+    """轻量云配版模式：只用云配音，隐藏本地模型(dots/torch/fish)相关的引擎/组件/自检项，
+    环境自检也不因缺本地模型报错。由轻量版 启动.bat 设 MERCURY_CLOUD_ONLY=1 开启；
+    也可写进 settings.json 的 cloud_only。正式版不设此环境变量 → 行为完全不变。"""
+    v = os.environ.get("MERCURY_CLOUD_ONLY")
+    if v is not None:
+        return v.strip() not in ("", "0", "false", "False", "no")
+    try:
+        return bool(load_settings().get("cloud_only"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def ffmpeg_tool(name: str = "ffmpeg") -> str:
     """把 ffmpeg / ffprobe 解析成**绝对路径**：依次找 启动.bat/exe 旁边、数据总目录、组件目录、
     exe 所在目录及其上级、当前目录，最后查系统 PATH；都没有则原样返回名字（交上层给缺失指引）。

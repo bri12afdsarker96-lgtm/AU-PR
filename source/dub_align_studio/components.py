@@ -116,10 +116,20 @@ def _torch_runtime_ready() -> bool:
     return torch_minor == audio_minor
 
 
+# 轻量云配版隐藏的本地模型组件（配音走云端，本机不需要 torch/dots/fish）
+_CLOUD_HIDDEN_KEYS = {"torch_cuda", "dots_tts", "fish_speech"}
+
+
 def component_statuses() -> list[dict]:
-    """工具箱清单：每项含 installed 与人类可读 detail（capability-check 口径）。"""
+    """工具箱清单：每项含 installed 与人类可读 detail（capability-check 口径）。
+    轻量云配版(settings.cloud_only)下隐藏本地模型组件，避免误导与"未装"报错。"""
+    from . import settings as _s   # 局部导入避免任何潜在环依赖
+
+    cloud = _s.cloud_only()
     result: list[dict] = []
     for item in COMPONENTS:
+        if cloud and item["key"] in _CLOUD_HIDDEN_KEYS:
+            continue
         entry = dict(item)
         if item["kind"] == "download":
             installed, detail = _download_status(item["key"])
