@@ -1,152 +1,175 @@
 @echo off
-chcp 65001 >nul
 cd /d "%~dp0"
-title æ°´æ˜Ÿé…éŸ³å¯¹é½å·¥ä½œå®¤ Â· æ•´åˆç¦»çº¿åŒ…
+title Ë®ÐÇÅäÒô¶ÔÆë¹¤×÷ÊÒ ¡¤ ÕûºÏÀëÏß°ü
 echo ==========================================
-echo   æ°´æ˜Ÿé…éŸ³å¯¹é½å·¥ä½œå®¤ Â· æ•´åˆç¦»çº¿åŒ…æ‰“åŒ…
-echo   ï¼ˆPython çŽ¯å¢ƒ + ä¾èµ– + æ’ä»¶ + æ¨¡åž‹ å…¨æ‰“åŒ…ï¼Œç›®æ ‡æœºé›¶å®‰è£…ï¼‰
+echo   Ë®ÐÇÅäÒô¶ÔÆë¹¤×÷ÊÒ ¡¤ ÕûºÏÀëÏß°ü´ò°ü
+echo   £¨Python »·¾³ + ÒÀÀµ + ²å¼þ + Ä£ÐÍ È«´ò°ü£¬Ä¿±ê»úÁã°²×°£©
 echo ==========================================
 echo.
-echo è¯´æ˜Žï¼šæœ¬è„šæœ¬æŠŠã€Œå½“å‰è¿™ä¸ª Python çŽ¯å¢ƒã€æ•´ä½“æ‹·è¿›åŒ…é‡Œï¼Œ
-echo       æ‰€ä»¥è¯·åŠ¡å¿…åœ¨ã€å·²è£…å¥½ torch(CUDA)+dots.tts+whisper ä¸”èƒ½æ­£å¸¸é…éŸ³ã€‘çš„ Python ä¸Šè¿è¡Œæœ¬è„šæœ¬ã€‚
-echo       æˆå“å¾ˆå¤§ï¼ˆå« torch/CUDA/æ¨¡åž‹ï¼Œé€šå¸¸ 6~12GBï¼‰ï¼Œè¯·é¢„ç•™ç£ç›˜ç©ºé—´ä¸Žæ—¶é—´ã€‚
+echo ËµÃ÷£º±¾½Å±¾°Ñ¡¸µ±Ç°Õâ¸ö Python »·¾³¡¹ÕûÌå¿½½ø°üÀï£¬
+echo       ËùÒÔÇëÎñ±ØÔÚ¡¾ÒÑ×°ºÃ torch(CUDA)+dots.tts+whisper ÇÒÄÜÕý³£ÅäÒô¡¿µÄ Python ÉÏÔËÐÐ±¾½Å±¾¡£
+echo       ³ÉÆ·ºÜ´ó£¨º¬ torch/CUDA/Ä£ÐÍ£¬Í¨³£ 6~12GB£©£¬ÇëÔ¤Áô´ÅÅÌ¿Õ¼äÓëÊ±¼ä¡£
 echo.
 pause
 
-rem [0] å®šä½å½“å‰ Python å®‰è£…ç›®å½•ï¼ˆæ•´ä½“æ‹·è´ä»¥ä¿è¯å¯ç¦»çº¿è‡ªåŒ…å«ï¼‰
+rem [0] ¶¨Î»µ±Ç° Python °²×°Ä¿Â¼£¨ÕûÌå¿½±´ÒÔ±£Ö¤¿ÉÀëÏß×Ô°üº¬£©
 set "PYHOME="
 for /f "usebackq delims=" %%i in (`python -c "import sys;print(sys.base_prefix)"`) do set "PYHOME=%%i"
-if not defined PYHOME ( echo [é”™è¯¯] æœªæ‰¾åˆ° pythonï¼Œè¯·ç¡®è®¤å·²è£…å¹¶åœ¨ PATHã€‚& pause & exit /b 1 )
-echo [ä¿¡æ¯] æ‰“åŒ…æ‰€ç”¨ Pythonï¼š%PYHOME%
+if not defined PYHOME ( echo [´íÎó] Î´ÕÒµ½ python£¬ÇëÈ·ÈÏÒÑ×°²¢ÔÚ PATH¡£& pause & exit /b 1 )
+echo [ÐÅÏ¢] ´ò°üËùÓÃ Python£º%PYHOME%
 
-rem [0.1] æ‹’ç» Microsoft Store ç‰ˆ Pythonï¼šå®ƒåœ¨ WindowsApps å—ç³»ç»Ÿä¿æŠ¤ï¼Œæ— æ³•æ•´ç›®å½•æ‹·è´/è·¨æœºè¿è¡Œï¼Œ
-rem       æ‰“å‡ºæ¥çš„æ•´åˆåŒ…åœ¨åˆ«çš„ç”µè„‘ä¸ŠåŒå‡»ã€Œå¯åŠ¨.batã€ä¼šä¸€é—ªè€Œè¿‡ã€æ— ä»»ä½•æŠ¥é”™ï¼ˆæ­£æ˜¯æœ¬æ¬¡çŽ°è±¡ï¼‰ã€‚
+rem [0.1] ¾Ü¾ø Microsoft Store °æ Python£ºËüÔÚ WindowsApps ÊÜÏµÍ³±£»¤£¬ÎÞ·¨ÕûÄ¿Â¼¿½±´/¿ç»úÔËÐÐ£¬
+rem       ´ò³öÀ´µÄÕûºÏ°üÔÚ±ðµÄµçÄÔÉÏË«»÷¡¸Æô¶¯.bat¡¹»áÒ»ÉÁ¶ø¹ý¡¢ÎÞÈÎºÎ±¨´í£¨ÕýÊÇ±¾´ÎÏÖÏó£©¡£
 echo %PYHOME% | findstr /i "WindowsApps" >nul && goto :STOREPY
 
-rem [0.5] æ‰“åŒ…å‰è‡ªæ£€ï¼šç”¨ã€Œå°†è¢«æ‹·è¿›åŒ…çš„è¿™ä¸ª Pythonã€å®žæµ‹èƒ½å¦åŠ è½½ dots.tts è¿è¡Œæ—¶ã€‚
-rem ç›®çš„ï¼šé¿å…æŠŠè£…é”™çš„çŽ¯å¢ƒï¼ˆæœ€å¸¸è§ venvï¼šä¾èµ–åœ¨ venv é‡Œã€base é‡Œæ²¡æœ‰ï¼‰æ‰“æˆä¸€ä¸ªç”¨ä¸äº†çš„å¤§åŒ…ã€‚
-echo [è‡ªæ£€] ç”¨å¼•æ“Ž probe æ ¡éªŒæ‰“åŒ… Python èƒ½å¦çœŸæ­£è·‘ dots.ttsï¼ˆå« tn æ¡©/ç‰ˆæœ¬åŒ¹é…/CUDAï¼‰...
-"%PYHOME%\python.exe" -c "import sys;sys.path.insert(0,'source');from dub_align_studio.engines.dots_local import DotsLocalEngine as E;s=E().probe();print('[è‡ªæ£€]',s.detail);sys.exit(0 if s.available else 1)"
+rem [0.5] ´ò°üÇ°×Ô¼ì£ºÓÃ¡¸½«±»¿½½ø°üµÄÕâ¸ö Python¡¹Êµ²âÄÜ·ñ¼ÓÔØ dots.tts ÔËÐÐÊ±¡£
+rem Ä¿µÄ£º±ÜÃâ°Ñ×°´íµÄ»·¾³£¨×î³£¼û venv£ºÒÀÀµÔÚ venv Àï¡¢base ÀïÃ»ÓÐ£©´ò³ÉÒ»¸öÓÃ²»ÁËµÄ´ó°ü¡£
+echo [×Ô¼ì] ÓÃÒýÇæ probe Ð£Ñé´ò°ü Python ÄÜ·ñÕæÕýÅÜ dots.tts£¨º¬ tn ×®/°æ±¾Æ¥Åä/CUDA£©...
+"%PYHOME%\python.exe" -c "import sys;sys.path.insert(0,'source');from dub_align_studio.engines.dots_local import DotsLocalEngine as E;s=E().probe();print('[×Ô¼ì]',s.detail);sys.exit(0 if s.available else 1)"
 if errorlevel 1 goto :PREFAIL
 
-rem è¯»ç‰ˆæœ¬å·ç”¨äºŽå‘½å
+rem ¶Á°æ±¾ºÅÓÃÓÚÃüÃû
 set "VER=0.0.0"
 for /f "usebackq delims=" %%v in (`python -c "import sys;sys.path.insert(0,'source');from dub_align_studio.version import APP_VERSION;print(APP_VERSION)"`) do set "VER=%%v"
 
-set "PKGROOT=æ•´åˆç¦»çº¿åŒ…"
-set "PKG=%PKGROOT%\æ°´æ˜Ÿé…éŸ³å¯¹é½å·¥ä½œå®¤_æ•´åˆç‰ˆ_v%VER%"
-echo [æ¸…ç†] é‡å»ºæ‰“åŒ…ç›®å½• %PKG% ...
+set "PKGROOT=ÕûºÏÀëÏß°ü"
+set "PKG=%PKGROOT%\Ë®ÐÇÅäÒô¶ÔÆë¹¤×÷ÊÒ_ÕûºÏ°æ_v%VER%"
+echo [ÇåÀí] ÖØ½¨´ò°üÄ¿Â¼ %PKG% ...
 rd /s /q "%PKG%" 2>nul
 mkdir "%PKG%" 2>nul
 
-rem [1] æ‹·è´æ•´ä¸ª Python çŽ¯å¢ƒï¼ˆå« site-packages é‡Œçš„ torch/dots.tts/transformers ç­‰å…¨éƒ¨ä¾èµ–ï¼‰
-echo [1/5] æ‹·è´ Python çŽ¯å¢ƒï¼ˆå«å…¨éƒ¨ä¾èµ–/æ’ä»¶ï¼Œä½“é‡å¤§è¯·è€å¿ƒï¼‰...
+rem [1] ¿½±´Õû¸ö Python »·¾³£¨º¬ site-packages ÀïµÄ torch/dots.tts/transformers µÈÈ«²¿ÒÀÀµ£©
+echo [1/5] ¿½±´ Python »·¾³£¨º¬È«²¿ÒÀÀµ/²å¼þ£¬ÌåÁ¿´óÇëÄÍÐÄ£©...
 robocopy "%PYHOME%" "%PKG%\python" /e /nfl /ndl /njh /njs /nc /ns >nul
-if errorlevel 8 ( echo [é”™è¯¯] æ‹·è´ Python å¤±è´¥ã€‚& pause & exit /b 1 )
+if errorlevel 8 ( echo [´íÎó] ¿½±´ Python Ê§°Ü¡£& pause & exit /b 1 )
 
-rem [1.5] æ ¡éªŒã€ŒåŒ…å†… Pythonã€èƒ½ç‹¬ç«‹è¿è¡Œâ€”â€”ç”¨å®ƒè‡ªå·±ï¼ˆè„±ç¦» PATHï¼‰è·‘ä¸€å¥ï¼Œè·‘ä¸èµ·æ¥è¯´æ˜Žæº Python
-rem       ä¸å¯é‡å®šä½/å¤åˆ¶ä¸å…¨ï¼Œæ­¤æ—¶æ‰“å‡ºæ¥çš„åŒ…åˆ°åˆ«çš„æœºå™¨å¿…ç„¶èµ·ä¸æ¥ï¼Œç›´æŽ¥æ‹¦ä¸‹å¹¶è¯´æ˜ŽåŽŸå› ã€‚
+rem [1.5] Ð£Ñé¡¸°üÄÚ Python¡¹ÄÜ¶ÀÁ¢ÔËÐÐ¡ª¡ªÓÃËü×Ô¼º£¨ÍÑÀë PATH£©ÅÜÒ»¾ä£¬ÅÜ²»ÆðÀ´ËµÃ÷Ô´ Python
+rem       ²»¿ÉÖØ¶¨Î»/¸´ÖÆ²»È«£¬´ËÊ±´ò³öÀ´µÄ°üµ½±ðµÄ»úÆ÷±ØÈ»Æð²»À´£¬Ö±½ÓÀ¹ÏÂ²¢ËµÃ÷Ô­Òò¡£
 "%PKG%\python\python.exe" -c "import sys;print(sys.version)" >nul 2>&1
 if errorlevel 1 goto :PYCOPYBAD
-echo [1/5] åŒ…å†… Python å¤åˆ¶æ ¡éªŒé€šè¿‡ï¼ˆå¯ç‹¬ç«‹è¿è¡Œï¼‰ã€‚
+echo [1/5] °üÄÚ Python ¸´ÖÆÐ£ÑéÍ¨¹ý£¨¿É¶ÀÁ¢ÔËÐÐ£©¡£
 
-rem [2] æ‹·è´è½¯ä»¶æºç 
-echo [2/5] æ‹·è´è½¯ä»¶æºç  ...
+rem [2] ¿½±´Èí¼þÔ´Âë
+echo [2/5] ¿½±´Èí¼þÔ´Âë ...
 robocopy "source" "%PKG%\source" /e /nfl /ndl /njh /njs /nc /ns /xd __pycache__ >nul
 
-rem [3] æ‹·è´æ•°æ®æ€»ç›®å½•ï¼ˆwhisper-cli / ggml æ¨¡åž‹ / å­—ä½“ / éŸ³è‰²åº“ ç­‰ï¼Œä¸€å¹¶ç¦»çº¿ï¼‰
+rem [¸½] ¿½±´ÔÆÅäÒô²¿Êð½Å±¾ server\£¨´øÉÏ¾ÍÄÜÔÚÄ¿±ê»úÒ»¼ü²¿ÊðÔÆ GPU£»Ã»ÓÐÔòÌø¹ý£©
+if exist "server" (
+  echo [¸½] ¿½±´ server\£¨ÔÆÅäÒô²¿Êð½Å±¾£©...
+  robocopy "server" "%PKG%\server" /e /nfl /ndl /njh /njs /nc /ns >nul
+)
+
+rem [3] ¿½±´Êý¾Ý×ÜÄ¿Â¼£¨whisper-cli / ggml Ä£ÐÍ / ×ÖÌå / ÒôÉ«¿â µÈ£¬Ò»²¢ÀëÏß£©
 set "DATADIR="
 for /f "usebackq delims=" %%d in (`python -c "import sys;sys.path.insert(0,'source');from dub_align_studio.settings import data_root;print(data_root())"`) do set "DATADIR=%%d"
 if defined DATADIR if exist "%DATADIR%" (
-  echo [3/5] æ‹·è´æ•°æ®æ€»ç›®å½•ï¼š%DATADIR%
-  robocopy "%DATADIR%" "%PKG%\æ°´æ˜Ÿé…éŸ³æ•°æ®" /e /nfl /ndl /njh /njs /nc /ns >nul
+  echo [3/5] ¿½±´Êý¾Ý×ÜÄ¿Â¼£º%DATADIR%
+  robocopy "%DATADIR%" "%PKG%\Ë®ÐÇÅäÒôÊý¾Ý" /e /nfl /ndl /njh /njs /nc /ns >nul
 ) else (
-  echo [3/5] æœªæ‰¾åˆ°æ•°æ®æ€»ç›®å½•ï¼Œè·³è¿‡ï¼ˆå¯æ‰“åŒ…åŽæŠŠã€Œæ°´æ˜Ÿé…éŸ³æ•°æ®ã€æ–‡ä»¶å¤¹æ”¾è¿›åŒ…å†…åŒçº§ï¼‰ã€‚
+  echo [3/5] Î´ÕÒµ½Êý¾Ý×ÜÄ¿Â¼£¬Ìø¹ý£¨¿É´ò°üºó°Ñ¡¸Ë®ÐÇÅäÒôÊý¾Ý¡¹ÎÄ¼þ¼Ð·Å½ø°üÄÚÍ¬¼¶£©¡£
 )
 
-rem [4] æ‹·è´ HuggingFace ç¼“å­˜ï¼ˆdots.tts æ¨¡åž‹æƒé‡åœ¨æ­¤ï¼Œæ‹·äº†æ‰èƒ½ç¦»çº¿ç”¨ï¼‰
+rem [4] ¿½±´ HuggingFace »º´æ£¨dots.tts Ä£ÐÍÈ¨ÖØÔÚ´Ë£¬¿½ÁË²ÅÄÜÀëÏßÓÃ£©
 if exist "%USERPROFILE%\.cache\huggingface" (
-  echo [4/5] æ‹·è´ HuggingFace æ¨¡åž‹ç¼“å­˜ï¼ˆdots.tts æƒé‡ï¼‰...
+  echo [4/5] ¿½±´ HuggingFace Ä£ÐÍ»º´æ£¨dots.tts È¨ÖØ£©...
   robocopy "%USERPROFILE%\.cache\huggingface" "%PKG%\hf_cache" /e /nfl /ndl /njh /njs /nc /ns >nul
 ) else (
-  echo [4/5] æœªæ‰¾åˆ° HF ç¼“å­˜ï¼Œè·³è¿‡ï¼ˆdots.tts é¦–æ¬¡é…éŸ³ä¼šè”ç½‘ä¸‹æƒé‡ï¼›å¦‚éœ€å®Œå…¨ç¦»çº¿ï¼Œå…ˆåœ¨æœ¬æœºæˆåŠŸé…éŸ³ä¸€æ¬¡å†æ‰“åŒ…ï¼‰ã€‚
+  echo [4/5] Î´ÕÒµ½ HF »º´æ£¬Ìø¹ý£¨dots.tts Ê×´ÎÅäÒô»áÁªÍøÏÂÈ¨ÖØ£»ÈçÐèÍêÈ«ÀëÏß£¬ÏÈÔÚ±¾»ú³É¹¦ÅäÒôÒ»´ÎÔÙ´ò°ü£©¡£
 )
 
-rem [5] å†™å¯åŠ¨è„šæœ¬ï¼ˆç”¨åŒ…å†… Pythonï¼ŒæŒ‡å‘åŒ…å†…æ•°æ®ä¸Žæ¨¡åž‹ç¼“å­˜ï¼Œå…¨ç¦»çº¿ï¼‰
-echo [5/5] ç”Ÿæˆå¯åŠ¨è„šæœ¬ å¯åŠ¨.bat ...
-> "%PKG%\å¯åŠ¨.bat" echo @echo off
->> "%PKG%\å¯åŠ¨.bat" echo chcp 65001 ^>nul
->> "%PKG%\å¯åŠ¨.bat" echo cd /d "%%~dp0"
->> "%PKG%\å¯åŠ¨.bat" echo title æ°´æ˜Ÿé…éŸ³å¯¹é½å·¥ä½œå®¤
->> "%PKG%\å¯åŠ¨.bat" echo set "PYTHONPATH=source"
->> "%PKG%\å¯åŠ¨.bat" echo if exist "hf_cache" set "HF_HOME=%%~dp0hf_cache"
->> "%PKG%\å¯åŠ¨.bat" echo if not exist "%%~dp0python\python.exe" goto NOPY
->> "%PKG%\å¯åŠ¨.bat" echo echo æ­£åœ¨å¯åŠ¨ æ°´æ˜Ÿé…éŸ³å¯¹é½å·¥ä½œå®¤ï¼ˆæ•´åˆç¦»çº¿ç‰ˆï¼‰...æµè§ˆå™¨å°†è‡ªåŠ¨æ‰“å¼€ï¼Œå‹¿å…³æœ¬çª—å£ã€‚
->> "%PKG%\å¯åŠ¨.bat" echo "%%~dp0python\python.exe" source\dub_align_studio\launcher.py
->> "%PKG%\å¯åŠ¨.bat" echo if errorlevel 1 goto FAIL
->> "%PKG%\å¯åŠ¨.bat" echo goto END
->> "%PKG%\å¯åŠ¨.bat" echo :NOPY
->> "%PKG%\å¯åŠ¨.bat" echo echo [é”™è¯¯] ç¼ºå°‘ python\python.exe â€”â€” æ•´åˆåŒ…ä¸å®Œæ•´ï¼Œè¯·æŠŠæ•´ä¸ªæ–‡ä»¶å¤¹é‡æ–°å®Œæ•´æ‹·è´ã€‚
->> "%PKG%\å¯åŠ¨.bat" echo goto END
->> "%PKG%\å¯åŠ¨.bat" echo :FAIL
->> "%PKG%\å¯åŠ¨.bat" echo echo.
->> "%PKG%\å¯åŠ¨.bat" echo echo [å¯åŠ¨å¤±è´¥] Python å¼‚å¸¸é€€å‡ºï¼Œè¯¦æƒ…å¦‚ä¸‹ï¼š
->> "%PKG%\å¯åŠ¨.bat" echo if exist "source\dub_align_studio\å¯åŠ¨é”™è¯¯.log" type "source\dub_align_studio\å¯åŠ¨é”™è¯¯.log"
->> "%PKG%\å¯åŠ¨.bat" echo echo è‹¥çª—å£ä¸€é—ªã€ä¸Šé¢æ²¡æœ‰ Python æŠ¥é”™ï¼šå¤šä¸ºã€ŒåŒ…å†… Python æ— æ³•åœ¨æœ¬æœºè¿è¡Œã€â€”â€”
->> "%PKG%\å¯åŠ¨.bat" echo echo æºæœºè‹¥ç”¨çš„æ˜¯ Microsoft Store ç‰ˆ Pythonï¼ˆä¸å¯è·¨æœºï¼‰ï¼Œè¯·æ”¹ç”¨ python.org ç‰ˆé‡è£…ä¾èµ–åŽé‡æ–°æ‰“åŒ…ã€‚
->> "%PKG%\å¯åŠ¨.bat" echo echo å¦ä¸€å¯èƒ½ï¼šæœ¬æœºç¼º Visual C++ è¿è¡Œåº“ â€”â€” è£…ä¸€ä¸ªã€ŒMicrosoft Visual C++ 2015-2022 Redistributable (x64)ã€å†è¯•ã€‚
->> "%PKG%\å¯åŠ¨.bat" echo :END
->> "%PKG%\å¯åŠ¨.bat" echo pause
+rem [¸½] ×Ô¶¯´ò°ü ffmpeg/ffprobe£¨ÕÒµ½¾Í´øÉÏ£¬Ä¿±ê»úäÖÈ¾¿ªÏä¼´ÓÃ£¬ÃâÊÖ¶¯·Å£©
+set "FFM="
+set "FFP="
+for /f "usebackq delims=" %%f in (`where ffmpeg 2^>nul`) do if not defined FFM set "FFM=%%f"
+for /f "usebackq delims=" %%f in (`where ffprobe 2^>nul`) do if not defined FFP set "FFP=%%f"
+if not defined FFM if exist "dist\Ë®ÐÇÅäÒô¶ÔÆë¹¤×÷ÊÒ\ffmpeg.exe" set "FFM=dist\Ë®ÐÇÅäÒô¶ÔÆë¹¤×÷ÊÒ\ffmpeg.exe"
+if not defined FFP if exist "dist\Ë®ÐÇÅäÒô¶ÔÆë¹¤×÷ÊÒ\ffprobe.exe" set "FFP=dist\Ë®ÐÇÅäÒô¶ÔÆë¹¤×÷ÊÒ\ffprobe.exe"
+if not defined FFM if exist "ffmpeg.exe" set "FFM=ffmpeg.exe"
+if not defined FFP if exist "ffprobe.exe" set "FFP=ffprobe.exe"
+if defined FFM if defined FFP (
+  echo [¸½] ´ò°ü ffmpeg/ffprobe£¨äÖÈ¾¿ªÏä¼´ÓÃ£©...
+  copy /y "%FFM%" "%PKG%\ffmpeg.exe" >nul
+  copy /y "%FFP%" "%PKG%\ffprobe.exe" >nul
+  set "FFBUNDLED=1"
+) else (
+  echo [¸½] Î´ÕÒµ½ ffmpeg/ffprobe£¬Î´´ò°ü£¨Ä¿±ê»úÐèÊÖ¶¯·Å ffmpeg.exe/ffprobe.exe µ½°üÄÚ»ò PATH£©¡£
+)
 
-rem ç‰ˆæœ¬æ–‡ä»¶
-python -c "import sys;sys.path.insert(0,'source');from dub_align_studio.version import full_version;print(full_version())" > "%PKG%\ç‰ˆæœ¬.txt" 2>nul
+rem [5] Ð´Æô¶¯½Å±¾£¨ÓÃ°üÄÚ Python£¬Ö¸Ïò°üÄÚÊý¾ÝÓëÄ£ÐÍ»º´æ£¬È«ÀëÏß£©
+echo [5/5] Éú³ÉÆô¶¯½Å±¾ Æô¶¯.bat ...
+> "%PKG%\Æô¶¯.bat" echo @echo off
+>> "%PKG%\Æô¶¯.bat" echo cd /d "%%~dp0"
+>> "%PKG%\Æô¶¯.bat" echo title Ë®ÐÇÅäÒô¶ÔÆë¹¤×÷ÊÒ
+>> "%PKG%\Æô¶¯.bat" echo set "PYTHONPATH=source"
+>> "%PKG%\Æô¶¯.bat" echo set "PATH=%%~dp0;%%PATH%%"
+>> "%PKG%\Æô¶¯.bat" echo if exist "hf_cache" set "HF_HOME=%%~dp0hf_cache"
+>> "%PKG%\Æô¶¯.bat" echo if not exist "%%~dp0python\python.exe" goto NOPY
+>> "%PKG%\Æô¶¯.bat" echo echo ÕýÔÚÆô¶¯ Ë®ÐÇÅäÒô¶ÔÆë¹¤×÷ÊÒ£¨ÕûºÏÀëÏß°æ£©...ä¯ÀÀÆ÷½«×Ô¶¯´ò¿ª£¬Îð¹Ø±¾´°¿Ú¡£
+>> "%PKG%\Æô¶¯.bat" echo "%%~dp0python\python.exe" source\dub_align_studio\launcher.py
+>> "%PKG%\Æô¶¯.bat" echo if errorlevel 1 goto FAIL
+>> "%PKG%\Æô¶¯.bat" echo goto END
+>> "%PKG%\Æô¶¯.bat" echo :NOPY
+>> "%PKG%\Æô¶¯.bat" echo echo [´íÎó] È±ÉÙ python\python.exe ¡ª¡ª ÕûºÏ°ü²»ÍêÕû£¬Çë°ÑÕû¸öÎÄ¼þ¼ÐÖØÐÂÍêÕû¿½±´¡£
+>> "%PKG%\Æô¶¯.bat" echo goto END
+>> "%PKG%\Æô¶¯.bat" echo :FAIL
+>> "%PKG%\Æô¶¯.bat" echo echo.
+>> "%PKG%\Æô¶¯.bat" echo echo [Æô¶¯Ê§°Ü] Python Òì³£ÍË³ö£¬ÏêÇéÈçÏÂ£º
+>> "%PKG%\Æô¶¯.bat" echo if exist "source\dub_align_studio\Æô¶¯´íÎó.log" type "source\dub_align_studio\Æô¶¯´íÎó.log"
+>> "%PKG%\Æô¶¯.bat" echo echo Èô´°¿ÚÒ»ÉÁ¡¢ÉÏÃæÃ»ÓÐ Python ±¨´í£º¶àÎª¡¸°üÄÚ Python ÎÞ·¨ÔÚ±¾»úÔËÐÐ¡¹¡ª¡ª
+>> "%PKG%\Æô¶¯.bat" echo echo Ô´»úÈôÓÃµÄÊÇ Microsoft Store °æ Python£¨²»¿É¿ç»ú£©£¬Çë¸ÄÓÃ python.org °æÖØ×°ÒÀÀµºóÖØÐÂ´ò°ü¡£
+>> "%PKG%\Æô¶¯.bat" echo echo ÁíÒ»¿ÉÄÜ£º±¾»úÈ± Visual C++ ÔËÐÐ¿â ¡ª¡ª ×°Ò»¸ö¡¸Microsoft Visual C++ 2015-2022 Redistributable (x64)¡¹ÔÙÊÔ¡£
+>> "%PKG%\Æô¶¯.bat" echo :END
+>> "%PKG%\Æô¶¯.bat" echo pause
+
+rem °æ±¾ÎÄ¼þ
+python -c "import sys;sys.path.insert(0,'source');from dub_align_studio.version import full_version;print(full_version())" > "%PKG%\°æ±¾.txt" 2>nul
 
 echo.
-echo [å®Œæˆ] æ•´åˆç¦»çº¿åŒ…ç›®å½•ï¼š%PKG%\
-echo        ç›®æ ‡ç”µè„‘ï¼šæ•´ä¸ªæ–‡ä»¶å¤¹æ‹·è¿‡åŽ»ï¼ŒåŒå‡»é‡Œé¢çš„ã€Œå¯åŠ¨.batã€å³å¯ï¼Œæ— éœ€è£… Python/ä¾èµ–/æ¨¡åž‹ã€‚
-echo        ï¼ˆæ¸²æŸ“æˆç‰‡ä»éœ€ ffmpegï¼šæŠŠ ffmpeg.exe/ffprobe.exe æ”¾è¿›è¯¥æ–‡ä»¶å¤¹æˆ–ç³»ç»Ÿ PATHã€‚ï¼‰
+echo [Íê³É] ÕûºÏÀëÏß°üÄ¿Â¼£º%PKG%\
+echo        Ä¿±êµçÄÔ£ºÕû¸öÎÄ¼þ¼Ð¿½¹ýÈ¥£¬Ë«»÷ÀïÃæµÄ¡¸Æô¶¯.bat¡¹¼´¿É£¬ÎÞÐè×° Python/ÒÀÀµ/Ä£ÐÍ¡£
+if defined FFBUNDLED (echo        ffmpeg/ffprobe ÒÑËæ°ü£¬äÖÈ¾¿ªÏä¼´ÓÃ¡£) else (echo        £¨äÖÈ¾³ÉÆ¬Ðè ffmpeg£º°Ñ ffmpeg.exe/ffprobe.exe ·Å½ø¸ÃÎÄ¼þ¼Ð»òÏµÍ³ PATH¡££©)
 echo.
-echo æ˜¯å¦åŽ‹ç¼©æˆ zipï¼Ÿï¼ˆå¤§æ–‡ä»¶åŽ‹ç¼©è¾ƒæ…¢ï¼›ç›´æŽ¥æ‹·æ–‡ä»¶å¤¹ä¹Ÿå¯ç”¨ï¼‰
-choice /c YN /m "åŽ‹ç¼©æˆ zip è¯·æŒ‰ Yï¼Œè·³è¿‡æŒ‰ N"
+echo ÊÇ·ñÑ¹Ëõ³É zip£¿£¨´óÎÄ¼þÑ¹Ëõ½ÏÂý£»Ö±½Ó¿½ÎÄ¼þ¼ÐÒ²¿ÉÓÃ£©
+choice /c YN /m "Ñ¹Ëõ³É zip Çë°´ Y£¬Ìø¹ý°´ N"
 if errorlevel 2 goto :DONE
-echo æ­£åœ¨åŽ‹ç¼©ï¼ˆå¤§åŒ…è¾ƒæ…¢ï¼Œè¯·è€å¿ƒï¼‰...
-python -c "import shutil,os; p=shutil.make_archive(os.path.join('å‘å¸ƒåŒ…','æ°´æ˜Ÿé…éŸ³å¯¹é½å·¥ä½œå®¤_æ•´åˆç‰ˆ_v%VER%'),'zip','%PKGROOT%','æ°´æ˜Ÿé…éŸ³å¯¹é½å·¥ä½œå®¤_æ•´åˆç‰ˆ_v%VER%'); print('ZIP:',p)"
+echo ÕýÔÚÑ¹Ëõ£¨´ó°ü½ÏÂý£¬ÇëÄÍÐÄ£©...
+python -c "import shutil,os; p=shutil.make_archive(os.path.join('·¢²¼°ü','Ë®ÐÇÅäÒô¶ÔÆë¹¤×÷ÊÒ_ÕûºÏ°æ_v%VER%'),'zip','%PKGROOT%','Ë®ÐÇÅäÒô¶ÔÆë¹¤×÷ÊÒ_ÕûºÏ°æ_v%VER%'); print('ZIP:',p)"
 :DONE
 echo.
-echo å…¨éƒ¨å®Œæˆã€‚
+echo È«²¿Íê³É¡£
 pause
 exit /b 0
 
 :PREFAIL
 echo.
-echo [è‡ªæ£€å¤±è´¥] å°†è¢«æ‰“è¿›åŒ…çš„ Python æ˜¯ï¼š%PYHOME%
-echo   å®ƒæ— æ³•åŠ è½½ dots.tts è¿è¡Œæ—¶ï¼Œæˆ– transformers ä¸æ˜¯ 4.57.0 â€”â€” æ‰“å‡ºæ¥çš„åŒ…åœ¨ç›®æ ‡æœºä¸Šç…§æ ·æŠ¥ Qwen2ã€‚
-echo   æœ€å¸¸è§åŽŸå› ï¼šä¾èµ–è£…è¿›äº† venv/condaï¼Œè€Œæœ¬è„šæœ¬æ‰“åŒ…çš„æ˜¯å®ƒçš„ base Pythonï¼ˆbase é‡Œæ²¡æœ‰è¿™äº›åŒ…ï¼‰ã€‚
-echo   è§£å†³å…¶ä¸€ï¼š
-echo     - ç”¨ã€Œéž venv çš„ç³»ç»Ÿ Pythonã€é‡æ–° pip å®‰è£…ä¾èµ–åŽå†è¿è¡Œæœ¬è„šæœ¬ï¼›
-echo     - æˆ–æŠŠ transformers==4.57.0 + CUDA ç‰ˆ torch + dots.tts ç›´æŽ¥è£…è¿› %PYHOME%ã€‚
-echo   æ ¡éªŒå‘½ä»¤ï¼ˆèƒ½æ‰“å° available=True å³å¯æ‰“åŒ…ï¼‰ï¼š
+echo [×Ô¼ìÊ§°Ü] ½«±»´ò½ø°üµÄ Python ÊÇ£º%PYHOME%
+echo   ËüÎÞ·¨¼ÓÔØ dots.tts ÔËÐÐÊ±£¬»ò transformers ²»ÊÇ 4.57.0 ¡ª¡ª ´ò³öÀ´µÄ°üÔÚÄ¿±ê»úÉÏÕÕÑù±¨ Qwen2¡£
+echo   ×î³£¼ûÔ­Òò£ºÒÀÀµ×°½øÁË venv/conda£¬¶ø±¾½Å±¾´ò°üµÄÊÇËüµÄ base Python£¨base ÀïÃ»ÓÐÕâÐ©°ü£©¡£
+echo   ½â¾öÆäÒ»£º
+echo     - ÓÃ¡¸·Ç venv µÄÏµÍ³ Python¡¹ÖØÐÂ pip °²×°ÒÀÀµºóÔÙÔËÐÐ±¾½Å±¾£»
+echo     - »ò°Ñ transformers==4.57.0 + CUDA °æ torch + dots.tts Ö±½Ó×°½ø %PYHOME%¡£
+echo   Ð£ÑéÃüÁî£¨ÄÜ´òÓ¡ available=True ¼´¿É´ò°ü£©£º
 echo     "%PYHOME%\python.exe" -c "import sys;sys.path.insert(0,'source');from dub_align_studio.engines.dots_local import DotsLocalEngine as E;print(E().probe())"
 pause
 exit /b 1
 
 :STOREPY
 echo.
-echo [é”™è¯¯] æ£€æµ‹åˆ°æ‰“åŒ…ç”¨çš„æ˜¯ Microsoft Store ç‰ˆ Pythonï¼š
+echo [´íÎó] ¼ì²âµ½´ò°üÓÃµÄÊÇ Microsoft Store °æ Python£º
 echo        %PYHOME%
-echo   Store ç‰ˆ Python ä½äºŽå—ä¿æŠ¤çš„ WindowsAppsï¼Œæ— æ³•æ•´ç›®å½•æ‹·è´ã€ä¹Ÿä¸èƒ½åœ¨åˆ«çš„ç”µè„‘è¿è¡Œï¼Œ
-echo   æ‰“å‡ºæ¥çš„æ•´åˆåŒ…åˆ°åˆ«çš„æœºå™¨ä¸ŠåŒå‡»ã€Œå¯åŠ¨.batã€ä¼šä¸€é—ªè€Œè¿‡ã€ä¸”æ²¡æœ‰ä»»ä½•æŠ¥é”™ï¼ˆæ­£æ˜¯ä½ é‡åˆ°çš„çŽ°è±¡ï¼‰ã€‚
-echo   è§£å†³ï¼šåˆ° python.org ä¸‹è½½å®‰è£… Python 3.11ï¼ˆå®‰è£…æ—¶å‹¾ Add python.exe to PATHï¼Œ
-echo        ä¸è¦ç”¨ Microsoft Store é‚£ä¸ªï¼‰ï¼Œåœ¨å®ƒé‡Œé¢è£…å¥½ CUDA ç‰ˆ torch + dots.tts + whisperï¼Œ
-echo        ç¡®è®¤èƒ½æ­£å¸¸é…éŸ³åŽï¼Œå†è¿è¡Œæœ¬è„šæœ¬æ‰“åŒ…ã€‚
+echo   Store °æ Python Î»ÓÚÊÜ±£»¤µÄ WindowsApps£¬ÎÞ·¨ÕûÄ¿Â¼¿½±´¡¢Ò²²»ÄÜÔÚ±ðµÄµçÄÔÔËÐÐ£¬
+echo   ´ò³öÀ´µÄÕûºÏ°üµ½±ðµÄ»úÆ÷ÉÏË«»÷¡¸Æô¶¯.bat¡¹»áÒ»ÉÁ¶ø¹ý¡¢ÇÒÃ»ÓÐÈÎºÎ±¨´í£¨ÕýÊÇÄãÓöµ½µÄÏÖÏó£©¡£
+echo   ½â¾ö£ºµ½ python.org ÏÂÔØ°²×° Python 3.11£¨°²×°Ê±¹´ Add python.exe to PATH£¬
+echo        ²»ÒªÓÃ Microsoft Store ÄÇ¸ö£©£¬ÔÚËüÀïÃæ×°ºÃ CUDA °æ torch + dots.tts + whisper£¬
+echo        È·ÈÏÄÜÕý³£ÅäÒôºó£¬ÔÙÔËÐÐ±¾½Å±¾´ò°ü¡£
 pause
 exit /b 1
 
 :PYCOPYBAD
 echo.
-echo [é”™è¯¯] å·²æŠŠæº Python æ‹·è¿›åŒ…å†…ï¼Œä½†ã€ŒåŒ…å†… Pythonã€æ— æ³•ç‹¬ç«‹è¿è¡Œï¼š
+echo [´íÎó] ÒÑ°ÑÔ´ Python ¿½½ø°üÄÚ£¬µ«¡¸°üÄÚ Python¡¹ÎÞ·¨¶ÀÁ¢ÔËÐÐ£º
 echo        %PKG%\python\python.exe
-echo   è¯´æ˜Žæº Python ä¸å¯é‡å®šä½æˆ–å¤åˆ¶ä¸å®Œæ•´ï¼ˆå¸¸è§äºŽ Store ç‰ˆ / ç²¾ç®€ç‰ˆ / ä¾èµ–ç³»ç»Ÿçº§è¿è¡Œåº“çš„çŽ¯å¢ƒï¼‰ã€‚
-echo   è¯·æ”¹ç”¨ python.org å®‰è£…çš„ç‹¬ç«‹ Python é‡æ–°æ‰“åŒ…ï¼›è‹¥ä»ä¸è¡Œï¼ŒæŠŠæœ¬çª—å£å†…å®¹å‘ç»™å¼€å‘ã€‚
+echo   ËµÃ÷Ô´ Python ²»¿ÉÖØ¶¨Î»»ò¸´ÖÆ²»ÍêÕû£¨³£¼ûÓÚ Store °æ / ¾«¼ò°æ / ÒÀÀµÏµÍ³¼¶ÔËÐÐ¿âµÄ»·¾³£©¡£
+echo   Çë¸ÄÓÃ python.org °²×°µÄ¶ÀÁ¢ Python ÖØÐÂ´ò°ü£»ÈôÈÔ²»ÐÐ£¬°Ñ±¾´°¿ÚÄÚÈÝ·¢¸ø¿ª·¢¡£
 pause
 exit /b 1
