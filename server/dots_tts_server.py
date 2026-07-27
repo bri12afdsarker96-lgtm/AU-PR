@@ -25,6 +25,7 @@ import inspect
 import io
 import os
 import re
+import heapq
 import tempfile
 import threading
 from pathlib import Path
@@ -32,7 +33,7 @@ from pathlib import Path
 try:
     import soundfile
     import uvicorn
-    from fastapi import FastAPI, Header, HTTPException
+    from fastapi import FastAPI, Header, HTTPException, Request
     from fastapi.responses import JSONResponse, Response
     from pydantic import BaseModel
 except Exception as exc:  # noqa: BLE001
@@ -53,14 +54,85 @@ PRECISION = os.environ.get("DOTS_PRECISION", "bf16").strip()
 OPTIMIZE = os.environ.get("DOTS_OPTIMIZE", "0").strip() not in ("0", "false", "False", "")
 EXPECTED_SAMPLE_RATE = 48000
 MGL_OUTPUT_BUDGET = 800   # 与客户端一致：参考音频较长时 max_generate_length 的额外预算
+MAX_INFLIGHT_PER_USER = int(os.environ.get("DOTS_MAX_INFLIGHT_PER_USER", "6"))  # 单用户排队上限，防刷占满
 
 app = FastAPI(title="dots.tts remote", version="1.0")
 _runtime = None
 _runtime_lock = threading.Lock()
-# 推理串行锁：单卡上 dots.generate 非线程安全，多用户并发会串音/报错 → 必须一次只跑一句。
-# 多个请求同时来会在这里排队，按到达顺序逐个处理（这才是单 GPU 的正确行为）。
-_infer_lock = threading.Lock()
 _mgl_cache: dict[str, int] = {}
+
+# ---- 公平调度（多用户共用单 GPU）--------------------------------------------
+# 单卡上 dots.generate 非线程安全且只有一张卡 → 一次只能跑一句。多用户如何排？
+# 用「加权公平队列(WFQ)·等权」：每个用户各有一条虚拟时间线，谁被服务得越少虚拟时间越小、
+# 越先被取——天然「人人平等轮流」，一个用户狂发也占不满、别人不饿死。单后台派发线程独占 GPU。
+_sched_cv = threading.Condition()
+_sched_heap: list = []            # [tag, seq, job]；tag 小者先出
+_sched_seq = 0
+_user_vtime: dict = {}            # user -> 该用户最近一次的虚拟完成刻度
+_user_inflight: dict = {}         # user -> 在队/在跑数（限流用）
+_global_vtime = 0.0
+_dispatch_user = None             # 当前正在服务的用户（/health 展示）
+_dispatcher: threading.Thread | None = None
+
+
+class _Busy(Exception):
+    """单用户排队数超上限。"""
+
+
+class _Job:
+    __slots__ = ("req", "user", "event", "result", "error")
+
+    def __init__(self, req, user):
+        self.req = req
+        self.user = user
+        self.event = threading.Event()
+        self.result = None
+        self.error = None
+
+
+def _submit(req, user: str) -> "_Job":
+    """把请求按等权 WFQ 入队；返回 _Job，调用方 event.wait() 等结果。超单用户上限抛 _Busy。"""
+    global _sched_seq
+    with _sched_cv:
+        if _user_inflight.get(user, 0) >= MAX_INFLIGHT_PER_USER:
+            raise _Busy()
+        _user_inflight[user] = _user_inflight.get(user, 0) + 1
+        tag = max(_global_vtime, _user_vtime.get(user, 0.0)) + 1.0  # 等权：每请求虚拟时间 +1 → 轮转
+        _user_vtime[user] = tag
+        _sched_seq += 1
+        job = _Job(req, user)
+        heapq.heappush(_sched_heap, [tag, _sched_seq, job])
+        _sched_cv.notify()
+        return job
+
+
+def _dispatcher_loop():
+    """独占 GPU 的单派发线程：每次取虚拟时间最小的请求跑，保证一次只一句 + 用户间公平。"""
+    global _global_vtime, _dispatch_user
+    while True:
+        with _sched_cv:
+            while not _sched_heap:
+                _sched_cv.wait()
+            tag, _seq, job = heapq.heappop(_sched_heap)
+            _global_vtime = max(_global_vtime, tag)
+            _dispatch_user = job.user
+        try:
+            job.result = _generate_wav_bytes(job.req)
+        except Exception as exc:  # noqa: BLE001
+            job.error = exc
+        finally:
+            with _sched_cv:
+                _user_inflight[job.user] = max(0, _user_inflight.get(job.user, 1) - 1)
+                _dispatch_user = None
+            job.event.set()
+
+
+def _ensure_dispatcher():
+    global _dispatcher
+    with _sched_cv:
+        if _dispatcher is None or not _dispatcher.is_alive():
+            _dispatcher = threading.Thread(target=_dispatcher_loop, name="gpu-dispatcher", daemon=True)
+            _dispatcher.start()
 
 
 def _ensure_tn_stub() -> bool:
@@ -244,24 +316,47 @@ def _auth(x_api_key: str | None):
 @app.get("/health")
 def health(x_api_key: str | None = Header(default=None, alias="X-API-Key")):
     _auth(x_api_key)
+    with _sched_cv:
+        queued = len(_sched_heap)
+        waiting_users = len({j[2].user for j in _sched_heap})
+        busy = _dispatch_user is not None
     return {"status": "ok", "gpu": _gpu_name(), "model_loaded": _runtime is not None,
-            "busy": _infer_lock.locked(),   # True = 正在配一句，其它请求会排队
+            "busy": busy,                    # True = 正在配一句
+            "queued": queued,                # 排队中的请求数
+            "waiting_users": waiting_users,  # 排队中的用户数
             "checkpoint": CHECKPOINT, "sample_rate": EXPECTED_SAMPLE_RATE}
 
 
+def _client_user(x_user_id: str | None, request: "Request") -> str:
+    """识别用户：优先客户端上报的 X-User-Id（每台安装稳定唯一），退化到来源 IP，再不行归为 default。
+    这样多用户共用同一把 API Key 也能被公平区分、各自限流。"""
+    uid = (x_user_id or "").strip()
+    if uid:
+        return uid[:64]
+    try:
+        return (request.client.host if request and request.client else "") or "default"
+    except Exception:  # noqa: BLE001
+        return "default"
+
+
 @app.post("/synthesize")
-def synthesize(req: SynthReq, x_api_key: str | None = Header(default=None, alias="X-API-Key")):
+def synthesize(req: SynthReq, request: Request,
+               x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+               x_user_id: str | None = Header(default=None, alias="X-User-Id")):
     _auth(x_api_key)
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="text 为空。")
+    _ensure_dispatcher()
+    user = _client_user(x_user_id, request)
     try:
-        with _infer_lock:                 # 串行：多用户/多请求在此排队，一次只跑一句，杜绝并发串音
-            wav = _generate_wav_bytes(req)
-    except HTTPException:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        return JSONResponse(status_code=500, content={"detail": f"合成失败：{exc}"})
-    return Response(content=wav, media_type="audio/wav")
+        job = _submit(req, user)
+    except _Busy:
+        return JSONResponse(status_code=429, content={
+            "detail": f"你的排队请求已达上限（{MAX_INFLIGHT_PER_USER}），请等前面的配音完成后再试。"})
+    job.event.wait()                          # 等公平队列轮到并跑完（客户端每次只发一句，故通常很快轮到）
+    if job.error is not None:
+        return JSONResponse(status_code=500, content={"detail": f"合成失败：{job.error}"})
+    return Response(content=job.result, media_type="audio/wav")
 
 
 def main():
@@ -279,7 +374,9 @@ def main():
         print("预加载 dots.tts 模型到显存…")
         _load_runtime()
         print("模型就绪。")
-    print(f"dots.tts 云端启动：http://{args.host}:{args.port}  GPU={_gpu_name()}")
+    _ensure_dispatcher()   # 启动公平派发线程（多用户等权轮流，单卡一次一句）
+    print(f"dots.tts 云端启动：http://{args.host}:{args.port}  GPU={_gpu_name()}  "
+          f"（多用户公平队列·单用户上限 {MAX_INFLIGHT_PER_USER}）")
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
 
