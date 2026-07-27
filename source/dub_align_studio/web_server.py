@@ -192,14 +192,19 @@ def _remember_edit_item(output_dir: Path, canvas: tuple[int, int], payload: dict
 
 # ------------------------------------------------------------------ 生成任务队列（⑨ 串行后台）
 # ＋加入队列：把当前配置**整份冻结**成一个任务追加到队列；一个后台 worker 顺序取任务跑
-# run_all（串行克隆，GPU 一次只跑一个）。跑队列期间用户可照常改设置/提交下一个/去文本框精修
+# run_all（流水线：配音串行·GPU 不抢，渲染串行；两阶段跨任务重叠→A 渲染时 B 配音）。跑队列期间用户可照常改设置/提交下一个/去文本框精修
 # 别的成片——已入队任务的 payload 已深拷冻结，互不影响（用户 2026-07-26 选 A 方案）。
 GEN_COND = threading.Condition()      # 同时充当 GEN_QUEUE 的锁
 GEN_QUEUE: list[dict] = []            # 每项：{id,title,payload,job:JobState,status,error}
 GEN_PAUSED = False                    # 队列暂停：不再启动新任务（正在跑的那个不受影响）
 STUCK_SECONDS = 240                   # 运行中任务超过此秒无「阶段心跳」→ 前端温和提示、可手动取消
                                       # （已在模型加载/每行开始处打心跳，故只有单行/加载真的异常久才触发）
-_GEN_WORKER: threading.Thread | None = None
+# 流水线：配音(GPU/云) 与 量时长+渲染(本地 CPU) 用不同资源 → 两级串行锁，允许「上一个任务渲染时
+# 下一个任务配音」并行、吞吐更高；仍保证「一次只一个配音」(GPU 不抢) 和「一次只一个渲染」。
+_DUB_LOCK = threading.Lock()          # 配音阶段串行锁
+_RENDER_LOCK = threading.Lock()       # 量时长+渲染阶段串行锁
+_GEN_WORKERS: list = []
+_GEN_WORKER_COUNT = 2                 # 2 个 worker = 流水线深度 2（一个配音、一个渲染重叠）
 
 
 def _next_pending_locked():
@@ -224,11 +229,13 @@ def _gen_enqueue(payload: dict, title: str) -> str:
 
 
 def _ensure_gen_worker_locked() -> None:
-    """在持锁状态下确保 worker 存活（懒启动，进程内常驻，不会退出）。"""
-    global _GEN_WORKER
-    if _GEN_WORKER is None or not _GEN_WORKER.is_alive():
-        _GEN_WORKER = threading.Thread(target=_gen_worker_loop, name="gen-queue", daemon=True)
-        _GEN_WORKER.start()
+    """在持锁状态下确保 _GEN_WORKER_COUNT 个 worker 存活（流水线并行：配音与渲染重叠）。"""
+    global _GEN_WORKERS
+    _GEN_WORKERS = [t for t in _GEN_WORKERS if t.is_alive()]
+    while len(_GEN_WORKERS) < _GEN_WORKER_COUNT:
+        t = threading.Thread(target=_gen_worker_loop, name=f"gen-queue-{len(_GEN_WORKERS)+1}", daemon=True)
+        t.start()
+        _GEN_WORKERS.append(t)
 
 
 def _gen_worker_loop() -> None:
@@ -413,69 +420,71 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
 
             master_path = output_dir / pipeline.MASTER_NAME
             reuse_dub = bool(payload.get("reuse_dub")) and master_path.is_file()
-            if reuse_dub:
-                # 复用已有配音：只改了音量/BGM/字幕/进度条时，跳过整段克隆，直接量时长+重渲染（秒出）
-                from .engines.base import wav_seconds
+            if not reuse_dub:
+                JOB.set_progress("① 配音 · 排队中（等待配音槽）…", 5)
+            with _DUB_LOCK:   # 配音阶段串行：GPU 一次只跑一个克隆；期间上一个任务可并行渲染
+                if reuse_dub:
+                    # 复用已有配音：只改了音量/BGM/字幕/进度条时，跳过整段克隆，直接量时长+重渲染（秒出）
+                    from .engines.base import wav_seconds
 
-                JOB.set_progress("① 复用已有配音（跳过克隆）", 76)
-                log(f"① 复用已有配音：master.wav 已存在（{wav_seconds(master_path):.2f}s），跳过克隆，仅重渲染。")
-            else:
-                JOB.set_progress("① 配音 · 逐行克隆", 5)
-                log("① 配音 · 逐行克隆…")
+                    JOB.set_progress("① 复用已有配音（跳过克隆）", 76)
+                    log(f"① 复用已有配音：master.wav 已存在（{wav_seconds(master_path):.2f}s），跳过克隆，仅重渲染。")
+                else:
+                    JOB.set_progress("① 配音 · 逐行克隆", 5)
+                    log("① 配音 · 逐行克隆…")
 
-                # 进度配比按真实耗时：配音（逐行 GPU 克隆，每行数十秒）是全程最久的一步，
-                # 给它最大区段 5→78%，否则「18/20 行只走到 25%」看着像卡死（用户反馈）。
-                def _dub_progress(done: int, total: int) -> None:
-                    JOB.check_cancel()   # 队列任务被取消 → 逐行处理间隙中止
-                    pct = 5 + int(done / max(1, total) * 73)  # 配音占 5~78%
-                    JOB.set_progress(f"① 配音 · 第 {done}/{total} 行", pct)
+                    def _dub_progress(done: int, total: int) -> None:
+                        JOB.check_cancel()   # 队列任务被取消 → 逐行处理间隙中止
+                        pct = 5 + int(done / max(1, total) * 73)  # 配音占 5~78%
+                        JOB.set_progress(f"① 配音 · 第 {done}/{total} 行", pct)
 
-                def _dub_beat(stage: str = "") -> None:
-                    # 模型加载/每行开始等「百分比不动但确实在干活」的时刻刷新心跳，防冷启动误判卡死。
-                    JOB.check_cancel()
-                    with JOB.lock:
-                        if stage:
-                            JOB.stage = stage
-                        JOB.last_tick = time.time()
+                    def _dub_beat(stage: str = "") -> None:
+                        JOB.check_cancel()
+                        with JOB.lock:
+                            if stage:
+                                JOB.stage = stage
+                            JOB.last_tick = time.time()
 
-                master = pipeline.step_dub(text, engine_key, output_dir, voice, options, log=log,
-                                           progress=_dub_progress, heartbeat=_dub_beat)
-                log(f"  ✅ master {master.seconds:.2f}s（引擎 {master.engine}）")
+                    master = pipeline.step_dub(text, engine_key, output_dir, voice, options, log=log,
+                                               progress=_dub_progress, heartbeat=_dub_beat)
+                    log(f"  ✅ master {master.seconds:.2f}s（引擎 {master.engine}）")
 
             JOB.check_cancel()   # 配音后、量时长前的取消检查点
-            JOB.set_progress("② 量时长 · 逐行对齐", 78)
-            log("② 量时长 · 逐行对齐…")
-            timings, notes = pipeline.step_timing(text, master_path, aligner_key, output_dir)
-            for note in notes:
-                log(f"  ⚠ {note}")
-            with JOB.lock:
-                JOB.timings = timings
+            JOB.set_progress("② 量时长 · 排队中（等待渲染槽）…", 77)
+            with _RENDER_LOCK:   # 量时长+渲染阶段串行：本地 ffmpeg/whisper 一次只一个；期间下个任务可并行配音
+                JOB.set_progress("② 量时长 · 逐行对齐", 78)
+                log("② 量时长 · 逐行对齐…")
+                timings, notes = pipeline.step_timing(text, master_path, aligner_key, output_dir)
+                for note in notes:
+                    log(f"  ⚠ {note}")
+                with JOB.lock:
+                    JOB.timings = timings
 
-            JOB.set_progress("③ 渲染成片 · 逐行收口", 80)
-            log("③ 渲染成片 · 逐行裁剪/变速 + 整轨叠加…")
+                JOB.set_progress("③ 渲染成片 · 逐行收口", 80)
+                log("③ 渲染成片 · 逐行裁剪/变速 + 整轨叠加…")
 
-            def _render_progress(done: int, total: int) -> None:
-                JOB.check_cancel()   # 逐段渲染间隙响应取消
-                pct = 80 + int(done / max(1, total) * 15)  # 渲染占 80~95%（比配音快很多）
-                JOB.set_progress(f"③ 渲染成片 · 第 {done}/{total} 段", pct)
+                def _render_progress(done: int, total: int) -> None:
+                    JOB.check_cancel()   # 逐段渲染间隙响应取消
+                    pct = 80 + int(done / max(1, total) * 15)  # 渲染占 80~95%（比配音快很多）
+                    JOB.set_progress(f"③ 渲染成片 · 第 {done}/{total} 段", pct)
 
-            result = pipeline.step_render(master_path, timings, videos, output_dir, style,
-                                          config=config, overlays=overlays, audio_mix=audio_mix,
-                                          progress=_render_progress, progress_bar=progress_bar, watermark=watermark)
-            log(f"  字幕/文本框：{result.subtitle_note or '未启用'}")
-            capcut = None
-            if payload.get("export_capcut"):
-                JOB.set_progress("④ 导出剪映草稿", 96)
-                log("④ 导出剪映草稿…")
-                capcut = pipeline.step_capcut(timings, result, master_path, output_dir, style,
-                                              canvas=canvas)
-                log(f"  剪映：{capcut.message}")
-            JOB.set_progress("完成", 100)
-            log(("✅ 成片完成：" if result.ok else "❌ 收口断言未通过：") + str(result.output_path))
-            with JOB.lock:
-                JOB.timings, JOB.result, JOB.ok = timings, result, result.ok
-            if result.ok:
-                _remember_edit_item(output_dir, canvas, payload)  # ⑧ 进待编辑队列
+                result = pipeline.step_render(master_path, timings, videos, output_dir, style,
+                                              config=config, overlays=overlays, audio_mix=audio_mix,
+                                              progress=_render_progress, progress_bar=progress_bar, watermark=watermark)
+                log(f"  字幕/文本框：{result.subtitle_note or '未启用'}")
+                capcut = None
+                if payload.get("export_capcut"):
+                    JOB.set_progress("④ 导出剪映草稿", 96)
+                    log("④ 导出剪映草稿…")
+                    capcut = pipeline.step_capcut(timings, result, master_path, output_dir, style,
+                                                  canvas=canvas)
+                    log(f"  剪映：{capcut.message}")
+                JOB.set_progress("完成", 100)
+                log(("✅ 成片完成：" if result.ok else "❌ 收口断言未通过：") + str(result.output_path))
+                with JOB.lock:
+                    JOB.timings, JOB.result, JOB.ok = timings, result, result.ok
+                if result.ok:
+                    _remember_edit_item(output_dir, canvas, payload)  # ⑧ 进待编辑队列
         elif action == "dub":
             def _dub_progress(done: int, total: int) -> None:
                 JOB.set_progress(f"配音 · 第 {done}/{total} 行", int(done / max(1, total) * 100))
