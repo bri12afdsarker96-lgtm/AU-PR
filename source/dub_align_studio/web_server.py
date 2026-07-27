@@ -207,6 +207,25 @@ _GEN_WORKERS: list = []
 _GEN_WORKER_COUNT = 2                 # 2 个 worker = 流水线深度 2（一个配音、一个渲染重叠）
 
 
+class _PhaseLock:
+    """阶段串行锁的上下文管理器：**等锁期间持续刷新心跳并响应取消**——否则 B 等 A 配完那段时间
+    (可能 > STUCK_SECONDS) 会被误判「疑似卡死」。进入即阻塞获取，退出即释放。"""
+
+    def __init__(self, lock: threading.Lock, job: "JobState") -> None:
+        self._lock = lock
+        self._job = job
+
+    def __enter__(self) -> "_PhaseLock":
+        while not self._lock.acquire(timeout=5):
+            self._job.check_cancel()            # 等锁期间也能被取消中止
+            with self._job.lock:
+                self._job.last_tick = time.time()   # 刷新心跳，等锁不算卡死
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._lock.release()
+
+
 def _next_pending_locked():
     """持锁下取下一个待办；队列暂停时返回 None（不启动新任务）。"""
     if GEN_PAUSED:
@@ -422,7 +441,7 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             reuse_dub = bool(payload.get("reuse_dub")) and master_path.is_file()
             if not reuse_dub:
                 JOB.set_progress("① 配音 · 排队中（等待配音槽）…", 5)
-            with _DUB_LOCK:   # 配音阶段串行：GPU 一次只跑一个克隆；期间上一个任务可并行渲染
+            with _PhaseLock(_DUB_LOCK, JOB):   # 配音阶段串行：GPU 一次只跑一个克隆；期间上一个任务可并行渲染
                 if reuse_dub:
                     # 复用已有配音：只改了音量/BGM/字幕/进度条时，跳过整段克隆，直接量时长+重渲染（秒出）
                     from .engines.base import wav_seconds
@@ -451,7 +470,7 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
 
             JOB.check_cancel()   # 配音后、量时长前的取消检查点
             JOB.set_progress("② 量时长 · 排队中（等待渲染槽）…", 77)
-            with _RENDER_LOCK:   # 量时长+渲染阶段串行：本地 ffmpeg/whisper 一次只一个；期间下个任务可并行配音
+            with _PhaseLock(_RENDER_LOCK, JOB):   # 量时长+渲染阶段串行：本地 ffmpeg/whisper 一次只一个；期间下个任务可并行配音
                 JOB.set_progress("② 量时长 · 逐行对齐", 78)
                 log("② 量时长 · 逐行对齐…")
                 timings, notes = pipeline.step_timing(text, master_path, aligner_key, output_dir)

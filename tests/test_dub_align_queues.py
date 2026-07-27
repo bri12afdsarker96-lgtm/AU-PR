@@ -68,9 +68,22 @@ class UiContractPhase3Tests(unittest.TestCase):
         def fake_select(*a, **k):
             return []
 
+        # 并发计数器：证明「配音一次只 1 个、渲染一次只 1 个」——若锁失效同时跑 2 个，峰值会 >1
+        cnt = {"dub": 0, "render": 0, "dub_max": 0, "render_max": 0}
+        clock = threading.Lock()
+
+        def _enter(kind):
+            with clock:
+                cnt[kind] += 1
+                cnt[kind + "_max"] = max(cnt[kind + "_max"], cnt[kind])
+
+        def _exit(kind):
+            with clock:
+                cnt[kind] -= 1
+
         def fake_dub(text, engine_key, output_dir, voice, options, log=None, progress=None, heartbeat=None):
             label = Path(output_dir).name
-            rec(label, "dub", "start"); time.sleep(0.3); rec(label, "dub", "end")
+            _enter("dub"); rec(label, "dub", "start"); time.sleep(0.2); rec(label, "dub", "end"); _exit("dub")
             (Path(output_dir) / ws.pipeline.MASTER_NAME).write_bytes(b"")
             return type("M", (), {"seconds": 1.0, "engine": engine_key, "path": Path(output_dir) / ws.pipeline.MASTER_NAME})()
 
@@ -79,7 +92,7 @@ class UiContractPhase3Tests(unittest.TestCase):
 
         def fake_render(master_path, timings, videos, output_dir, style, **k):
             label = Path(output_dir).name
-            rec(label, "render", "start"); time.sleep(0.3); rec(label, "render", "end")
+            _enter("render"); rec(label, "render", "start"); time.sleep(0.2); rec(label, "render", "end"); _exit("render")
             return type("R", (), {"ok": True, "output_path": Path(output_dir) / "成片.mp4", "subtitle_note": ""})()
 
         ws.pipeline.select_shot_videos = fake_select
@@ -89,30 +102,37 @@ class UiContractPhase3Tests(unittest.TestCase):
         ws._remember_edit_item = lambda *a, **k: None
         try:
             root = Path(tempfile.mkdtemp())
-            ids = []
-            for name in ("A", "B"):
+            ids, names = [], ["A", "B", "C", "D", "E"]   # 压力：5 个任务同时压队列
+            for name in names:
                 out = root / name
                 out.mkdir()
                 ids.append(ws._gen_enqueue(
                     {"text": "一\n二", "engine": "mock", "aligner": "均分兜底",
                      "output_dir": str(out), "shots_dir": str(root), "burn_subtitles": False},
                     name))
-            deadline = time.time() + 20
+            deadline = time.time() + 40
             while time.time() < deadline:
                 snap = {t["id"]: t["status"] for t in ws._gen_queue_snapshot()["tasks"]}
                 if all(snap.get(i) in ("done", "failed", "cancelled") for i in ids):
                     break
                 time.sleep(0.1)
-            # 取每个任务的 dub / render 区间
+            final = {t["id"]: t["status"] for t in ws._gen_queue_snapshot()["tasks"]}
+            # ① 全部成功、无任务失败（并发未互相打断）
+            self.assertTrue(all(final.get(i) == "done" for i in ids), f"有任务未成功：{final}")
+            # ② 配音永远只 1 个、渲染永远只 1 个（锁生效、GPU/ffmpeg 不被抢）
+            self.assertEqual(cnt["dub_max"], 1, "同时有 >1 个配音在跑（配音锁失效）")
+            self.assertEqual(cnt["render_max"], 1, "同时有 >1 个渲染在跑（渲染锁失效）")
+
             def interval(label, phase):
                 st = next(t for t, l, p, k in events if l == label and p == phase and k == "start")
                 en = next(t for t, l, p, k in events if l == label and p == phase and k == "end")
                 return st, en
-            a_render = interval("A", "render")
-            b_dub = interval("B", "dub")
-            # 重叠判定：B 配音 与 A 渲染 时间区间相交 → 证明并行(串行则不会相交)
-            overlap = a_render[0] < b_dub[1] and b_dub[0] < a_render[1]
-            self.assertTrue(overlap, f"未发生重叠(退化为串行)：A渲染={a_render} B配音={b_dub}")
+            # ③ 确有跨任务重叠：存在「某任务渲染」与「另一任务配音」时间相交（否则退化为串行）
+            dubs = [(l, *interval(l, "dub")) for l in names]
+            rends = [(l, *interval(l, "render")) for l in names]
+            overlap = any(rl != dl and rs < de and ds < re
+                          for dl, ds, de in dubs for rl, rs, re in rends)
+            self.assertTrue(overlap, "未发生任何跨任务重叠（退化为串行）")
         finally:
             for n, f in orig.items():
                 setattr(ws.pipeline, n, f)
