@@ -3,7 +3,7 @@
 用 monkeypatch 把 urllib 请求换成罐装响应，验证：
   · 未配置地址 → probe 不可用且给出可读提示；
   · synthesize_full 把返回的 PCM16 wav 落盘、做了起音裁切、返回 MasterAudio(key=dots_remote)；
-  · 请求体带上了客户端注入的引子「嗯。」、参考音频 base64、鉴权头；
+  · 默认不注入引子；显式开启时请求体带上客户端引子「嗯。」、参考音频 base64、鉴权头；
   · 鉴权失败(401)映射成可读的 EngineUnavailable。
 """
 
@@ -18,7 +18,7 @@ import wave
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from dub_align_studio.engines.base import EngineUnavailable
+from dub_align_studio.engines.base import EngineUnavailable, SynthesisOptions
 from dub_align_studio.engines.dots_remote import DotsRemoteEngine
 from dub_align_studio.engines.voice_ref import VoiceRef
 
@@ -91,7 +91,7 @@ class DotsRemoteTests(unittest.TestCase):
             orig = mod.urllib.request.urlopen
             mod.urllib.request.urlopen = fake_urlopen
             try:
-                master = eng.synthesize_full("你好世界", voice, out)
+                master = eng.synthesize_full("你好世界", voice, out, SynthesisOptions(dots_lead_in=True))
             finally:
                 mod.urllib.request.urlopen = orig
 
@@ -109,6 +109,27 @@ class DotsRemoteTests(unittest.TestCase):
             self.assertIn("你好世界", captured["body"]["text"])
             self.assertIn("prompt_audio_b64", captured["body"])
             self.assertEqual(captured["body"]["prompt_text"], "参考转写")
+
+    def test_default_does_not_inject_lead_in(self):
+        server_wav = _pcm16_wav([(0, 20), (12000, 800)])
+        captured = {}
+
+        def fake_urlopen(req, timeout=None):
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            return _FakeResp(server_wav, "audio/wav")
+
+        eng = DotsRemoteEngine(endpoint="https://gpu.example.com", api_key="")
+        with TemporaryDirectory() as d:
+            out = Path(d) / "master.wav"
+            import dub_align_studio.engines.dots_remote as mod
+
+            orig = mod.urllib.request.urlopen
+            mod.urllib.request.urlopen = fake_urlopen
+            try:
+                eng.synthesize_full("你好世界", None, out)
+            finally:
+                mod.urllib.request.urlopen = orig
+        self.assertEqual(captured["body"]["text"], "你好世界")
 
     def test_auth_failure_maps_to_readable_error(self):
         def fake_urlopen(req, timeout=None):

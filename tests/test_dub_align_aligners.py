@@ -136,6 +136,7 @@ class SynthesisOptionsTests(unittest.TestCase):
         self.assertAlmostEqual(options.speed, 1.0)
         self.assertAlmostEqual(options.max_pause_seconds, 0.0)
         self.assertEqual(options.seed, 42)
+        self.assertFalse(options.dots_lead_in)
 
     def test_options_recorded_in_master_metadata(self):
         import json

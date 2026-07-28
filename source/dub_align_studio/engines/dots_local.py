@@ -51,7 +51,8 @@ LOCAL_CHECKPOINT_DIR = "dots.tts-soar"
 # 纯标点引子（"，"/"。"）零音素、模型不为其生成音频帧，吸收不了任何东西——实测正文首字
 # 仍被 AR 起始不稳掐掉（音频第 0ms 即满音量、无起音爬坡）。必须用**真发音的音节**当炮灰：
 # 先发一声「嗯」+ 句停，被吃的落在「嗯」上；落盘时定位嗯后的停顿缺口，把「嗯+停顿」整体
-# 切掉，正文以自己完整的自然起音开头。留空则关闭整套兜底。
+# 切掉，正文以自己完整的自然起音开头。实际是否启用由 SynthesisOptions.dots_lead_in 控制；
+# 默认关闭，避免逐行克隆时剪漏后每句开头残留「嗯」。
 _ONSET_LEAD_IN = "嗯。"
 
 # 长参考音频适配：max_generate_length 需 > 参考 patch 数（默认 500 太小）。按报错里的真实
@@ -331,8 +332,9 @@ class DotsLocalEngine:
         只传上游支持的参数（speed/max_pause 等非其入参，避免 TypeError）。
         """
         runtime = self._load_runtime()
+        lead_in = _ONSET_LEAD_IN if getattr(options, "dots_lead_in", False) else ""
         kwargs: dict = {
-            "text": (_ONSET_LEAD_IN + text) if _ONSET_LEAD_IN else text,
+            "text": (lead_in + text) if lead_in else text,
             "num_steps": int(options.num_steps),
             "guidance_scale": float(options.guidance_scale),
             # 当前 dots.tts 0.2.1 runtime.generate 不接收 seed。
@@ -361,7 +363,7 @@ class DotsLocalEngine:
             ) from exc
         except Exception as exc:
             result = self._retry_with_longer_generate(runtime, kwargs, ref_key, exc)
-        self._save_result(result, output)
+        self._save_result(result, output, use_onset_trim=bool(lead_in))
 
     def _retry_with_longer_generate(self, runtime, kwargs: dict, ref_key: str, exc: Exception):
         """针对「max_generate_length must exceed prompt audio patch count」——从报错里取真实
@@ -388,7 +390,7 @@ class DotsLocalEngine:
         return result
 
     @staticmethod
-    def _save_result(result, output: Path) -> None:
+    def _save_result(result, output: Path, use_onset_trim: bool = True) -> None:
         """把 generate 的返回落成 48kHz WAV。兼容 dict / 张量 / 文件路径三种返回形态。"""
         # ① 直接返回文件路径
         if isinstance(result, (str, Path)):
@@ -407,7 +409,7 @@ class DotsLocalEngine:
             soundfile = importlib.import_module("soundfile")
         except ImportError as exc:
             raise EngineUnavailable("缺少 soundfile（pip install soundfile）用于落盘 dots.tts 音频。") from exc
-        array = _trim_leading_silence(_to_numpy(audio), sample_rate)
+        array = _trim_leading_silence(_to_numpy(audio), sample_rate, use_onset_trim=use_onset_trim)
         soundfile.write(str(output), array, sample_rate)
 
 
@@ -601,7 +603,7 @@ def _tail_cut_index(abs_samples, sample_rate: int, peak: float) -> int:
     return min(len(abs_samples), end)
 
 
-def _trim_leading_silence(array, sample_rate: int):
+def _trim_leading_silence(array, sample_rate: int, use_onset_trim: bool = True):
     """段音频两端净化：裁「牺牲音节+停顿」/开头静音 + 删尾部孤立爆音并截尾，
     切口加淡入/淡出防爆响。numpy 缺失时原样返回。"""
     try:
@@ -619,7 +621,7 @@ def _trim_leading_silence(array, sample_rate: int):
         other = tuple(ax for ax in range(a.ndim) if ax != time_axis)
         mono = np.abs(a).mean(axis=other)
     peak = float(np.max(mono)) if mono.size else 0.0
-    start = _onset_cut_index(mono, sample_rate, peak) if _ONSET_LEAD_IN else _leading_trim_index(mono, sample_rate, peak)
+    start = _onset_cut_index(mono, sample_rate, peak) if use_onset_trim else _leading_trim_index(mono, sample_rate, peak)
     end = _tail_cut_index(mono, sample_rate, peak)
     if end <= start:
         start, end = 0, len(mono)

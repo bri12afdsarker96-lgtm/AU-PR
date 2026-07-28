@@ -352,6 +352,7 @@ footer b{color:var(--muted);font-weight:600}
       </div>
       <div class="row" style="gap:22px;flex-wrap:wrap">
         <label class="row mini" style="gap:7px"><input type="checkbox" id="burn" checked>烧录字幕</label>
+        <label class="row mini" style="gap:7px" title="只在某个 dots.tts 音色明显吞掉首字时开启；开启后会在每行前加一个可被剪掉的引子。"><input type="checkbox" id="dotsLeadIn">防丢首字引子</label>
         <span class="mini" style="color:var(--faint)">字幕位置/字号/字体/进度条 → 下方「烧录列表」设置</span>
         <span class="row mini" style="gap:7px">Seed <input type="number" id="seed" value="42" style="width:92px"></span>
         <span class="mini" style="color:var(--faint)">剪映草稿导出 → 成片后在「文本框」页校对完成时一并导出</span>
@@ -1434,6 +1435,7 @@ function buildPayload(action){
     voice_id:$('voice').value,shots_dir:$('shots').value.trim(),output_dir:out,
     title:_baseName(out)||'成片',
     max_pause:+$('pause').value,speed:+$('speed').value,seed:+$('seed').value,
+    dots_lead_in:$('dotsLeadIn')?$('dotsLeadIn').checked:false,
     burn_subtitles:$('burn').checked,subtitle_size:+$('subsize').value||64,
     subtitle_position:$('subPos').value||'底部',subtitle_font:$('subFont')?.value||'',
     subtitle_color:($('subColor')&&$('subColor').value.trim())||'#FFFFFF',
@@ -2313,6 +2315,7 @@ function collectConfig(){
   return {engine:$('engine').value,aligner:$('aligner').value,aspect:$('aspect').value,
     matMode:$('matMode')?$('matMode').value:'flat',
     voice:$('voice').value,burn:$('burn').checked,seed:+$('seed').value,
+    dotsLeadIn:$('dotsLeadIn')?$('dotsLeadIn').checked:false,
     pause:+$('pause').value,speed:+$('speed').value,
     subPos:$('subPos').value,subsize:+$('subsize').value,subFont:$('subFont').value,
     // ⑤ 作品预设纳入完整字幕样式 + 视频进度条设定
@@ -2336,6 +2339,7 @@ function applyConfigObj(c){
   set('engine',c.engine);set('aligner',c.aligner);set('aspect',c.aspect);set('voice',c.voice);
   set('matMode',c.matMode);
   if(c.burn!=null)$('burn').checked=c.burn;
+  if(c.dotsLeadIn!=null&&$('dotsLeadIn'))$('dotsLeadIn').checked=!!c.dotsLeadIn;
   set('seed',c.seed);set('pause',c.pause);set('speed',c.speed);
   set('subPos',c.subPos);set('subsize',c.subsize);set('subFont',c.subFont);
   if(c.sub)applySubObj(c.sub);     // ⑤ 还原完整字幕样式（颜色/描边）

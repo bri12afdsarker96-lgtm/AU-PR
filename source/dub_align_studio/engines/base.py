@@ -35,7 +35,8 @@ class SynthesisOptions:
     - max_pause_seconds：停顿上限（秒）——标点处停顿超过此秒数就压缩，让整篇更连贯；
       0 = 不压缩。对「整篇克隆」尤其重要：停顿失控会拉长行时长、抬高 freeze 比例；
     - seed：固定以尽量可复现；
-    - normalize_text：引擎侧文本规范化开关。
+    - normalize_text：引擎侧文本规范化开关；
+    - dots_lead_in：dots.tts 专用防丢首字引子。默认关闭，避免逐行克隆时每句开头残留「嗯」。
     """
 
     num_steps: int = 10
@@ -44,6 +45,7 @@ class SynthesisOptions:
     max_pause_seconds: float = 0.0
     seed: int = 42
     normalize_text: bool = False
+    dots_lead_in: bool = False
 
     def to_payload(self) -> dict:
         return asdict(self)

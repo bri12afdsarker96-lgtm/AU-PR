@@ -110,11 +110,9 @@ class DotsAdapterCallSignatureTests(unittest.TestCase):
         # from_pretrained 传了检查点 + 精度
         self.assertEqual(_FakeRuntime.last_from_pretrained["model"], "rednote-hilab/dots.tts-soar")
         self.assertEqual(_FakeRuntime.last_from_pretrained["precision"], "bfloat16")
-        # generate 用的是上游参数名；文本前置起音停顿（防丢字），真正文案在其后
-        from dub_align_studio.engines import dots_local
+        # generate 用的是上游参数名；默认不前置「嗯。」引子，避免逐行克隆时残留到每句开头
         g = _FakeRuntime.last_generate
-        self.assertEqual(g["text"], dots_local._ONSET_LEAD_IN + "要合成的整篇文案")
-        self.assertTrue(g["text"].endswith("要合成的整篇文案"))
+        self.assertEqual(g["text"], "要合成的整篇文案")
         self.assertEqual(g["prompt_audio_path"], "/ref.wav")   # 不是 prompt_audio
         self.assertEqual(g["prompt_text"], "参考句")
         self.assertEqual(g["num_steps"], 16)
@@ -133,6 +131,14 @@ class DotsAdapterCallSignatureTests(unittest.TestCase):
         engine._generate("文案", voice, out, SynthesisOptions())
         self.assertIn("prompt_audio_path", _FakeRuntime.last_generate)
         self.assertNotIn("prompt_text", _FakeRuntime.last_generate)
+
+    def test_optional_lead_in_prefixes_text(self):
+        from dub_align_studio.engines import dots_local
+
+        engine = DotsLocalEngine()
+        out = Path(tempfile.mkdtemp()) / "m.wav"
+        engine._generate("文案", None, out, SynthesisOptions(dots_lead_in=True))
+        self.assertEqual(_FakeRuntime.last_generate["text"], dots_local._ONSET_LEAD_IN + "文案")
 
     def test_normalize_text_passes_only_when_enabled_and_supported(self):
         engine = DotsLocalEngine()

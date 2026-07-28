@@ -395,6 +395,7 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             speed=float(payload.get("speed") or vparams.get("speed") or 1.0),
             max_pause_seconds=float(payload.get("max_pause") or 0.0),
             seed=int(payload.get("seed") or vparams.get("seed") or 42),
+            dots_lead_in=bool(payload.get("dots_lead_in")),
         )
         style = None
         if payload.get("burn_subtitles", True):
@@ -669,6 +670,7 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                 speed=float(payload.get("speed") or 1.0),
                 max_pause_seconds=float(payload.get("max_pause_seconds") or 0.0),
                 seed=int(float(payload.get("seed") or 42)),
+                dots_lead_in=bool(payload.get("dots_lead_in")),
             )
             voice_id = str(payload.get("voice_id") or "默认声线")
             sig = hashlib.md5(  # noqa: S324 —— 仅做缓存键，非安全用途

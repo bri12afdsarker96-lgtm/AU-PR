@@ -156,6 +156,6 @@ Caddy 会自动签发并续期 Let's Encrypt 证书，本地软件填 `https://d
 | 接口 | 方法 | 说明 |
 |---|---|---|
 | `/health` | GET | 需 `X-API-Key`。返回 GPU、模型是否已加载。 |
-| `/synthesize` | POST JSON | 需 `X-API-Key`。字段：`text`（客户端已含引子「嗯。」）、`prompt_audio_b64`、`prompt_text`、`num_steps`、`guidance_scale`、`seed`、`normalize_text`。返回 **PCM16 WAV** 字节。|
+| `/synthesize` | POST JSON | 需 `X-API-Key`。字段：`text`（客户端按需加入防丢首字引子）、`prompt_audio_b64`、`prompt_text`、`num_steps`、`guidance_scale`、`seed`、`normalize_text`。返回 **PCM16 WAV** 字节。|
 
 服务端**不做**引子注入与起音裁切——那些在客户端完成，服务端保持纯 GPU worker。

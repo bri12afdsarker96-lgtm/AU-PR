@@ -5,8 +5,8 @@
   · 与 DotsLocalEngine 实现同一个 DubEngine 协议（synthesize_full），下游一行都不用改；
   · 客户端只需 stdlib（urllib + wave），**不依赖 torch/soundfile/numpy**——这正是「不用本地显卡」
     的意义所在；
-  · 引子「嗯。」在**客户端**注入、起音/尾部裁切也在**客户端**做（复用 dots_local 里那套纯 Python
-    切点函数），云端只当一个「无脑 GPU worker」：收文本+参考音频 → 吐原始 PCM16 wav；
+  · 可选引子「嗯。」在**客户端**注入、起音/尾部裁切也在**客户端**做（复用 dots_local 里那套
+    纯 Python 切点函数），云端只当一个「无脑 GPU worker」：收文本+参考音频 → 吐原始 PCM16 wav；
   · 鉴权走 HTTP 头 X-API-Key；地址/Key 从设置或环境变量读取（见 settings.dots_remote_config）。
 
 配置（二选一，环境变量优先）：
@@ -40,6 +40,7 @@ from .base import (
 from .dots_local import (
     EXPECTED_SAMPLE_RATE,
     _ONSET_LEAD_IN,
+    _leading_trim_index,
     _onset_cut_index,
     _tail_cut_index,
 )
@@ -125,9 +126,10 @@ class DotsRemoteEngine:
         output = Path(output)
         output.parent.mkdir(parents=True, exist_ok=True)
 
+        lead_in = _ONSET_LEAD_IN if getattr(options, "dots_lead_in", False) else ""
         payload: dict = {
-            # 引子在客户端注入（与本地引擎同一口径），云端只管按收到的文本生成
-            "text": (_ONSET_LEAD_IN + text) if _ONSET_LEAD_IN else text,
+            # 引子按需在客户端注入（与本地引擎同一口径），云端只管按收到的文本生成
+            "text": (lead_in + text) if lead_in else text,
             "num_steps": int(options.num_steps),
             "guidance_scale": float(options.guidance_scale),
             "seed": int(options.seed),
@@ -144,7 +146,7 @@ class DotsRemoteEngine:
                 payload["prompt_text"] = voice.transcript.strip()  # 带转写：克隆相似度最高
 
         wav_bytes = self._post_for_wav("/synthesize", payload)
-        trimmed = _trim_wav_bytes(wav_bytes)   # 复用与本地一致的纯 Python 起音/尾部裁切
+        trimmed = _trim_wav_bytes(wav_bytes, use_onset_trim=bool(lead_in))   # 复用与本地一致的纯 Python 起音/尾部裁切
         output.write_bytes(trimmed)
 
         seconds = wav_seconds(output)
@@ -223,7 +225,7 @@ def _http_error_hint(exc: urllib.error.HTTPError) -> str:
     return f"云端返回错误（HTTP {exc.code}）：{body}"
 
 
-def _trim_wav_bytes(wav_bytes: bytes) -> bytes:
+def _trim_wav_bytes(wav_bytes: bytes, use_onset_trim: bool = True) -> bytes:
     """对云端返回的 PCM16 WAV 做起音/尾部裁切（复用 dots_local 的纯 Python 切点函数）。
     非 PCM16 或解析失败时原样返回（best-effort，绝不为了裁切把音频弄坏）。切口做 5ms 线性淡入淡出防爆响。"""
     try:
@@ -248,7 +250,7 @@ def _trim_wav_bytes(wav_bytes: bytes) -> bytes:
     else:
         mono = [max(abs(samples[i * nch + c]) for c in range(nch)) for i in range(total)]
     peak = max(mono) if mono else 0
-    start = _onset_cut_index(mono, sr, peak) if _ONSET_LEAD_IN else 0
+    start = _onset_cut_index(mono, sr, peak) if use_onset_trim else _leading_trim_index(mono, sr, peak)
     end = _tail_cut_index(mono, sr, peak)
     if not (0 <= start < end <= total):
         start, end = 0, total

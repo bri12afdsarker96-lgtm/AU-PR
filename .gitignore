@@ -53,4 +53,10 @@ source/dub_align_studio/_build_info.py
 
 # 发布压缩包（带版本号）
 发布包/
+轻量云配版包/
 *.zip
+
+# Local ffmpeg binaries used by packaging only
+ffmpeg.exe
+ffprobe.exe
+ffplay.exe
