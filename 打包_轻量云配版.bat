@@ -86,7 +86,7 @@ python -c "import sys;sys.path.insert(0,'source');from dub_align_studio.version 
 
 echo.
 set "PKGSIZE=?"
-for /f "delims=" %%s in ('powershell -NoProfile -Command "[int]((Get-ChildItem -LiteralPath '%CD%\%PKG%' -Recurse -File -ErrorAction SilentlyContinue ^| Measure-Object Length -Sum).Sum/1MB)" 2^>nul') do set "PKGSIZE=%%s"
+for /f "usebackq delims=" %%s in (`powershell -NoProfile -Command "[int]((Get-ChildItem -LiteralPath '%CD%\%PKG%' -Recurse -File -ErrorAction SilentlyContinue ^| Measure-Object Length -Sum).Sum/1MB)" 2^>nul`) do set "PKGSIZE=%%s"
 echo.
 echo [体积] 轻量包大小约 !PKGSIZE! MB（正常应为几百 MB；若仍上千 MB 说明重依赖没删净，请把本窗口发我）
 echo [完成] 轻量云配版：%PKG%\
