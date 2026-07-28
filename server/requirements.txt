@@ -1,0 +1,8 @@
+# 云 dots.tts 推理服务端依赖（客户端不需要这些）。
+# torch / CUDA 由云镜像自带（AutoDL「基础镜像 → PyTorch」已含），故不在此固定 torch 版本，
+# 避免覆盖镜像里匹配好 CUDA 的 torch。dots_tts 按你的检查点/发行方式单独安装（见部署文档）。
+fastapi>=0.110
+uvicorn[standard]>=0.29
+soundfile>=0.12
+pydantic>=2.0
+# transformers 等 dots.tts 运行时依赖：随 dots_tts 安装或按其 README 补齐。

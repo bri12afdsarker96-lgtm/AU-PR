@@ -1,0 +1,371 @@
+水星配音对齐工作室 · 环境快照  2026-07-28 14:05:54
+
+════════ Python 环境 ════════
+  python: D:\Python\Python311\python.exe
+  版本: 3.11.8
+  frozen(打包版): False
+  torch: 2.11.0+cu126
+  torchaudio: 2.11.0+cu126
+  torchvision: 0.26.0+cu126
+  torchcodec: 未安装
+  transformers: 4.57.0
+  accelerate: 1.12.0
+  dots-tts: 0.2.1
+  soundfile: 0.14.0
+  pyinstaller: 6.21.0
+
+════════ 引擎探测（dots.tts probe） ════════
+  D:\Python\Python311\Lib\site-packages\pydantic\_internal\_fields.py:132: UserWarning: Field "model_type" in ModelConfig has conflict with protected namespace "model_".
+  
+  You may be able to resolve this warning by setting `model_config['protected_namespaces'] = ()`.
+    warnings.warn(
+  available= True
+  dots.tts 可用（检查点 D:\GitHub\By\AU&PR\水星配音数据\组件\dots.tts\dots.tts-soar）；GPU：NVIDIA GeForce RTX 3060，显存 11.0/12.0 GB 可用（需 ≥6GB，推荐 ≥11GB）。；文本正则化用桩跳过（缺 WeTextProcessing/pynini，不影响出声，建议文案里数字写成中文）
+
+════════ dots.tts 运行时 API 详解（不加载权重，只反射签名） ════════
+  D:\Python\Python311\Lib\site-packages\pydantic\_internal\_fields.py:132: UserWarning: Field "model_type" in ModelConfig has conflict with protected namespace "model_".
+  
+  You may be able to resolve this warning by setting `model_config['protected_namespaces'] = ()`.
+    warnings.warn(
+  from_pretrained: (model_name_or_path: 'str', *, revision: 'str | None' = None, cache_dir: 'str | None' = None, precision: 'str' = 'bfloat16', optimize: 'bool' = False, max_generate_length: 'int' = 500, max_sequence_length: 'int' = 2048, vocoder_merge_steps: 'int' = 4, warmup_on_optimize: 'bool' = True) -> 'DotsTtsRuntime'
+  generate: (self, *, text: 'str', prompt_audio_path: 'str | None' = None, prompt_text: 'str | None' = None, template_name: 'str | None' = None, language: 'str | None' = None, speaker_scale: 'float' = 1.5, ode_method: 'str' = 'euler', num_steps: 'int' = 10, guidance_scale: 'float' = 1.2, normalize_text: 'bool' = False, profile_inference: 'bool' = False, log_profile_calls: 'bool' = False) -> 'dict[str, Any]'
+  generate 接受 **kwargs: False
+    接受 text: True
+    接受 prompt_audio_path: True
+    接受 prompt_text: True
+    接受 num_steps: True
+    接受 guidance_scale: True
+    接受 seed: False
+    接受 normalize_text: True
+    接受 max_generate_length: False
+    接受 speed: False
+    接受 max_pause: False
+    接受 length: False
+  max_generate_length 在 dots_tts 包内出现 35 处：
+    cli.py:126: max_generate_length=args.max_generate_length,
+    runtime.py:86: max_generate_length: int = 500,
+    runtime.py:110: self.max_generate_length = int(max_generate_length)
+    runtime.py:113: if self.max_generate_length <= 0:
+    runtime.py:114: raise ValueError("max_generate_length must be positive.")
+    runtime.py:139: self.max_generate_length,
+    runtime.py:155: max_generate_length: int = 500,
+    runtime.py:185: max_generate_length=max_generate_length,
+    runtime.py:252: if int(candidate) < self.max_generate_length
+    runtime.py:259: "prompt_patch_counts={} max_generate_length={}",
+    runtime.py:264: self.max_generate_length,
+    runtime.py:268: # [prev_bucket + 1, max_generate_length] all land in the largest
+    runtime.py:296: # >= max_generate_length (decode caps at max_generate_length patches).
+    runtime.py:299: (b for b in buckets if b >= self.max_generate_length),
+    runtime.py:307: return min(self.max_generate_length, prev_edge + 1)
+    runtime.py:369: if self.max_generate_length <= int(prompt_patch_count):
+    runtime.py:371: "Warmup prompt patch count must be less than max_generate_length: "
+    runtime.py:373: f"max_generate_length={self.max_generate_length}."
+    runtime.py:550: max_audio_tokens=self.max_generate_length,
+    runtime.py:608: and self.max_generate_length <= prompt_audio_patch_count
+    runtime.py:611: "max_generate_length must exceed prompt audio patch count when prompt_text is provided: "
+    runtime.py:612: f"max_generate_length={self.max_generate_length} "
+    runtime.py:644: self.max_generate_length,
+    runtime.py:697: self.max_generate_length,
+    runtime.py:805: self.max_generate_length,
+    runtime_double_streaming.py:53: self.max_generate_length = runtime.max_generate_length
+    runtime_double_streaming.py:74: max_audio_patch_count=self.max_generate_length,
+    runtime_double_streaming.py:106: self.max_generate_length,
+    runtime_double_streaming.py:324: if self._decoded_patch_count >= self.max_generate_length:
+    runtime_double_streaming.py:326: "Double streaming exceeded max_generate_length before reaching EOS."
+    models\dots_tts\model.py:191: max_generate_length: int,
+    models\dots_tts\model.py:193: requested = int(max_generate_length)
+    models\dots_tts\model.py:195: raise ValueError("max_generate_length must be positive.")
+    models\dots_tts\model.py:200: "max_generate_length exceeds the largest supported compile bucket: "
+    models\dots_tts\model.py:201: f"max_generate_length={requested} "
+
+════════ 音色库参考音频体检（定位过长参考） ════════
+  📁 三刀/参考音频.mp3: 0.3MB · 时长 11.4s · 44100Hz
+  📁 书单女生温情/参考音频.mp3: 0.5MB · 时长 20.9s · 44100Hz
+  📁 少年云希/参考音频.mp3: 0.2MB · 时长 10.2s · 44100Hz
+  📁 情感倾诉/参考音频.mp3: 0.3MB · 时长 15.3s · 44100Hz
+  📁 晓辰/参考音频.mp3: 0.2MB · 时长 9.4s · 44100Hz
+  📁 默默讲电影/参考音频.mp3: 0.2MB · 时长 9.3s · 44100Hz
+
+════════ 仓库状态 ════════
+  分支: release/v0.5-download-fix
+  HEAD: 64627c6a 新增轻量云配版安装包：一个 .iss 加 Lite 开关，产出可发送的单文件 Setup.exe
+  近5次提交:
+    64627c6a 新增轻量云配版安装包：一个 .iss 加 Lite 开关，产出可发送的单文件 Setup.exe
+    060db3f8 轻量云配版：新增"云配音模式"开关，隐藏本地模型相关 UI/工具箱/自检；打包排除字体与音色
+    b41aa216 新增「打包_轻量云配版.bat」：无独显集显低配电脑可用（配音走云 GPU）
+    d96e72c3 新增「一键修复ffmpeg.bat」：把 ffmpeg 装进已在 PATH 的目录，运行中软件立刻可用
+    f335fc42 云端 torch.compile 自动加速+失败回退：让 5090 真正发力（AR 单卡主要加速手段）
+  未提交改动: 
+    D "\347\216\257\345\242\203\345\277\253\347\205\247.txt"
+    ?? ffmpeg.exe
+    ?? ffplay.exe
+    ?? ffprobe.exe
+    ?? "\350\275\273\351\207\217\344\272\221\351\205\215\347\211\210\345\214\205/"
+
+════════ 近期错误日志 ════════
+  本次操作日志.txt（07-24 22:24，尾部 40 行）:
+        Found existing installation: MarkupSafe 3.0.3
+        Uninstalling MarkupSafe-3.0.3:
+          Successfully uninstalled MarkupSafe-3.0.3
+      Attempting uninstall: fsspec
+        Found existing installation: fsspec 2026.4.0
+        Uninstalling fsspec-2026.4.0:
+          Successfully uninstalled fsspec-2026.4.0
+      Attempting uninstall: filelock
+        Found existing installation: filelock 3.29.0
+        Uninstalling filelock-3.29.0:
+          Successfully uninstalled filelock-3.29.0
+      Attempting uninstall: jinja2
+        Found existing installation: Jinja2 3.1.6
+        Uninstalling Jinja2-3.1.6:
+          Successfully uninstalled Jinja2-3.1.6
+      Attempting uninstall: torch
+        Found existing installation: torch 2.5.1+cu121
+        Uninstalling torch-2.5.1+cu121:
+          Successfully uninstalled torch-2.5.1+cu121
+    
+    ERROR: pip's dependency resolver does not currently take into account all the packages that are installed. This behaviour is the source of the following dependency conflicts.
+    basicsr 1.4.2 requires tb-nightly, which is not installed.
+    dots-tts 0.2.1 requires WeTextProcessing, which is not installed.
+    gfpgan 1.3.8 requires tb-nightly, which is not installed.
+    voxcpm 2.0.3 requires torchcodec, which is not installed.
+    datasets 2.18.0 requires fsspec[http]<=2024.2.0,>=2023.1.0, but you have fsspec 2026.4.0 which is incompatible.
+    dots-tts 0.2.1 requires pydantic<3,>=2.12.5, but you have pydantic 2.9.2 which is incompatible.
+    fish-speech 2.0.0 requires torch==2.8.0, but you have torch 2.11.0+cu126 which is incompatible.
+    fish-speech 2.0.0 requires torchaudio==2.8.0, but you have torchaudio 2.11.0+cu126 which is incompatible.
+    voxcpm 2.0.3 requires datasets<4,>=3, but you have datasets 2.18.0 which is incompatible.
+    voxcpm 2.0.3 requires modelscope>=1.22.0, but you have modelscope 1.17.1 which is incompatible.
+    Successfully installed MarkupSafe-3.0.3 filelock-3.29.0 fsspec-2026.4.0 jinja2-3.1.6 mpmath-1.3.0 networkx-3.6.1 setuptools-78.1.0 sympy-1.14.0 torch-2.11.0+cu126 torchaudio-2.11.0+cu126 typing-extensions-4.15.0
+    
+    [2/2] dots.tts probe：
+    D:\Python\Python311\Lib\site-packages\pydantic\_internal\_fields.py:132: UserWarning: Field "model_type" in ModelConfig has conflict with protected namespace "model_".
+    
+    You may be able to resolve this warning by setting `model_config['protected_namespaces'] = ()`.
+      warnings.warn(
+    available= True
+    dots.tts 可用（检查点 D:\GitHub\By\AU&PR\水星配音数据\组件\dots.tts\dots.tts-soar）；GPU：NVIDIA GeForce RTX 3060，显存 11.0/12.0 GB 可用（需 ≥6GB，推荐 ≥11GB）。；文本正则化用桩跳过（缺 WeTextProcessing/pynini，不影响出声，建议文案里数字写成中文）
+
+════════ 仓库根目录（深度1） ════════
+  D:\GitHub\By\AU&PR\AU-PR
+  📁 dist/
+  📁 docs/
+  📁 installer/
+  📁 server/
+  📁 source/
+  📁 tests/
+  📁 发布包/
+  📁 轻量云配版包/
+     README.md  (0.0MB, 07-23 01:33)
+     ffmpeg.exe  (97.2MB, 06-27 19:57)
+     ffplay.exe  (98.6MB, 06-27 19:57)
+     ffprobe.exe  (97.0MB, 06-27 19:57)
+     一键修复ffmpeg.bat  (0.0MB, 07-28 03:22)
+     打包.bat  (0.0MB, 07-25 19:40)
+     打包_整合离线版.bat  (0.0MB, 07-27 22:05)
+     打包_轻量云配版.bat  (0.0MB, 07-28 03:38)
+     打包安装程序.bat  (0.0MB, 07-26 16:06)
+     打包安装程序_轻量云配版.bat  (0.0MB, 07-28 03:45)
+     打包收尾.py  (0.0MB, 07-24 11:11)
+     打包说明.md  (0.0MB, 07-26 16:06)
+     本次操作.bat  (0.0MB, 07-25 19:40)
+     本次操作日志.txt  (0.0MB, 07-24 22:24)
+     水星配音对齐工作室.spec  (0.0MB, 07-28 00:08)
+     环境快照.bat  (0.0MB, 07-26 21:18)
+     环境快照.py  (0.0MB, 07-26 21:18)
+
+════════ 父目录（检查散落的旧脚本副本） ════════
+  D:\GitHub\By\AU&PR
+  📁 AU-PR/
+  📁 水星配音数据/
+
+════════ dist 产物 ════════
+  D:\GitHub\By\AU&PR\AU-PR\dist
+  📁 水星配音对齐工作室/
+    📁 _internal/
+       ffmpeg.exe  (97.2MB, 06-27 19:57)
+       ffplay.exe  (98.6MB, 06-27 19:57)
+       ffprobe.exe  (97.0MB, 06-27 19:57)
+       水星配音对齐工作室.exe  (115.9MB, 07-28 00:14)
+
+════════ 发布包 ════════
+  D:\GitHub\By\AU&PR\AU-PR\发布包
+     水星配音对齐工作室_轻量版_v0.7.68.zip  (4240.3MB, 07-28 04:10)
+
+════════ 整合离线包 ════════
+  （不存在）D:\GitHub\By\AU&PR\AU-PR\整合离线包
+
+════════ 数据总目录 ════════
+  软件当前指向: D:\GitHub\By\AU&PR\水星配音数据
+  D:\GitHub\By\AU&PR\水星配音数据
+  📁 克隆音频/
+    📁 试听缓存/
+         三刀_dots_remote_19fe09fc46.json  (0.0MB, 07-28 02:14)
+         三刀_dots_remote_19fe09fc46.wav  (0.4MB, 07-28 02:14)
+         书单女生温情_dots_local_b9de669177.json  (0.0MB, 07-24 22:38)
+         书单女生温情_dots_local_b9de669177.wav  (0.4MB, 07-24 22:38)
+         少年云希_dots_remote_7bf788542b.json  (0.0MB, 07-28 02:15)
+         少年云希_dots_remote_7bf788542b.wav  (0.3MB, 07-28 02:15)
+         情感倾诉_dots_remote_31acdbf573.json  (0.0MB, 07-28 02:14)
+         情感倾诉_dots_remote_31acdbf573.wav  (0.7MB, 07-28 02:14)
+         情感倾诉_dots_remote_8e2ecf3f6d.json  (0.0MB, 07-28 02:17)
+         情感倾诉_dots_remote_8e2ecf3f6d.wav  (0.6MB, 07-28 02:17)
+         情感倾诉_dots_remote_b9e41786b9.json  (0.0MB, 07-28 02:19)
+         情感倾诉_dots_remote_b9e41786b9.wav  (0.5MB, 07-28 02:19)
+         晓辰_dots_remote_b9bcdd64ea.json  (0.0MB, 07-28 02:17)
+         晓辰_dots_remote_b9bcdd64ea.wav  (0.4MB, 07-28 02:17)
+         测试2_dots_local_2e6296564a.json  (0.0MB, 07-24 12:09)
+         测试2_dots_local_2e6296564a.wav  (0.4MB, 07-24 12:09)
+         测试5_dots_local_36c1aa8fc2.json  (0.0MB, 07-24 16:48)
+         测试5_dots_local_36c1aa8fc2.wav  (0.4MB, 07-24 16:48)
+         测试_dots_local_09438c7803.json  (0.0MB, 07-24 12:06)
+         测试_dots_local_09438c7803.wav  (0.4MB, 07-24 12:06)
+         默默讲电影_dots_remote_ef47992be5.json  (0.0MB, 07-28 02:13)
+         默默讲电影_dots_remote_ef47992be5.wav  (0.4MB, 07-28 02:13)
+       20260724_230954_dots_local_书单女生温情.json  (0.0MB, 07-24 23:09)
+       20260724_230954_dots_local_书单女生温情.wav  (13.1MB, 07-24 23:09)
+       20260725_013529_dots_local_书单女生温情.json  (0.0MB, 07-25 01:35)
+       20260725_013529_dots_local_书单女生温情.wav  (13.5MB, 07-25 01:35)
+       20260725_145235_dots_local_书单女生温情.json  (0.0MB, 07-25 14:52)
+       20260725_145235_dots_local_书单女生温情.wav  (13.2MB, 07-25 14:52)
+       20260725_174714_dots_local_书单女生温情.json  (0.0MB, 07-25 17:47)
+       20260725_174714_dots_local_书单女生温情.wav  (13.4MB, 07-25 17:47)
+       20260727_022612_dots_remote_书单女生温情.json  (0.0MB, 07-27 02:26)
+       20260727_022612_dots_remote_书单女生温情.wav  (13.2MB, 07-27 02:26)
+       20260728_023133_dots_remote_少年云希.json  (0.0MB, 07-28 02:31)
+       20260728_023133_dots_remote_少年云希.wav  (10.9MB, 07-28 02:31)
+       20260728_023656_dots_remote_少年云希.json  (0.0MB, 07-28 02:36)
+       20260728_023656_dots_remote_少年云希.wav  (10.1MB, 07-28 02:36)
+       20260728_024202_dots_remote_少年云希.json  (0.0MB, 07-28 02:42)
+       20260728_024202_dots_remote_少年云希.wav  (9.3MB, 07-28 02:42)
+       20260728_025217_dots_remote_晓辰.json  (0.0MB, 07-28 02:52)
+       20260728_025217_dots_remote_晓辰.wav  (9.3MB, 07-28 02:52)
+       20260728_025807_dots_remote_少年云希.json  (0.0MB, 07-28 02:58)
+       20260728_025807_dots_remote_少年云希.wav  (10.9MB, 07-28 02:58)
+       20260728_032543_dots_remote_三刀.json  (0.0MB, 07-28 03:25)
+       20260728_032543_dots_remote_三刀.wav  (19.8MB, 07-28 03:25)
+       20260728_033547_dots_remote_三刀.json  (0.0MB, 07-28 03:35)
+       20260728_033547_dots_remote_三刀.wav  (19.7MB, 07-28 03:35)
+    …（其余 28 项略）
+  📁 字体/
+       CactusClassicalSerif-Regular.ttf  (27.2MB, 07-24 22:39)
+       Huninn-Regular.ttf  (4.5MB, 07-24 22:39)
+       LXGWWenKai-Light.ttf  (27.0MB, 07-24 22:40)
+       LXGWWenKai-Medium.ttf  (17.9MB, 07-24 22:39)
+       LXGWWenKai-Regular.ttf  (18.4MB, 07-24 22:39)
+       LiuJianMaoCao-Regular.ttf  (4.7MB, 07-24 22:39)
+       LongCang-Regular.ttf  (4.9MB, 07-24 22:39)
+       MaShanZheng-Regular.ttf  (5.6MB, 07-24 22:39)
+       NotoSansSC-Bold.otf  (8.1MB, 07-24 02:08)
+       NotoSansSC-Regular.ttf  (7.9MB, 07-24 02:08)
+       NotoSerifSC-Regular.otf  (11.1MB, 07-24 22:39)
+       SmileySans-Oblique.ttf  (2.5MB, 07-23 19:39)
+       ZCOOLKuaiLe-Regular.ttf  (1.4MB, 07-24 22:39)
+       ZCOOLQingKeHuangYou-Regular.ttf  (7.9MB, 07-24 02:08)
+       ZCOOLXiaoWei-Regular.ttf  (6.0MB, 07-24 02:08)
+       ZhiMangXing-Regular.ttf  (3.9MB, 07-24 22:39)
+       晴圆.ttc  (8.7MB, 07-26 17:01)
+       百度综艺简体.ttf  (1.5MB, 07-26 17:01)
+  📁 组件/
+    📁 dots.tts/
+      📁 dots.tts-soar/
+      📁 wheels/
+    📁 fish-speech/
+      📁 awesome_webui/
+      📁 checkpoints/
+      📁 docker/
+      📁 docs/
+      📁 fish_speech/
+      📁 fish_speech.egg-info/
+      📁 python/
+      📁 python-runtime/
+      📁 tools/
+         API_FLAGS.txt  (0.0MB, 07-23 19:39)
+         LICENSE  (0.0MB, 07-23 19:39)
+         README.md  (0.0MB, 07-23 19:39)
+         compose.base.yml  (0.0MB, 07-23 19:39)
+         compose.rocm.yml  (0.0MB, 07-23 19:39)
+         compose.yml  (0.0MB, 07-23 19:39)
+         dockerfile.dev  (0.0MB, 07-23 19:39)
+         entrypoint.sh  (0.0MB, 07-23 19:39)
+         inference.ipynb  (0.0MB, 07-23 19:39)
+         mkdocs.yml  (0.0MB, 07-23 19:39)
+         pyproject.toml  (0.0MB, 07-23 19:39)
+         pyrightconfig.json  (0.0MB, 07-23 19:39)
+         uv.lock  (1.2MB, 07-23 19:39)
+    📁 pyCapCut/
+      📁 PIL/
+      📁 bin/
+      📁 comtypes/
+      📁 comtypes-1.4.16.dist-info/
+      📁 imageio/
+      📁 imageio-2.37.4.dist-info/
+      📁 numpy/
+      📁 numpy-2.4.6.dist-info/
+      📁 numpy.libs/
+      📁 pillow-12.3.0.dist-info/
+      📁 pycapcut/
+      📁 pycapcut-0.0.3.dist-info/
+      📁 pymediainfo/
+      📁 pymediainfo-7.0.1.dist-info/
+      📁 uiautomation/
+      📁 uiautomation-2.0.29.dist-info/
+      📁 wheels/
+    📁 torch/
+    📁 whisper.cpp/
+      📁 Release/
+      📁 models/
+      📁 runtime_downloads/
+         SDL2.dll  (2.4MB, 07-23 19:40)
+         bench.exe  (0.0MB, 07-23 19:40)
+         command.exe  (0.0MB, 07-23 19:40)
+         ggml-base.dll  (0.6MB, 07-23 19:40)
+         ggml-cpu-alderlake.dll  (0.8MB, 07-23 19:40)
+         ggml-cpu-cannonlake.dll  (0.8MB, 07-23 19:40)
+         ggml-cpu-cascadelake.dll  (0.8MB, 07-23 19:40)
+         ggml-cpu-haswell.dll  (0.8MB, 07-23 19:40)
+         ggml-cpu-icelake.dll  (0.8MB, 07-23 19:40)
+         ggml-cpu-sandybridge.dll  (0.7MB, 07-23 19:40)
+         ggml-cpu-skylakex.dll  (0.8MB, 07-23 19:40)
+         ggml-cpu-sse42.dll  (0.7MB, 07-23 19:40)
+         ggml-cpu-x64.dll  (0.7MB, 07-23 19:40)
+         ggml.dll  (0.1MB, 07-23 19:40)
+         main.exe  (0.0MB, 07-23 19:40)
+         parakeet-cli.exe  (0.4MB, 07-23 19:40)
+         parakeet-quantize.exe  (0.1MB, 07-23 19:40)
+         parakeet.dll  (0.5MB, 07-23 19:40)
+         stream.exe  (0.0MB, 07-23 19:40)
+         test-common-utf8.exe  (0.3MB, 07-23 19:40)
+         test-parakeet-full-diffusion.exe  (0.4MB, 07-23 19:40)
+         test-parakeet-full-gb1.exe  (0.3MB, 07-23 19:40)
+      …（其余 15 项略）
+  📁 配乐音效/
+       Anup Kushwaha-Helping Tech.mp3  (7.8MB, 07-28 02:19)
+       悬疑-紧张-电子.m4a  (1.2MB, 07-24 02:05)
+       那艺娜-爱如火.flac  (23.9MB, 07-28 02:28)
+       震撼1.mp3  (5.0MB, 07-28 03:13)
+  📁 音色库/
+    📁 三刀/
+         参考音频.mp3  (0.3MB, 07-28 02:14)
+         转写.txt  (0.0MB, 07-28 02:14)
+         音色.json  (0.0MB, 07-28 02:15)
+    📁 书单女生温情/
+         参考音频.mp3  (0.5MB, 07-24 22:36)
+         转写.txt  (0.0MB, 07-24 22:36)
+         音色.json  (0.0MB, 07-25 14:22)
+    📁 少年云希/
+         参考音频.mp3  (0.2MB, 07-28 02:15)
+         转写.txt  (0.0MB, 07-28 02:15)
+         音色.json  (0.0MB, 07-28 02:15)
+    📁 情感倾诉/
+         参考音频.mp3  (0.3MB, 07-28 02:18)
+         转写.txt  (0.0MB, 07-28 02:18)
+         音色.json  (0.0MB, 07-28 02:19)
+    📁 晓辰/
+         参考音频.mp3  (0.2MB, 07-28 02:17)
+         转写.txt  (0.0MB, 07-28 02:17)
+         音色.json  (0.0MB, 07-28 02:18)
+    📁 默默讲电影/
+         参考音频.mp3  (0.2MB, 07-28 02:13)
+         转写.txt  (0.0MB, 07-28 02:13)
+         音色.json  (0.0MB, 07-28 02:15)
+     作品参数预设.json  (0.0MB, 07-28 03:13)

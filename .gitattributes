@@ -1,0 +1,10 @@
+# Windows 批处理必须是 CRLF 行尾，否则 cmd.exe 解析多字节(中文)行会出错
+# （症状：intro 的中文 echo 行报 "'x' is not recognized as an internal or external command"）。
+# 这些文件在 Linux 上编辑默认 LF；用 -text 让 git 按「原样字节」存取（不做行尾归一化），
+# 保证提交的 CRLF 字节原封不动 checkout 到任何机器（含已存在的工作区，pull 即更新）。
+*.bat -text
+*.cmd -text
+# PowerShell 兼容 LF，但仍以 CRLF 为准
+*.ps1 text eol=crlf
+*.iss -text
+*.ico binary
