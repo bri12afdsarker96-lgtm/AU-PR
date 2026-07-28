@@ -1,102 +1,125 @@
 @echo off
 setlocal EnableDelayedExpansion
 cd /d "%~dp0"
-title 水星配音对齐工作室 · 轻量云配版打包（无需独显）
+title 水星配音对齐工作室 · 打包轻量云配版（PyInstaller，与正式版同标准）
 echo ============================================================
-echo    水星配音对齐工作室 · 轻量云配版 打包（集显低配电脑可用）
+echo    水星配音对齐工作室 · 轻量云配版打包（不含 torch/CUDA/dots 本地模型）
 echo ============================================================
 echo.
-echo 本版剔除「本地配音大模型 torch/CUDA/dots.tts/HF权重」，体积从 6~12GB 降到几百 MB：
-echo   · 配音克隆 走【云 GPU】（软件里设云地址+APIKey，引擎选 dots.tts 云GPU 远程）
-echo   · 量时长(whisper) 与 渲染(ffmpeg) 走本机 CPU，集显即可，无需独立显卡
-echo.
-echo 请在【已能正常云配音的这台】上运行本脚本打包。
+echo 本版与「正式打包版」同用 PyInstaller，只是：
+echo   · 排除 torch/torchaudio/dots.tts/transformers 等重依赖（配音走云 GPU，本机不需要）
+echo   · 包内置「云配版标记」，直接双击 exe 即云配模式（隐藏本地模型 UI，不做本地环境自检）
+echo   · 自带 ffmpeg/ffprobe（渲染用 CPU）；字体/音色/模型一律不随包（要用自己放）
 echo.
 pause
 
-rem [0] 定位 Python（拒绝 Store 版：不可跨机）
-set "PYHOME="
-for /f "usebackq delims=" %%i in (`python -c "import sys;print(sys.base_prefix)"`) do set "PYHOME=%%i"
-if not defined PYHOME ( echo [错误] 未找到 python，请确认已装并在 PATH。& pause & exit /b 1 )
-echo %PYHOME% | findstr /i "WindowsApps" >nul && ( echo [错误] 打包不能用 Microsoft Store 版 Python^(不可跨机^)，请用 python.org 版。& pause & exit /b 1 )
-echo [信息] 打包所用 Python：%PYHOME%
+set "NAME=水星配音对齐工作室_云配版"
 
+rem [0] 关掉旧程序（不关会导致清理产物「拒绝访问」）
+taskkill /f /im "%NAME%.exe" >nul 2>nul
+
+rem [1] 环境检查
+where python >nul 2>nul || goto :NOPY
+python -m pip show pyinstaller >nul 2>nul || python -m pip install pyinstaller || goto :PIPFAIL
+
+rem [2] 版本 + 构建戳
 set "VER=0.0.0"
 for /f "usebackq delims=" %%v in (`python -c "import sys;sys.path.insert(0,'source');from dub_align_studio.version import APP_VERSION;print(APP_VERSION)"`) do set "VER=%%v"
+set "GITHASH=unknown"
+for /f %%i in ('git rev-parse --short HEAD 2^>nul') do set "GITHASH=%%i"
+> "source\dub_align_studio\_build_info.py" echo BUILD_STAMP = "%DATE% %TIME:~0,5% · %GITHASH% · 云配版"
+echo [版本] v%VER%  构建戳：%DATE% %TIME:~0,5% · %GITHASH%
 
-set "PKGROOT=轻量云配版包"
-set "PKG=%PKGROOT%\水星配音对齐工作室_轻量版_v%VER%"
-echo [清理] 重建 %PKG% ...
-rd /s /q "%PKG%" 2>nul
-mkdir "%PKG%" 2>nul
+rem [3] 清理上次云配版产物（每次从干净状态开始）
+echo [1/6] 清理上次产物 dist\%NAME% / build\%NAME% / spec / __pycache__ ...
+rd /s /q "dist\%NAME%" 2>nul
+rd /s /q "build\%NAME%" 2>nul
+del /q "%NAME%.spec" 2>nul
+for /d /r "source" %%p in (__pycache__) do rd /s /q "%%p" 2>nul
+if exist "dist\%NAME%" ( echo [错误] 旧产物 dist\%NAME% 被占用，无法清除。请关掉软件窗口/资源管理器/杀毒后重试。& pause & exit /b 1 )
 
-echo [1/6] 拷贝 Python 环境(拷贝时即跳过 torch/CUDA/dots 等重依赖，避免 6GB 进包) ...
-robocopy "%PYHOME%" "%PKG%\python" /e /nfl /ndl /njh /njs /nc /ns /xd torch torchaudio torchvision torchgen functorch triton nvidia dots_tts transformers tokenizers accelerate safetensors fish_speech xformers flash_attn cusparselt cudnn >nul
-if errorlevel 8 ( echo [错误] 拷贝 Python 失败。& pause & exit /b 1 )
+rem [4] 生成「云配版标记」（--add-data 进 _internal；双击 exe 就是云配模式）
+> "installer\cloud_edition.flag" echo lite-cloud-edition
 
-echo [2/6] 兜底清理残留重依赖(绝对路径 + 长路径删除，防 torch/CUDA 删不掉) ...
-set "SP=%CD%\%PKG%\python\Lib\site-packages"
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$sp='%SP%'; if(Test-Path -LiteralPath $sp){Get-ChildItem -LiteralPath $sp -Directory | Where-Object {$_.Name -match '^(torch|nvidia|triton|dots_tts|dots\.tts|transformers|tokenizers|accelerate|safetensors|functorch|torchgen|fish_speech|xformers|flash_attn|cusparselt|cudnn)'} | ForEach-Object {Remove-Item -LiteralPath ('\\?\'+$_.FullName) -Recurse -Force -ErrorAction SilentlyContinue}}"
+rem [5] PyInstaller 打包（排除全部本地模型重依赖 → 产物天然不含 torch/CUDA/dots）
+echo [2/6] PyInstaller 构建（排除 torch/dots/transformers 等，只打进真正 import 到的轻依赖）...
+set "PYTHONPATH=source"
+python -m PyInstaller --noconfirm --clean --onedir --name "%NAME%" ^
+  --paths source ^
+  --add-data "source\dub_align_studio\web;dub_align_studio\web" ^
+  --add-data "installer\cloud_edition.flag;." ^
+  --collect-submodules dub_align_studio --collect-submodules integrated_workbench ^
+  --exclude-module torch --exclude-module torchaudio --exclude-module torchvision ^
+  --exclude-module torchgen --exclude-module functorch --exclude-module triton ^
+  --exclude-module dots_tts --exclude-module fish_speech ^
+  --exclude-module transformers --exclude-module tokenizers ^
+  --exclude-module accelerate --exclude-module safetensors ^
+  --exclude-module xformers --exclude-module flash_attn --exclude-module bitsandbytes ^
+  --exclude-module scipy --exclude-module pandas --exclude-module matplotlib ^
+  --console "source\dub_align_studio\launcher.py" || goto :BUILDFAIL
 
-echo [3/6] 拷贝软件源码 + 云配音部署脚本 ...
-robocopy "source" "%PKG%\source" /e /nfl /ndl /njh /njs /nc /ns /xd __pycache__ >nul
-if exist "server" robocopy "server" "%PKG%\server" /e /nfl /ndl /njh /njs /nc /ns >nul
+if not exist "dist\%NAME%\%NAME%.exe" goto :BUILDFAIL
 
-echo [4/6] 拷贝数据总目录(仅 whisper/音效；剔除 dots.tts/fish-speech/torch/字体/音色 —— 字体音色请自行导入) ...
-set "DATADIR="
-for /f "usebackq delims=" %%d in (`python -c "import sys;sys.path.insert(0,'source');from dub_align_studio.settings import data_root;print(data_root())"`) do set "DATADIR=%%d"
-if defined DATADIR if exist "%DATADIR%" (
-  robocopy "%DATADIR%" "%PKG%\水星配音数据" /e /nfl /ndl /njh /njs /nc /ns /xd "dots.tts" "fish-speech" "torch" "字体" "音色库" >nul
-) else ( echo   （未找到数据总目录，跳过） )
-
-echo [5/6] 打包 ffmpeg/ffprobe(渲染必需，本机 CPU) ...
+rem [6] 内置 ffmpeg/ffprobe（渲染用，纯 CPU），放 exe 旁
+echo [3/6] 内置 ffmpeg/ffprobe（渲染用 CPU）...
 set "FFM=" & set "FFP="
 for /f "usebackq delims=" %%f in (`where ffmpeg 2^>nul`) do if not defined FFM set "FFM=%%f"
 for /f "usebackq delims=" %%f in (`where ffprobe 2^>nul`) do if not defined FFP set "FFP=%%f"
 if not defined FFM if exist "ffmpeg.exe" set "FFM=ffmpeg.exe"
 if not defined FFP if exist "ffprobe.exe" set "FFP=ffprobe.exe"
-if defined FFM if defined FFP ( copy /y "!FFM!" "%PKG%\ffmpeg.exe">nul & copy /y "!FFP!" "%PKG%\ffprobe.exe">nul & echo   已打包 ffmpeg/ffprobe ) else ( echo   [注意] 没找到 ffmpeg，请把 ffmpeg.exe/ffprobe.exe 放进 %PKG% )
+if defined FFM if defined FFP ( copy /y "!FFM!" "dist\%NAME%\ffmpeg.exe">nul & copy /y "!FFP!" "dist\%NAME%\ffprobe.exe">nul & echo   已内置 ffmpeg/ffprobe ) else ( echo   [注意] 没找到 ffmpeg，请把 ffmpeg.exe/ffprobe.exe 放进 dist\%NAME% 后再打安装包 )
 
-echo [6/6] 生成 启动.bat 与 首次使用说明 ...
-> "%PKG%\启动.bat" echo @echo off
->> "%PKG%\启动.bat" echo cd /d "%%~dp0"
->> "%PKG%\启动.bat" echo title 水星配音对齐工作室(轻量云配版)
->> "%PKG%\启动.bat" echo set "PYTHONPATH=source"
->> "%PKG%\启动.bat" echo set "MERCURY_CLOUD_ONLY=1"
->> "%PKG%\启动.bat" echo set "PATH=%%~dp0;%%PATH%%"
->> "%PKG%\启动.bat" echo if not exist "%%~dp0ffmpeg.exe" echo [提示] 未发现 ffmpeg.exe(渲染成片需要)，请把 ffmpeg.exe/ffprobe.exe 放到本文件夹后重开。
->> "%PKG%\启动.bat" echo if not exist "%%~dp0python\python.exe" goto NOPY
->> "%PKG%\启动.bat" echo echo 启动中(轻量云配版)…浏览器会自动打开，勿关本窗口。配音请在设置里填云地址+APIKey、引擎选 dots.tts 云GPU 远程。
->> "%PKG%\启动.bat" echo "%%~dp0python\python.exe" source\dub_align_studio\launcher.py
->> "%PKG%\启动.bat" echo goto END
->> "%PKG%\启动.bat" echo :NOPY
->> "%PKG%\启动.bat" echo echo [错误] 缺 python\python.exe，整包不完整，请重新完整拷贝整个文件夹。
->> "%PKG%\启动.bat" echo :END
->> "%PKG%\启动.bat" echo pause
+rem [7] 标记再拷一份到 exe 旁（双保险：_internal 有、exe 旁也有）
+copy /y "installer\cloud_edition.flag" "dist\%NAME%\cloud_edition.flag">nul
 
-> "%PKG%\首次使用说明.txt" echo 水星配音对齐工作室 · 轻量云配版（无需独立显卡）
->> "%PKG%\首次使用说明.txt" echo.
->> "%PKG%\首次使用说明.txt" echo 1) 双击 启动.bat，浏览器自动打开。
->> "%PKG%\首次使用说明.txt" echo 2) 设置 - 云配音：填 云服务器地址 + API Key，保存、测试连接(显示可用即通)。
->> "%PKG%\首次使用说明.txt" echo 3) 配音引擎 下拉选：dots.tts（云 GPU · 远程）。
->> "%PKG%\首次使用说明.txt" echo 4) 配音在云端跑；量时长与渲染在本机 CPU，集显即可，无需独立显卡。
->> "%PKG%\首次使用说明.txt" echo 注：本版不含本地大模型，选 dots.tts（本地）会提示不可用，属正常。
+rem [8] 生成 启动.bat（设 MERCURY_CLOUD_ONLY=1 + PATH 兜底；其实直接双击 exe 也已是云配）
+echo [4/6] 生成 启动.bat + 首次使用说明 ...
+> "dist\%NAME%\启动.bat" echo @echo off
+>> "dist\%NAME%\启动.bat" echo cd /d "%%~dp0"
+>> "dist\%NAME%\启动.bat" echo title 水星配音对齐工作室（云配版）
+>> "dist\%NAME%\启动.bat" echo set "MERCURY_CLOUD_ONLY=1"
+>> "dist\%NAME%\启动.bat" echo set "PATH=%%~dp0;%%~dp0_internal;%%PATH%%"
+>> "dist\%NAME%\启动.bat" echo if not exist "%%~dp0ffmpeg.exe" echo [提示] 未内置 ffmpeg.exe（渲染成片需要），把 ffmpeg.exe/ffprobe.exe 放到本文件夹后重开
+>> "dist\%NAME%\启动.bat" echo echo 启动中（云配版）…浏览器稍后自动打开，别关此窗口。设置-云配音 填服务器地址+API Key，引擎选 dots.tts 云GPU 远程。
+>> "dist\%NAME%\启动.bat" echo start "" "%%~dp0%NAME%.exe"
 
-python -c "import sys;sys.path.insert(0,'source');from dub_align_studio.version import full_version;print(full_version()+' 轻量云配版')" > "%PKG%\版本.txt" 2>nul
+> "dist\%NAME%\首次使用说明.txt" echo 水星配音对齐工作室 · 轻量云配版（本机无需独立显卡）
+>> "dist\%NAME%\首次使用说明.txt" echo.
+>> "dist\%NAME%\首次使用说明.txt" echo 1) 双击 %NAME%.exe（或 启动.bat），浏览器自动打开。
+>> "dist\%NAME%\首次使用说明.txt" echo 2) 设置 - 云配音：填云服务器地址 + API Key，保存、测试连接。
+>> "dist\%NAME%\首次使用说明.txt" echo 3) 配音引擎选「dots.tts 云GPU 远程」。
+>> "dist\%NAME%\首次使用说明.txt" echo 4) 字体/音色不随包：要用的字体放进「数据目录\字体」，音色在软件里导入。
+>> "dist\%NAME%\首次使用说明.txt" echo 注：本版不带任何本地大模型（torch/dots/fish 全无），配音一律走云 GPU；渲染用自带 ffmpeg（CPU）。
 
-echo.
+rem [9] 版本文件
+python -c "import sys;sys.path.insert(0,'source');from dub_align_studio.version import full_version;print(full_version()+' 云配版')" > "dist\%NAME%\版本.txt" 2>nul
+
+rem [10] 体积自检（相对路径 + argv 传给 python → 规避仓库路径里的 & 拆命令）
+echo [5/6] 体积自检 ...
 set "PKGSIZE=?"
-for /f "usebackq delims=" %%s in (`powershell -NoProfile -Command "[int]((Get-ChildItem -LiteralPath '%CD%\%PKG%' -Recurse -File -ErrorAction SilentlyContinue ^| Measure-Object Length -Sum).Sum/1MB)" 2^>nul`) do set "PKGSIZE=%%s"
+for /f "usebackq delims=" %%s in (`python "build_scripts\dirsize.py" "dist\%NAME%"`) do set "PKGSIZE=%%s"
 echo.
-echo [体积] 轻量包大小约 !PKGSIZE! MB（正常应为几百 MB；若仍上千 MB 说明重依赖没删净，请把本窗口发我）
-echo [完成] 轻量云配版：%PKG%\
-echo   拷到低配电脑(集显即可)，双击 启动.bat，按 首次使用说明.txt 配好云端即用。
+echo [完成] 云配版产物：dist\%NAME%\   大小约 !PKGSIZE! MB
+echo        （应为数百 MB；若仍上 G 说明重依赖没排掉，把上方 PyInstaller 输出整段发我）
+echo [完成] 直接把整个 dist\%NAME% 文件夹发给对方：双击 %NAME%.exe（或 启动.bat）即用。
+echo        要做成 Setup.exe 安装包 → 双击「打包安装程序_轻量云配版.bat」。
 echo.
 choice /c YN /m "压缩成 zip 请按 Y，跳过按 N"
-if errorlevel 2 goto DONE
-echo 正在压缩…
-python -c "import shutil,os;print('ZIP:',shutil.make_archive(os.path.join('发布包','水星配音对齐工作室_轻量版_v%VER%'),'zip','%PKGROOT%','水星配音对齐工作室_轻量版_v%VER%'))"
+if errorlevel 2 goto :DONE
+echo [6/6] 压缩中…
+if not exist "发布包" mkdir "发布包"
+python -c "import shutil;print('ZIP:',shutil.make_archive(r'发布包\%NAME%_v%VER%','zip',r'dist','%NAME%'))"
 :DONE
 echo 全部完成。
 pause
 exit /b 0
+
+:NOPY
+echo [错误] 未找到 python。请安装 Python 3.11+ 并勾选 Add python.exe to PATH。
+pause & exit /b 1
+:PIPFAIL
+echo [错误] PyInstaller 安装失败，请检查网络后重试。
+pause & exit /b 1
+:BUILDFAIL
+echo [错误] PyInstaller 打包失败。若是「拒绝访问/PermissionError」：关软件、关打开 dist 的资源管理器、暂停杀毒后重试；其他报错把上方整段发我。
+pause & exit /b 1

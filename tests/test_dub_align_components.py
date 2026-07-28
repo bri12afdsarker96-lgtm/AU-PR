@@ -95,6 +95,31 @@ class CloudOnlyModeTests(unittest.TestCase):
         self.assertFalse(settings.cloud_only())
         self.assertIn("dots_tts", {c["key"] for c in components.component_statuses()})
 
+    def test_cloud_marker_file_enables_cloud_only(self):
+        """云配版打包会往包内放 cloud_edition.flag：直接双击 exe(不设环境变量)也应是云配模式。
+        用 sys._MEIPASS 模拟 PyInstaller 运行时资源根。"""
+        import os
+        import sys
+        import tempfile
+
+        from dub_align_studio import settings
+
+        os.environ.pop("MERCURY_CLOUD_ONLY", None)  # 确保不是环境变量在起作用
+        self.assertFalse(settings.cloud_only())  # 无标记、无环境变量 → 正式版行为
+        with tempfile.TemporaryDirectory() as d:
+            (settings.Path(d) / settings.CLOUD_EDITION_MARKER).write_text("lite", encoding="utf-8")
+            had_meipass = hasattr(sys, "_MEIPASS")
+            old = getattr(sys, "_MEIPASS", None)
+            sys._MEIPASS = d
+            try:
+                self.assertTrue(settings.cloud_only(), "包内有 cloud_edition.flag 时应进云配模式")
+            finally:
+                if had_meipass:
+                    sys._MEIPASS = old
+                else:
+                    delattr(sys, "_MEIPASS")
+        self.assertFalse(settings.cloud_only())  # 清掉标记后恢复正式版
+
 
 if __name__ == "__main__":
     unittest.main()

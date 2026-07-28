@@ -69,13 +69,37 @@ def save_settings(update: dict) -> dict:
     return settings
 
 
+CLOUD_EDITION_MARKER = "cloud_edition.flag"
+
+
+def _cloud_marker_present() -> bool:
+    """轻量云配版打包时会往包内放一个 cloud_edition.flag 标记文件（--add-data 进 _internal，
+    同时拷一份到 exe 旁）。有它 → 即便**直接双击 exe**(没走 启动.bat、没设环境变量)也走云配版，
+    绝不再弹本地模型自检/报错。源码直跑无此文件 → 不受影响。"""
+    for base in (
+        getattr(sys, "_MEIPASS", None),                              # PyInstaller 运行时资源根(=_internal)
+        Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else None,  # exe 旁
+    ):
+        try:
+            if base and (Path(base) / CLOUD_EDITION_MARKER).is_file():
+                return True
+        except Exception:  # noqa: BLE001
+            continue
+    return False
+
+
 def cloud_only() -> bool:
     """轻量云配版模式：只用云配音，隐藏本地模型(dots/torch/fish)相关的引擎/组件/自检项，
-    环境自检也不因缺本地模型报错。由轻量版 启动.bat 设 MERCURY_CLOUD_ONLY=1 开启；
-    也可写进 settings.json 的 cloud_only。正式版不设此环境变量 → 行为完全不变。"""
+    环境自检也不因缺本地模型报错。三种开启方式（任一即可）：
+      1. 包内标记文件 cloud_edition.flag（云配版打包自动放入 → 直接双击 exe 也生效）；
+      2. 环境变量 MERCURY_CLOUD_ONLY=1（启动.bat 设，兼容源码/旧包）；
+      3. settings.json 的 cloud_only。
+    正式版无标记、无环境变量 → 行为完全不变。"""
     v = os.environ.get("MERCURY_CLOUD_ONLY")
     if v is not None:
         return v.strip() not in ("", "0", "false", "False", "no")
+    if _cloud_marker_present():
+        return True
     try:
         return bool(load_settings().get("cloud_only"))
     except Exception:  # noqa: BLE001
