@@ -95,10 +95,12 @@ def ffmpeg_tool(name: str = "ffmpeg") -> str:
     dirs: list[Path] = []
     for producer in (
         lambda: _app_dir(),                    # 启动.bat / exe 旁边（用户最常见放置处）
+        lambda: Path(sys.executable).resolve().parent,           # 打包 exe 所在文件夹
+        lambda: Path(sys.executable).resolve().parent / "_internal",  # PyInstaller 打包资源目录
+        lambda: Path(getattr(sys, "_MEIPASS", "")),              # PyInstaller 运行时资源根(=_internal)
         lambda: data_root(),
         lambda: components_root(),
         lambda: data_root() / DIR_COMPONENTS,
-        lambda: Path(sys.executable).resolve().parent,
         lambda: Path(sys.executable).resolve().parent.parent,
         lambda: Path.cwd(),
     ):
