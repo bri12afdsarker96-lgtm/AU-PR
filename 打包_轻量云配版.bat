@@ -64,6 +64,7 @@ echo [6/6] 生成 启动.bat 与 首次使用说明 ...
 >> "%PKG%\启动.bat" echo set "PYTHONPATH=source"
 >> "%PKG%\启动.bat" echo set "MERCURY_CLOUD_ONLY=1"
 >> "%PKG%\启动.bat" echo set "PATH=%%~dp0;%%PATH%%"
+>> "%PKG%\启动.bat" echo if not exist "%%~dp0ffmpeg.exe" echo [提示] 未发现 ffmpeg.exe(渲染成片需要)，请把 ffmpeg.exe/ffprobe.exe 放到本文件夹后重开。
 >> "%PKG%\启动.bat" echo if not exist "%%~dp0python\python.exe" goto NOPY
 >> "%PKG%\启动.bat" echo echo 启动中(轻量云配版)…浏览器会自动打开，勿关本窗口。配音请在设置里填云地址+APIKey、引擎选 dots.tts 云GPU 远程。
 >> "%PKG%\启动.bat" echo "%%~dp0python\python.exe" source\dub_align_studio\launcher.py
