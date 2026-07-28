@@ -91,6 +91,24 @@ class FfmpegPreflightTests(unittest.TestCase):
         # 不能是裸 FileNotFoundError 冒泡
         self.assertNotIsInstance(ctx.exception, FileNotFoundError)
 
+    def test_subprocess_timeout_is_reported_clearly(self):
+        import subprocess
+        from dub_align_studio import render_b as rb
+
+        original = rb.run_silent
+
+        def fake_run(*args, **kwargs):
+            raise subprocess.TimeoutExpired(args[0], kwargs.get("timeout"))
+
+        try:
+            rb.run_silent = fake_run
+            with self.assertRaises(RuntimeError) as ctx:
+                rb._run(["ffmpeg"], "渲染画面段 001.mp4", timeout=1)
+        finally:
+            rb.run_silent = original
+        self.assertIn("超时", str(ctx.exception))
+        self.assertIn("视频素材", str(ctx.exception))
+
 
 class StagedFontTests(unittest.TestCase):
     """字幕字体落到含 & / 非 ASCII 的路径时，Windows drawtext 加载失败→□□□。

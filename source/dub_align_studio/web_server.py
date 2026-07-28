@@ -247,6 +247,15 @@ def _gen_enqueue(payload: dict, title: str) -> str:
     return task_id
 
 
+def _prefer_reuse_dub_if_master_exists(payload: dict) -> bool:
+    """重试时若 master.wav 已经生成，优先复用配音，避免渲染失败后又重新消耗云端配音。"""
+    out = str((payload or {}).get("output_dir") or "").strip()
+    if out and (Path(out) / pipeline.MASTER_NAME).is_file():
+        payload["reuse_dub"] = True
+        return True
+    return False
+
+
 def _ensure_gen_worker_locked() -> None:
     """在持锁状态下确保 _GEN_WORKER_COUNT 个 worker 存活（流水线并行：配音与渲染重叠）。"""
     global _GEN_WORKERS
@@ -270,7 +279,7 @@ def _gen_worker_loop() -> None:
             attempt = entry["retries"] + 1
             with job.lock:
                 job.running, job.done, job.ok, job.cancelled = True, False, False, False
-                job.log = [f"══ 队列任务「{entry['title']}」开始克隆" + (f"（第 {attempt} 次尝试）" if attempt > 1 else "") + " ══"]
+                job.log = [f"══ 队列任务「{entry['title']}」开始生成成片" + (f"（第 {attempt} 次尝试）" if attempt > 1 else "") + " ══"]
                 job.stage, job.progress, job.last_tick = "", 0, time.time()
         # 单个任务出问题绝不掀翻整队：_run_job 内部已兜异常；这里再包一层防线程被杀。
         try:
@@ -287,6 +296,8 @@ def _gen_worker_loop() -> None:
                 entry["error"] = "已取消"
             elif entry["retries"] < entry["auto_max"]:
                 entry["retries"] += 1                  # 自动重试：重置为待办，worker 稍后再取
+                if isinstance(entry.get("payload"), dict):
+                    _prefer_reuse_dub_if_master_exists(entry["payload"])
                 entry["job"] = JobState(slot=job.slot, label=entry["title"], action="run_all")
                 entry["status"] = "pending"
                 GEN_COND.notify()
@@ -348,7 +359,7 @@ def _gen_queue_retry(task_id: str) -> bool:
                 # 重试应跳过重新克隆、直接量时长+渲染（省时间/云端算力）。配音本身没成功则无 master.wav，
                 # run_all 里 reuse_dub 有 master_path.is_file() 兜底会自动失效、照常克隆——故此处置 True 安全。
                 if isinstance(e.get("payload"), dict):
-                    e["payload"]["reuse_dub"] = True
+                    _prefer_reuse_dub_if_master_exists(e["payload"])
                 e["job"] = JobState(slot=f"queue:{task_id}", label=e["title"], action="run_all")
                 e["status"], e["error"], e["retries"] = "pending", "", 0
                 _ensure_gen_worker_locked()            # 重试前确保 worker 存活
@@ -434,9 +445,13 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             JOB.check_cancel()   # 开跑前先看是否已被取消（队列任务）
             shots_dir = Path(str(payload.get("shots_dir") or ""))
             lines = parse_script(text)
+            JOB.set_progress("准备素材 · 扫描分镜目录", 1)
             log(f"素材模式：{ {'flat':'平铺顺序','folder_order':'文件夹顺序','keyword':'关键字匹配'}.get(material_mode, material_mode) }")
+            log(f"准备素材 · 扫描分镜目录：{shots_dir}")
             videos = pipeline.select_shot_videos(shots_dir, lines, material_mode,
                                                  int(payload.get("seed") or 42), output_dir, log=log)
+            log(f"  已选 {len(videos)} 个分镜视频。")
+            JOB.check_cancel()
 
             master_path = output_dir / pipeline.MASTER_NAME
             reuse_dub = bool(payload.get("reuse_dub")) and master_path.is_file()

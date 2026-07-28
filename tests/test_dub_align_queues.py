@@ -24,8 +24,26 @@ class UiContractPhase3Tests(unittest.TestCase):
                   "dubLastVoice", "dubLastAspect",                        # ② 记住上次音色/比例
                   'id="burnPreset"', "saveBurnPreset", "collectBurnStyle",  # ③ 烧录预设
                   "enqueueTask(true)", "pauseResumeQueue", "cancelQueueTask",  # 生成成片并入队列 + 暂停/取消
-                  'id="queuePauseBtn"', "无阶段进度"):                        # 暂停按钮 + 心跳看门狗（温和提示）
+                  'id="queuePauseBtn"', "无阶段进度", "qRunLabel", "准备素材"):  # 暂停按钮 + 心跳看门狗（温和提示）
             self.assertIn(m, html, m)
+
+    def test_retry_reuses_existing_master(self):
+        work = Path(tempfile.mkdtemp())
+        try:
+            out = work / "out"
+            out.mkdir()
+            (out / web_server.pipeline.MASTER_NAME).write_bytes(b"RIFF")
+            payload = {"output_dir": str(out)}
+            self.assertTrue(web_server._prefer_reuse_dub_if_master_exists(payload))
+            self.assertTrue(payload["reuse_dub"])
+
+            missing = {"output_dir": str(work / "missing")}
+            self.assertFalse(web_server._prefer_reuse_dub_if_master_exists(missing))
+            self.assertNotIn("reuse_dub", missing)
+        finally:
+            import shutil
+
+            shutil.rmtree(work, ignore_errors=True)
 
     def test_queue_pause_and_cancel(self):
         import tempfile

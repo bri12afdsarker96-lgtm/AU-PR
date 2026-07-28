@@ -10,6 +10,7 @@ REPO = Path(__file__).resolve().parents[1]
 SOURCE = REPO / "source"
 LITE_ROOT = REPO / "轻量云配版包"
 ISS_FILE = REPO / "installer" / f"{PRODUCT_NAME}.iss"
+REQUIRED_ROOT_FILES = ("启动.bat", "ffmpeg.exe", "ffprobe.exe")
 
 
 def log(message: str) -> None:
@@ -54,6 +55,15 @@ def ensure_icon() -> None:
         subprocess.run([sys.executable, str(maker)], cwd=str(REPO), check=True)
 
 
+def validate_lite_source(src: Path) -> bool:
+    missing = [name for name in REQUIRED_ROOT_FILES if not (src / name).is_file()]
+    if not missing:
+        return True
+    log("[ERROR] Lite cloud package is incomplete: " + ", ".join(missing))
+    log("        Run 打包_轻量云配版.bat again after placing ffmpeg.exe and ffprobe.exe in the repository root.")
+    return False
+
+
 def main() -> int:
     version = app_version()
     src = LITE_ROOT / f"{PRODUCT_NAME}_轻量版_v{version}"
@@ -63,6 +73,8 @@ def main() -> int:
     if not launcher.is_file():
         log("[ERROR] Lite cloud package was not found.")
         log("        Run 打包_轻量云配版.bat first, then run this installer script again.")
+        return 1
+    if not validate_lite_source(src):
         return 1
     if not ISS_FILE.is_file():
         log(f"[ERROR] Missing Inno Setup script: {ISS_FILE}")

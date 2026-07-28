@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -39,6 +40,18 @@ from .timing import LineTiming
 
 
 DEFAULT_MODE = "裁剪多余画面"  # 画面比音频长→裁；短→放慢/克隆末帧补足（复用内核语义）
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        value = int(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+    return max(1, value)
+
+
+_FFPROBE_TIMEOUT_S = _env_int("MERCURY_FFPROBE_TIMEOUT_S", 60)
+_FFMPEG_TIMEOUT_S = _env_int("MERCURY_FFMPEG_TIMEOUT_S", 1800)
 
 
 def _staged_font(font: Path, work_dir: Path) -> Path:
@@ -358,7 +371,8 @@ def _render_silent_segment(
         "-video_track_timescale", str(config.fps * 512),
         str(output),
     ]
-    _run(command, f"渲染画面段 {output.name}")
+    timeout = max(120, int(frame_count / max(1, config.fps) * 12 + 120))
+    _run(command, f"渲染画面段 {output.name}", timeout=timeout)
 
 
 def _concat_copy(config: RenderConfig, segments: list[Path], output: Path) -> None:
@@ -484,11 +498,16 @@ def _guard_missing(exc: FileNotFoundError, command: list[str]) -> RuntimeError:
 
 
 # ------------------------------------------------------------------ 子进程
-def _run(command: list[str], label: str) -> None:
+def _run(command: list[str], label: str, timeout: int | None = None) -> None:
+    timeout = int(timeout or _FFMPEG_TIMEOUT_S)
     try:
-        completed = run_silent(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        completed = run_silent(command, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                               timeout=timeout)
     except FileNotFoundError as exc:
         raise _guard_missing(exc, command) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"{label}超时（超过 {timeout} 秒）。多半是某个视频素材损坏/无法读取，或 ffmpeg 被系统拦截。"
+                           "请先换掉当前行附近的素材，或把输出目录里的 成片_segments 清理后重试。") from exc
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "").strip()[-2000:]
         raise RuntimeError(f"{label}失败：{detail or '未知错误'}")
@@ -496,9 +515,12 @@ def _run(command: list[str], label: str) -> None:
 
 def _run_out(command: list[str], label: str, allow_empty: bool = False) -> str:
     try:
-        completed = run_silent(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        completed = run_silent(command, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                               timeout=_FFPROBE_TIMEOUT_S)
     except FileNotFoundError as exc:
         raise _guard_missing(exc, command) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"{label}超时（超过 {_FFPROBE_TIMEOUT_S} 秒）。请检查该视频/音频文件是否损坏或位于卡顿的外接盘/网盘。") from exc
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "").strip()[-2000:]
         raise RuntimeError(f"{label}失败：{detail or '未知错误'}")

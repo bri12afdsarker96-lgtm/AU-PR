@@ -1487,7 +1487,7 @@ function focusRunningQueue(t){
     card.style.boxShadow='0 0 0 2px var(--gold)';
     setTimeout(()=>{card.style.boxShadow='';},1400);
   }
-  toast('「'+((t&&t.title)||'')+'」正在队列后台克隆'+((t&&t.stage)?' · '+t.stage:'')+'，进度见此','ok');
+  toast('「'+((t&&t.title)||'')+'」正在队列后台生成'+((t&&t.stage)?' · '+t.stage:'')+'，进度见此','ok');
 }
 /* ── ⑨ 生成任务队列（串行后台）：生成成片=入队即跑；加入队列=排后面。二者同一条串行队列，
       一次只克隆一个，杜绝 GPU 抢占卡死与「run_all 正在执行」冲突 ── */
@@ -1508,7 +1508,7 @@ async function enqueueTask(primary){
   const j=await (await fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify(p)})).json();
   if(j.error){alert(j.error);return;}
-  toast((primary?'已开始生成（进队列后台克隆）· ':'已加入队列 · ')+(j.title||''),'ok');
+  toast((primary?'已开始生成（进队列后台）· ':'已加入队列 · ')+(j.title||''),'ok');
   pollQueue();
   if($('genQueueCard'))$('genQueueCard').scrollIntoView({behavior:'smooth',block:'nearest'});
 }
@@ -1524,8 +1524,18 @@ async function clearQueueDone(){
   await fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({action:'clear'})}); toast('已清除完成项'); pollQueue();
 }
-const _QSTAT={pending:['排队中','var(--faint)'],running:['克隆中','var(--gold)'],
+const _QSTAT={pending:['排队中','var(--faint)'],running:['生成中','var(--gold)'],
   done:['✅ 已完成','var(--ok)'],failed:['❌ 失败','var(--bad)'],cancelled:['⏹ 已取消','var(--faint)']};
+function qRunLabel(t){
+  const s=(t&&t.stage)||'';
+  if(s.includes('准备素材'))return'准备素材';
+  if(s.includes('排队中'))return'等待中';
+  if(s.includes('复用已有配音'))return'重渲染';
+  if(s.includes('量时长'))return'量时长';
+  if(s.includes('渲染')||s.includes('收口'))return'渲染中';
+  if(s.includes('配音'))return'克隆中';
+  return'生成中';
+}
 async function pollQueue(){
   let s;try{s=await (await fetch('/api/queue')).json();}catch(e){return;}
   const tasks=s.tasks||[], paused=!!s.paused;
@@ -1535,7 +1545,8 @@ async function pollQueue(){
   if(pauseBtn)pauseBtn.textContent=paused?'▶ 继续队列':'⏸ 暂停队列';
   const F=(id,l,col,extra='')=>`<button class="btn" style="padding:4px 10px;flex:none;${extra}" onclick="${l}('${id}')">${col}</button>`;
   list.innerHTML=tasks.map(t=>{
-    const [lab,col]=_QSTAT[t.status]||[t.status,'var(--faint)'];
+    let [lab,col]=_QSTAT[t.status]||[t.status,'var(--faint)'];
+    if(t.status==='running')lab=qRunLabel(t);
     const pct=t.status==='running'?` ${t.progress||0}%`:'';
     const stg=t.status==='running'&&t.stage?` · ${esc(t.stage)}`:'';
     const dir=t.output_dir?`<div class="mini" style="color:var(--faint)">→ ${esc(t.output_dir)}</div>`:'';

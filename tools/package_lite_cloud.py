@@ -351,13 +351,19 @@ def find_binary(name: str) -> Path | None:
 
 def copy_ffmpeg(target: Path) -> None:
     log("[4/6] Copying ffmpeg/ffprobe")
+    missing: list[str] = []
     for name in FFMPEG_BINARIES:
         src = find_binary(name)
         if src is None:
-            log(f"      missing {name}; put it next to 启动.bat if rendering is needed")
+            missing.append(name)
             continue
         shutil.copy2(src, target / name)
         log(f"      included {name}")
+    if missing:
+        raise RuntimeError(
+            "轻量云配版必须自带 ffmpeg.exe / ffprobe.exe，否则云配音成功后无法渲染成片。"
+            " 缺少：" + ", ".join(missing) + "。请先把这两个文件放到仓库根目录或系统 PATH 后重新打包。"
+        )
 
 
 def write_launcher_files(target: Path, version: str, stamp: str) -> None:
@@ -392,8 +398,9 @@ def write_launcher_files(target: Path, version: str, stamp: str) -> None:
         "1. 双击 启动.bat。\n"
         "2. 在设置里填写云配音服务地址和 API Key，配音引擎选择 dots.tts 云 GPU 远程。\n"
         "3. 本版本不携带本地 torch/dots.tts/fish-speech 大模型，适合发到普通电脑使用。\n"
-        "4. 本机计时使用 whisper.cpp；默认只随包 tiny/base 模型，small 可在工具箱按需下载。\n"
-        "5. 字体、音色库、克隆音频属于用户数据，轻量包不自动携带，可手动导入或指向完整数据目录。\n"
+        "4. 渲染成片需要的 ffmpeg.exe / ffprobe.exe 已随包放在 启动.bat 旁边；如果安装目录缺这两个文件，需重新安装最新版安装包。\n"
+        "5. 本机计时使用 whisper.cpp；默认只随包 tiny/base 模型，small 可在工具箱按需下载。\n"
+        "6. 字体、音色库、克隆音频属于用户数据，轻量包不自动携带，可手动导入或指向完整数据目录。\n"
     )
     (target / "首次使用说明.txt").write_text(readme, encoding="utf-8")
     (target / "版本.txt").write_text(f"v{version} · {stamp} · 轻量云配版\n", encoding="utf-8")
