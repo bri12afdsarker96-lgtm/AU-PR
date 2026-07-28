@@ -30,13 +30,13 @@ echo [清理] 重建 %PKG% ...
 rd /s /q "%PKG%" 2>nul
 mkdir "%PKG%" 2>nul
 
-echo [1/6] 拷贝 Python 环境 ...
-robocopy "%PYHOME%" "%PKG%\python" /e /nfl /ndl /njh /njs /nc /ns >nul
+echo [1/6] 拷贝 Python 环境(拷贝时即跳过 torch/CUDA/dots 等重依赖，避免 6GB 进包) ...
+robocopy "%PYHOME%" "%PKG%\python" /e /nfl /ndl /njh /njs /nc /ns /xd torch torchaudio torchvision torchgen functorch triton nvidia dots_tts transformers tokenizers accelerate safetensors fish_speech xformers flash_attn cusparselt cudnn >nul
 if errorlevel 8 ( echo [错误] 拷贝 Python 失败。& pause & exit /b 1 )
 
-echo [2/6] 剔除重依赖(torch/CUDA/dots.tts/transformers…)瘦身 ...
-set "SP=%PKG%\python\Lib\site-packages"
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$sp='%SP%'; if(Test-Path $sp){Get-ChildItem $sp -Directory | Where-Object {$_.Name -match '^(torch|nvidia|triton|dots_tts|dots\.tts|transformers|tokenizers|accelerate|safetensors|functorch|torchgen|fish_speech|xformers|flash_attn|cusparselt|cudnn)'} | ForEach-Object {Remove-Item -Recurse -Force $_.FullName}}"
+echo [2/6] 兜底清理残留重依赖(绝对路径 + 长路径删除，防 torch/CUDA 删不掉) ...
+set "SP=%CD%\%PKG%\python\Lib\site-packages"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$sp='%SP%'; if(Test-Path -LiteralPath $sp){Get-ChildItem -LiteralPath $sp -Directory | Where-Object {$_.Name -match '^(torch|nvidia|triton|dots_tts|dots\.tts|transformers|tokenizers|accelerate|safetensors|functorch|torchgen|fish_speech|xformers|flash_attn|cusparselt|cudnn)'} | ForEach-Object {Remove-Item -LiteralPath ('\\?\'+$_.FullName) -Recurse -Force -ErrorAction SilentlyContinue}}"
 
 echo [3/6] 拷贝软件源码 + 云配音部署脚本 ...
 robocopy "source" "%PKG%\source" /e /nfl /ndl /njh /njs /nc /ns /xd __pycache__ >nul
@@ -84,6 +84,10 @@ echo [6/6] 生成 启动.bat 与 首次使用说明 ...
 python -c "import sys;sys.path.insert(0,'source');from dub_align_studio.version import full_version;print(full_version()+' 轻量云配版')" > "%PKG%\版本.txt" 2>nul
 
 echo.
+set "PKGSIZE=?"
+for /f "delims=" %%s in ('powershell -NoProfile -Command "[int]((Get-ChildItem -LiteralPath '%CD%\%PKG%' -Recurse -File -ErrorAction SilentlyContinue ^| Measure-Object Length -Sum).Sum/1MB)" 2^>nul') do set "PKGSIZE=%%s"
+echo.
+echo [体积] 轻量包大小约 !PKGSIZE! MB（正常应为几百 MB；若仍上千 MB 说明重依赖没删净，请把本窗口发我）
 echo [完成] 轻量云配版：%PKG%\
 echo   拷到低配电脑(集显即可)，双击 启动.bat，按 首次使用说明.txt 配好云端即用。
 echo.
