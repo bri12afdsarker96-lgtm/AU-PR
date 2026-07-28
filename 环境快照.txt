@@ -1,0 +1,188 @@
+水星配音对齐工作室 · 环境快照  2026-07-25 14:59:57
+
+════════ Python 环境 ════════
+  python: D:\Python\Python311\python.exe
+  版本: 3.11.8
+  torch: 2.11.0+cu126
+  torchaudio: 2.11.0+cu126
+  torchvision: 0.26.0+cu126
+  torchcodec: 未安装
+  transformers: 4.57.0
+  accelerate: 1.12.0
+  dots-tts: 0.2.1
+  soundfile: 0.14.0
+  pyinstaller: 6.21.0
+
+════════ 引擎探测（dots.tts probe） ════════
+  D:\Python\Python311\Lib\site-packages\pydantic\_internal\_fields.py:132: UserWarning: Field "model_type" in ModelConfig has conflict with protected namespace "model_".
+  
+  You may be able to resolve this warning by setting `model_config['protected_namespaces'] = ()`.
+    warnings.warn(
+  available= True
+  dots.tts ���ã����� D:\GitHub\By\AU&PR\ˮ����������\���\dots.tts\dots.tts-soar����GPU��NVIDIA GeForce RTX 3060���Դ� 11.0/12.0 GB ���ã��� ��6GB���Ƽ� ��11GB�������ı�������׮������ȱ WeTextProcessing/pynini����Ӱ������������İ�������д�����ģ�
+
+════════ 仓库状态 ════════
+  分支: release/v0.5-download-fix
+  HEAD: e84c0201 字幕单条永不折行：长度只由标点分句控制 (v0.7.32)
+  近5次提交:
+    e84c0201 字幕单条永不折行：长度只由标点分句控制 (v0.7.32)
+    b6086fca 发行音色 + 文件夹批量建音色 + Premiere XML 工程导出 (v0.7.31)
+    7361a7a1 字幕改标点逐句按时间轴烧录 + 「嗯」泄漏修复 (v0.7.30)
+    ad1b4520 环境快照：本机目录与环境状态
+    e326aeac 尾部爆音净化：删收尾垃圾脉冲 + 切口淡入淡出 (v0.7.29)
+  未提交改动: （干净）
+
+════════ 仓库根目录（深度1） ════════
+  D:\GitHub\By\AU&PR\AU-PR
+  📁 dist/
+  📁 docs/
+  📁 source/
+  📁 tests/
+     README.md  (0.0MB, 07-23 01:33)
+     打包.bat  (0.0MB, 07-24 11:11)
+     打包_整合离线版.bat  (0.0MB, 07-24 16:43)
+     打包收尾.py  (0.0MB, 07-24 11:11)
+     打包说明.md  (0.0MB, 07-24 21:27)
+     本次操作.bat  (0.0MB, 07-24 23:28)
+     本次操作日志.txt  (0.0MB, 07-24 22:24)
+     水星配音对齐工作室.spec  (0.0MB, 07-25 14:09)
+     环境快照.bat  (0.0MB, 07-24 21:57)
+     环境快照.py  (0.0MB, 07-24 21:57)
+     环境快照.txt  (0.0MB, 07-25 01:57)
+
+════════ 父目录（检查散落的旧脚本副本） ════════
+  D:\GitHub\By\AU&PR
+  📁 AU-PR/
+  📁 发布包/
+  📁 水星配音数据/
+
+════════ dist 产物 ════════
+  D:\GitHub\By\AU&PR\AU-PR\dist
+  📁 水星配音对齐工作室/
+    📁 _internal/
+       水星配音对齐工作室.exe  (115.9MB, 07-25 14:15)
+
+════════ 发布包 ════════
+  （不存在）D:\GitHub\By\AU&PR\AU-PR\发布包
+
+════════ 整合离线包 ════════
+  （不存在）D:\GitHub\By\AU&PR\AU-PR\整合离线包
+
+════════ 数据总目录 ════════
+  软件当前指向: D:\GitHub\By\AU&PR\水星配音数据
+  D:\GitHub\By\AU&PR\水星配音数据
+  📁 克隆音频/
+    📁 试听缓存/
+         书单女生温情_dots_local_b9de669177.json  (0.0MB, 07-24 22:38)
+         书单女生温情_dots_local_b9de669177.wav  (0.4MB, 07-24 22:38)
+         测试2_dots_local_2e6296564a.json  (0.0MB, 07-24 12:09)
+         测试2_dots_local_2e6296564a.wav  (0.4MB, 07-24 12:09)
+         测试5_dots_local_36c1aa8fc2.json  (0.0MB, 07-24 16:48)
+         测试5_dots_local_36c1aa8fc2.wav  (0.4MB, 07-24 16:48)
+         测试_dots_local_09438c7803.json  (0.0MB, 07-24 12:06)
+         测试_dots_local_09438c7803.wav  (0.4MB, 07-24 12:06)
+       20260724_230954_dots_local_书单女生温情.json  (0.0MB, 07-24 23:09)
+       20260724_230954_dots_local_书单女生温情.wav  (13.1MB, 07-24 23:09)
+       20260725_013529_dots_local_书单女生温情.json  (0.0MB, 07-25 01:35)
+       20260725_013529_dots_local_书单女生温情.wav  (13.5MB, 07-25 01:35)
+       20260725_145235_dots_local_书单女生温情.json  (0.0MB, 07-25 14:52)
+       20260725_145235_dots_local_书单女生温情.wav  (13.2MB, 07-25 14:52)
+  📁 字体/
+       CactusClassicalSerif-Regular.ttf  (27.2MB, 07-24 22:39)
+       Huninn-Regular.ttf  (4.5MB, 07-24 22:39)
+       LXGWWenKai-Light.ttf  (27.0MB, 07-24 22:40)
+       LXGWWenKai-Medium.ttf  (17.9MB, 07-24 22:39)
+       LXGWWenKai-Regular.ttf  (18.4MB, 07-24 22:39)
+       LiuJianMaoCao-Regular.ttf  (4.7MB, 07-24 22:39)
+       LongCang-Regular.ttf  (4.9MB, 07-24 22:39)
+       MaShanZheng-Regular.ttf  (5.6MB, 07-24 22:39)
+       NotoSansSC-Bold.otf  (8.1MB, 07-24 02:08)
+       NotoSansSC-Regular.ttf  (7.9MB, 07-24 02:08)
+       NotoSerifSC-Regular.otf  (11.1MB, 07-24 22:39)
+       SmileySans-Oblique.ttf  (2.5MB, 07-23 19:39)
+       ZCOOLKuaiLe-Regular.ttf  (1.4MB, 07-24 22:39)
+       ZCOOLQingKeHuangYou-Regular.ttf  (7.9MB, 07-24 02:08)
+       ZCOOLXiaoWei-Regular.ttf  (6.0MB, 07-24 02:08)
+       ZhiMangXing-Regular.ttf  (3.9MB, 07-24 22:39)
+  📁 组件/
+    📁 dots.tts/
+      📁 dots.tts-soar/
+      📁 wheels/
+    📁 fish-speech/
+      📁 awesome_webui/
+      📁 checkpoints/
+      📁 docker/
+      📁 docs/
+      📁 fish_speech/
+      📁 fish_speech.egg-info/
+      📁 python/
+      📁 python-runtime/
+      📁 tools/
+         API_FLAGS.txt  (0.0MB, 07-23 19:39)
+         LICENSE  (0.0MB, 07-23 19:39)
+         README.md  (0.0MB, 07-23 19:39)
+         compose.base.yml  (0.0MB, 07-23 19:39)
+         compose.rocm.yml  (0.0MB, 07-23 19:39)
+         compose.yml  (0.0MB, 07-23 19:39)
+         dockerfile.dev  (0.0MB, 07-23 19:39)
+         entrypoint.sh  (0.0MB, 07-23 19:39)
+         inference.ipynb  (0.0MB, 07-23 19:39)
+         mkdocs.yml  (0.0MB, 07-23 19:39)
+         pyproject.toml  (0.0MB, 07-23 19:39)
+         pyrightconfig.json  (0.0MB, 07-23 19:39)
+         uv.lock  (1.2MB, 07-23 19:39)
+    📁 pyCapCut/
+      📁 PIL/
+      📁 bin/
+      📁 comtypes/
+      📁 comtypes-1.4.16.dist-info/
+      📁 imageio/
+      📁 imageio-2.37.4.dist-info/
+      📁 numpy/
+      📁 numpy-2.4.6.dist-info/
+      📁 numpy.libs/
+      📁 pillow-12.3.0.dist-info/
+      📁 pycapcut/
+      📁 pycapcut-0.0.3.dist-info/
+      📁 pymediainfo/
+      📁 pymediainfo-7.0.1.dist-info/
+      📁 uiautomation/
+      📁 uiautomation-2.0.29.dist-info/
+      📁 wheels/
+    📁 torch/
+    📁 whisper.cpp/
+      📁 Release/
+      📁 models/
+      📁 runtime_downloads/
+         SDL2.dll  (2.4MB, 07-23 19:40)
+         bench.exe  (0.0MB, 07-23 19:40)
+         command.exe  (0.0MB, 07-23 19:40)
+         ggml-base.dll  (0.6MB, 07-23 19:40)
+         ggml-cpu-alderlake.dll  (0.8MB, 07-23 19:40)
+         ggml-cpu-cannonlake.dll  (0.8MB, 07-23 19:40)
+         ggml-cpu-cascadelake.dll  (0.8MB, 07-23 19:40)
+         ggml-cpu-haswell.dll  (0.8MB, 07-23 19:40)
+         ggml-cpu-icelake.dll  (0.8MB, 07-23 19:40)
+         ggml-cpu-sandybridge.dll  (0.7MB, 07-23 19:40)
+         ggml-cpu-skylakex.dll  (0.8MB, 07-23 19:40)
+         ggml-cpu-sse42.dll  (0.7MB, 07-23 19:40)
+         ggml-cpu-x64.dll  (0.7MB, 07-23 19:40)
+         ggml.dll  (0.1MB, 07-23 19:40)
+         main.exe  (0.0MB, 07-23 19:40)
+         parakeet-cli.exe  (0.4MB, 07-23 19:40)
+         parakeet-quantize.exe  (0.1MB, 07-23 19:40)
+         parakeet.dll  (0.5MB, 07-23 19:40)
+         stream.exe  (0.0MB, 07-23 19:40)
+         test-common-utf8.exe  (0.3MB, 07-23 19:40)
+         test-parakeet-full-diffusion.exe  (0.4MB, 07-23 19:40)
+         test-parakeet-full-gb1.exe  (0.3MB, 07-23 19:40)
+      …（其余 15 项略）
+  📁 配乐音效/
+       Anup Kushwaha-Helping Tech.mp3  (7.8MB, 07-24 02:02)
+       悬疑-紧张-电子.m4a  (1.2MB, 07-24 02:05)
+  📁 音色库/
+    📁 书单女生温情/
+         参考音频.mp3  (0.5MB, 07-24 22:36)
+         转写.txt  (0.0MB, 07-24 22:36)
+         音色.json  (0.0MB, 07-25 14:22)
+     作品参数预设.json  (0.0MB, 07-24 22:41)
