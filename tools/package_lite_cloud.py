@@ -404,6 +404,9 @@ def write_launcher_files(target: Path, version: str, stamp: str) -> None:
     )
     (target / "首次使用说明.txt").write_text(readme, encoding="utf-8")
     (target / "版本.txt").write_text(f"v{version} · {stamp} · 轻量云配版\n", encoding="utf-8")
+    diagnostic = REPO / "诊断_轻量云配版.bat"
+    if diagnostic.is_file():
+        shutil.copy2(diagnostic, target / diagnostic.name)
 
 
 def make_zip(target: Path, version: str) -> Path | None:
