@@ -1,0 +1,527 @@
+AU&PR · 环境快照（对齐版）  2026-07-30 03:18:49
+仓库: D:\GitHub\同步\AU-PR
+
+════════ 仓库对齐诊断（本地 vs main vs 真源 v0.5） ════════
+  当前分支: claude/project-code-alignment-snapshot-jkeog1
+  HEAD: 8f31cde 修 bat 换行符：LF → CRLF（修中文乱码/行被当命令执行）
+  真源分支应为: release/v0.5-download-fix（软件全套源码所在；main 只有文档）
+  vs 真源 v0.5（origin/release/v0.5-download-fix）: 落后 0 / 领先 6
+  vs main（origin/main）: 落后 0 / 领先 131
+
+  ℹ 本地含源码但不在真源 tip（可能在本次对齐工作分支或有本地提交），请人工确认。
+  未提交改动: 
+    M "\347\216\257\345\242\203\345\277\253\347\205\247.txt"
+  近5次提交:
+    8f31cde 修 bat 换行符：LF → CRLF（修中文乱码/行被当命令执行）
+    a811e78 新增 启动软件.bat：双击即启动软件（自动探测 Python + 带 PYTHONPATH）
+    282de53 bat Python 探测改逐行式 + 数据目录判断改按存在性
+    8f456cd 脚本整理成干净一套：三件套 + 打包高级功能，删 3 个重复旧脚本
+    827ddc8 执行类 bat 加健壮 Python 探测：修"cannot execute the specified program"
+
+════════ 仓库深扫（本地仓结构与规模） ════════
+  含软件源码 source/: 是 ✅
+  dub_align_studio: 34 个 .py, 0.3MB
+  integrated_workbench: 58 个 .py, 1.0MB
+  tests: 29 个 .py, 0.2MB
+  关键文件:
+    ✅ launcher.py（打包入口）
+    ✅ render_b.py（帧收口）
+    ✅ timing.py（尺子接口）
+    ✅ settings.py（数据总目录）
+    ✅ web/index.html（界面）
+    ✅ engines/dots_local.py
+    ✅ edit_compose.py（五档裁剪）
+
+════════ 仓库根目录（深度1） ════════
+  D:\GitHub\同步\AU-PR
+  📁 docs/
+  📁 installer/
+  📁 server/
+  📁 source/
+  📁 tests/
+  📁 水星配音数据/
+     README.md  (0.0MB, 07-30 00:38)
+     一键修复ffmpeg.bat  (0.0MB, 07-30 01:02)
+     启动软件.bat  (0.0MB, 07-30 03:16)
+     打包_整合离线版.bat  (0.0MB, 07-30 01:02)
+     打包_轻量云配版.bat  (0.0MB, 07-30 01:02)
+     打包安装程序.bat  (0.0MB, 07-30 01:02)
+     打包安装程序_轻量云配版.bat  (0.0MB, 07-30 01:02)
+     打包收尾.py  (0.0MB, 07-30 01:01)
+     打包说明.md  (0.0MB, 07-30 01:01)
+     本次命令执行.bat  (0.0MB, 07-30 03:16)
+     本次操作日志.txt  (0.0MB, 07-30 01:02)
+     环境快照.py  (0.0MB, 07-30 01:02)
+     环境快照.txt  (0.0MB, 07-30 02:41)
+     生成环境快照.bat  (0.0MB, 07-30 03:16)
+     生成环境快照.py  (0.0MB, 07-30 02:56)
+     项目打包.bat  (0.0MB, 07-30 03:16)
+
+════════ docs/（口径与交接文档） ════════
+  D:\GitHub\同步\AU-PR\docs
+     architecture.md  (0.0MB, 07-29 01:23)
+     research-notes.md  (0.0MB, 07-29 01:23)
+     roadmap.md  (0.0MB, 07-29 01:23)
+     配音对齐工作室架构与路线_20260722.md  (0.0MB, 07-30 00:38)
+     配音对齐成片_20260705.md  (0.0MB, 07-30 00:38)
+     配音软件VoxCPM2对接说明_20260706.md  (0.0MB, 07-30 00:38)
+     项目交接与颗粒度对齐_20260729.md  (0.0MB, 07-30 02:56)
+
+════════ Python 环境 ════════
+  python: E:\环境依赖\Python311\python.exe
+  版本: 3.11.9
+  frozen(打包版): False
+  torch: 未安装
+  torchaudio: 2.11.0+cu126
+  torchvision: 未安装
+  torchcodec: 未安装
+  transformers: 未安装
+  accelerate: 未安装
+  dots-tts: 未安装
+  soundfile: 未安装
+  pyinstaller: 未安装
+
+════════ 数据总目录（模型/音色/字体） ════════
+  软件当前指向(data_root): D:\GitHub\同步\AU-PR\水星配音数据
+  ✅ 数据总目录已就位（软件默认自动识别，含音色库/组件，无需在 UI 另设）
+  D:\GitHub\同步\AU-PR\水星配音数据
+  📁 克隆音频/
+    📁 试听缓存/
+       20260724_230954_dots_local_书单女生温情-619ab9c48f0f.json  (0.0MB, 07-29 02:13)
+       20260724_230954_dots_local_书单女生温情-720e1296dc98.wav  (13.1MB, 07-29 02:19)
+       20260724_230954_dots_local_书单女生温情.json  (0.0MB, 07-28 20:38)
+       20260724_230954_dots_local_书单女生温情.wav  (13.1MB, 07-28 20:38)
+       20260725_013529_dots_local_书单女生温情-6b1424afda85.wav  (13.5MB, 07-29 02:19)
+       20260725_013529_dots_local_书单女生温情-845418ee1aac.json  (0.0MB, 07-29 02:13)
+       20260725_013529_dots_local_书单女生温情.json  (0.0MB, 07-28 20:38)
+       20260725_013529_dots_local_书单女生温情.wav  (13.5MB, 07-28 20:38)
+       20260725_145235_dots_local_书单女生温情-63a589bf8ec6.wav  (13.2MB, 07-29 02:19)
+       20260725_145235_dots_local_书单女生温情-f633b3b82f4b.json  (0.0MB, 07-29 02:13)
+       20260725_145235_dots_local_书单女生温情.json  (0.0MB, 07-28 20:38)
+       20260725_145235_dots_local_书单女生温情.wav  (13.2MB, 07-28 20:38)
+       20260725_174714_dots_local_书单女生温情-39f27d7f2608.json  (0.0MB, 07-29 02:13)
+       20260725_174714_dots_local_书单女生温情-9fcc40496fc4.wav  (13.4MB, 07-29 02:19)
+       20260725_174714_dots_local_书单女生温情.json  (0.0MB, 07-28 20:38)
+       20260725_174714_dots_local_书单女生温情.wav  (13.4MB, 07-28 20:38)
+       20260727_022612_dots_remote_书单女生温情-549d411d7894.json  (0.0MB, 07-29 02:13)
+       20260727_022612_dots_remote_书单女生温情-a8b284c0b6b9.wav  (13.2MB, 07-29 02:19)
+       20260727_022612_dots_remote_书单女生温情.json  (0.0MB, 07-28 20:38)
+       20260727_022612_dots_remote_书单女生温情.wav  (13.2MB, 07-28 20:38)
+       20260728_023133_dots_remote_少年云希-28dba40b27e5.json  (0.0MB, 07-29 02:13)
+       20260728_023133_dots_remote_少年云希-c15e53ea6f79.wav  (10.9MB, 07-29 02:25)
+       20260728_023133_dots_remote_少年云希.json  (0.0MB, 07-28 20:38)
+       20260728_023133_dots_remote_少年云希.wav  (10.9MB, 07-28 20:38)
+    …（其余 80 项略）
+  📁 字体/
+       CactusClassicalSerif-Regular-c9df0c15ff9a.ttf  (27.2MB, 07-29 02:29)
+       CactusClassicalSerif-Regular.ttf  (27.2MB, 07-28 20:39)
+       Huninn-Regular-11089bb9588d.ttf  (4.5MB, 07-29 02:14)
+       Huninn-Regular.ttf  (4.5MB, 07-28 20:39)
+       LXGWWenKai-Light-61d6e74ecfb9.ttf  (27.0MB, 07-29 02:30)
+       LXGWWenKai-Light.ttf  (27.0MB, 07-28 20:39)
+       LXGWWenKai-Medium-598ca2ca09b1.ttf  (17.9MB, 07-29 02:30)
+       LXGWWenKai-Medium.ttf  (17.9MB, 07-28 20:39)
+       LXGWWenKai-Regular-9c26ec377932.ttf  (18.4MB, 07-29 02:29)
+       LXGWWenKai-Regular.ttf  (18.4MB, 07-28 20:39)
+       LiuJianMaoCao-Regular-400c8ae53237.ttf  (4.7MB, 07-29 02:14)
+       LiuJianMaoCao-Regular.ttf  (4.7MB, 07-28 20:39)
+       LongCang-Regular-e865320b0b5b.ttf  (4.9MB, 07-29 02:13)
+       LongCang-Regular.ttf  (4.9MB, 07-28 20:39)
+       MaShanZheng-Regular-4c9d38a6e329.ttf  (5.6MB, 07-29 02:14)
+       MaShanZheng-Regular.ttf  (5.6MB, 07-28 20:39)
+       NotoSansSC-Bold-527d72821b7f.otf  (8.1MB, 07-29 02:30)
+       NotoSansSC-Bold.otf  (8.1MB, 07-28 20:39)
+       NotoSansSC-Regular-27540e53a5c4.ttf  (7.9MB, 07-29 02:14)
+       NotoSansSC-Regular.ttf  (7.9MB, 07-28 20:39)
+       NotoSerifSC-Regular-52e503d34d63.otf  (11.1MB, 07-29 02:30)
+       NotoSerifSC-Regular.otf  (11.1MB, 07-28 20:39)
+       SmileySans-Oblique-efc6a89db50b.ttf  (2.5MB, 07-29 02:14)
+       SmileySans-Oblique.ttf  (2.5MB, 07-28 20:39)
+       ZCOOLKuaiLe-Regular-d840f8ff6fb0.ttf  (1.4MB, 07-29 02:14)
+    …（其余 11 项略）
+  📁 组件/
+    📁 dots.tts/
+    📁 fish-speech/
+    📁 pyCapCut/
+    📁 torch/
+    📁 whisper.cpp/
+  📁 配乐音效/
+       Anup Kushwaha-Helping Tech-84c6d23b5756.mp3  (7.8MB, 07-29 02:14)
+       Anup Kushwaha-Helping Tech.mp3  (7.8MB, 07-28 21:06)
+       悬疑-紧张-电子-6861b9ee932c.m4a  (1.2MB, 07-29 02:13)
+       悬疑-紧张-电子.m4a  (1.2MB, 07-28 21:06)
+       那艺娜-爱如火-b9ebe1e55db1.flac  (23.9MB, 07-29 02:29)
+       那艺娜-爱如火.flac  (23.9MB, 07-28 21:06)
+       震撼1-5498e73687fa.mp3  (5.0MB, 07-29 02:13)
+       震撼1.mp3  (5.0MB, 07-28 21:06)
+  📁 音色库/
+    📁 三刀/
+    📁 书单女生温情/
+    📁 少年云希/
+    📁 情感倾诉/
+    📁 晓辰/
+    📁 默默讲电影/
+     作品参数预设-7cb0ec7b7ecb.json  (0.0MB, 07-29 02:00)
+     作品参数预设.json  (0.0MB, 07-28 20:38)
+  音色库参考体检:
+    📁 三刀/参考音频-3c9d1193e869.mp3: 0.3MB · 时长未知
+    📁 书单女生温情/参考音频-a8887105ecee.mp3: 0.5MB · 时长未知
+    📁 少年云希/参考音频-b650462a7e58.mp3: 0.2MB · 时长未知
+    📁 情感倾诉/参考音频-62a188f8af9d.mp3: 0.3MB · 时长未知
+    📁 晓辰/参考音频-d3bf20d88214.mp3: 0.2MB · 时长未知
+    📁 默默讲电影/参考音频-a9542f90436a.mp3: 0.2MB · 时长未知
+
+════════ ffmpeg / ffprobe ════════
+  ffmpeg: ❌ 未找到（渲染/量时长需要它；放 exe 同目录、数据总目录或 PATH）
+  ffprobe: ❌ 未找到（渲染/量时长需要它；放 exe 同目录、数据总目录或 PATH）
+
+════════ 编译自检（compileall source） ════════
+  ✅ 编译全绿
+
+════════ dots.tts 引擎/API 深探（调用既有 环境快照.py） ════════
+  （以下由仓库既有 环境快照.py 生成，含引擎 probe 与 generate 真实签名）
+  ════════ 引擎探测（dots.tts probe） ════════
+    available= False
+    未安装 dots.tts（工具箱点「安装」，已内置国内镜像）；权重按需下载，不进安装包。
+  
+  ════════ dots.tts 运行时 API 详解（不加载权重，只反射签名） ════════
+    导入 dots_tts.runtime 失败: ModuleNotFoundError("No module named 'dots_tts'")
+  
+  ════════ 音色库参考音频体检（定位过长参考） ════════
+    📁 三刀/参考音频.mp3: 0.3MB · 时长未知（soundfile/ffprobe 都读不出）
+    📁 书单女生温情/参考音频.mp3: 0.5MB · 时长未知（soundfile/ffprobe 都读不出）
+    📁 少年云希/参考音频.mp3: 0.2MB · 时长未知（soundfile/ffprobe 都读不出）
+    📁 情感倾诉/参考音频.mp3: 0.3MB · 时长未知（soundfile/ffprobe 都读不出）
+    📁 晓辰/参考音频.mp3: 0.2MB · 时长未知（soundfile/ffprobe 都读不出）
+    📁 默默讲电影/参考音频.mp3: 0.2MB · 时长未知（soundfile/ffprobe 都读不出）
+  
+  ════════ 仓库状态 ════════
+    分支: claude/project-code-alignment-snapshot-jkeog1
+    HEAD: 8f31cde 修 bat 换行符：LF → CRLF（修中文乱码/行被当命令执行）
+    近5次提交:
+      8f31cde 修 bat 换行符：LF → CRLF（修中文乱码/行被当命令执行）
+      a811e78 新增 启动软件.bat：双击即启动软件（自动探测 Python + 带 PYTHONPATH）
+      282de53 bat Python 探测改逐行式 + 数据目录判断改按存在性
+      8f456cd 脚本整理成干净一套：三件套 + 打包高级功能，删 3 个重复旧脚本
+      827ddc8 执行类 bat 加健壮 Python 探测：修"cannot execute the specified program"
+    未提交改动: 
+      M "\347\216\257\345\242\203\345\277\253\347\205\247.txt"
+  
+  ════════ 近期错误日志 ════════
+    本次操作日志.txt（07-30 01:02，尾部 40 行）:
+          Found existing installation: MarkupSafe 3.0.3
+          Uninstalling MarkupSafe-3.0.3:
+            Successfully uninstalled MarkupSafe-3.0.3
+        Attempting uninstall: fsspec
+          Found existing installation: fsspec 2026.4.0
+          Uninstalling fsspec-2026.4.0:
+            Successfully uninstalled fsspec-2026.4.0
+        Attempting uninstall: filelock
+          Found existing installation: filelock 3.29.0
+          Uninstalling filelock-3.29.0:
+            Successfully uninstalled filelock-3.29.0
+        Attempting uninstall: jinja2
+          Found existing installation: Jinja2 3.1.6
+          Uninstalling Jinja2-3.1.6:
+            Successfully uninstalled Jinja2-3.1.6
+        Attempting uninstall: torch
+          Found existing installation: torch 2.5.1+cu121
+          Uninstalling torch-2.5.1+cu121:
+            Successfully uninstalled torch-2.5.1+cu121
+      
+      ERROR: pip's dependency resolver does not currently take into account all the packages that are installed. This behaviour is the source of the following dependency conflicts.
+      basicsr 1.4.2 requires tb-nightly, which is not installed.
+      dots-tts 0.2.1 requires WeTextProcessing, which is not installed.
+      gfpgan 1.3.8 requires tb-nightly, which is not installed.
+      voxcpm 2.0.3 requires torchcodec, which is not installed.
+      datasets 2.18.0 requires fsspec[http]<=2024.2.0,>=2023.1.0, but you have fsspec 2026.4.0 which is incompatible.
+      dots-tts 0.2.1 requires pydantic<3,>=2.12.5, but you have pydantic 2.9.2 which is incompatible.
+      fish-speech 2.0.0 requires torch==2.8.0, but you have torch 2.11.0+cu126 which is incompatible.
+      fish-speech 2.0.0 requires torchaudio==2.8.0, but you have torchaudio 2.11.0+cu126 which is incompatible.
+      voxcpm 2.0.3 requires datasets<4,>=3, but you have datasets 2.18.0 which is incompatible.
+      voxcpm 2.0.3 requires modelscope>=1.22.0, but you have modelscope 1.17.1 which is incompatible.
+      Successfully installed MarkupSafe-3.0.3 filelock-3.29.0 fsspec-2026.4.0 jinja2-3.1.6 mpmath-1.3.0 networkx-3.6.1 setuptools-78.1.0 sympy-1.14.0 torch-2.11.0+cu126 torchaudio-2.11.0+cu126 typing-extensions-4.15.0
+      
+      [2/2] dots.tts probe：
+      D:\Python\Python311\Lib\site-packages\pydantic\_internal\_fields.py:132: UserWarning: Field "model_type" in ModelConfig has conflict with protected namespace "model_".
+      
+      You may be able to resolve this warning by setting `model_config['protected_namespaces'] = ()`.
+        warnings.warn(
+      available= True
+      dots.tts 可用（检查点 D:\GitHub\By\AU&PR\水星配音数据\组件\dots.tts\dots.tts-soar）；GPU：NVIDIA GeForce RTX 3060，显存 11.0/12.0 GB 可用（需 ≥6GB，推荐 ≥11GB）。；文本正则化用桩跳过（缺 WeTextProcessing/pynini，不影响出声，建议文案里数字写成中文）
+  
+  ════════ 仓库根目录（深度1） ════════
+    D:\GitHub\同步\AU-PR
+    📁 docs/
+    📁 installer/
+    📁 server/
+    📁 source/
+    📁 tests/
+    📁 水星配音数据/
+       README.md  (0.0MB, 07-30 00:38)
+       一键修复ffmpeg.bat  (0.0MB, 07-30 01:02)
+       启动软件.bat  (0.0MB, 07-30 03:16)
+       打包_整合离线版.bat  (0.0MB, 07-30 01:02)
+       打包_轻量云配版.bat  (0.0MB, 07-30 01:02)
+       打包安装程序.bat  (0.0MB, 07-30 01:02)
+       打包安装程序_轻量云配版.bat  (0.0MB, 07-30 01:02)
+       打包收尾.py  (0.0MB, 07-30 01:01)
+       打包说明.md  (0.0MB, 07-30 01:01)
+       本次命令执行.bat  (0.0MB, 07-30 03:16)
+       本次操作日志.txt  (0.0MB, 07-30 01:02)
+       环境快照.py  (0.0MB, 07-30 01:02)
+       环境快照.txt  (0.0MB, 07-30 02:41)
+       生成环境快照.bat  (0.0MB, 07-30 03:16)
+       生成环境快照.py  (0.0MB, 07-30 02:56)
+       项目打包.bat  (0.0MB, 07-30 03:16)
+  
+  ════════ 父目录（检查散落的旧脚本副本） ════════
+    D:\GitHub\同步
+    📁 AU-PR/
+    📁 Blender/
+    📁 Codex-Zhishiku/
+    📁 FengMian/
+    📁 Framework/
+    📁 Guang-Guang/
+    📁 JIEMI/
+    📁 KuaiJian/
+    📁 Mercury-Music/
+    📁 Mercury-Premiere-Pro/
+    📁 OVN-QR-Call/
+    📁 QQ/
+    📁 QQWXFG/
+    📁 Sean/
+    📁 ShipinMUBAN/
+    📁 Shipinhao-FaBu/
+    📁 Short-drama/
+    📁 TD-verification/
+    📁 Vocal-Prep-Studio/
+    📁 WebUI/
+    📁 XiazaiMP3/
+    📁 Yinyuezhizuo/
+    📁 ecommerce-customer-service-smart-reply/
+    📁 soda-music-volume/
+  
+  ════════ dist 产物 ════════
+    （不存在）D:\GitHub\同步\AU-PR\dist
+  
+  ════════ 发布包 ════════
+    （不存在）D:\GitHub\同步\AU-PR\发布包
+  
+  ════════ 整合离线包 ════════
+    （不存在）D:\GitHub\同步\AU-PR\整合离线包
+  
+  ════════ 数据总目录 ════════
+    软件当前指向: D:\GitHub\同步\AU-PR\水星配音数据
+    D:\GitHub\同步\AU-PR\水星配音数据
+    📁 克隆音频/
+      📁 试听缓存/
+           三刀_dots_remote_19fe09fc46-7db44019e041.json  (0.0MB, 07-29 02:46)
+           三刀_dots_remote_19fe09fc46-a3d1ac87e670.wav  (0.4MB, 07-29 02:46)
+           三刀_dots_remote_19fe09fc46.json  (0.0MB, 07-28 20:39)
+           三刀_dots_remote_19fe09fc46.wav  (0.4MB, 07-28 20:39)
+           书单女生温情_dots_local_b9de669177-3ab1f29497f2.wav  (0.4MB, 07-29 02:47)
+           书单女生温情_dots_local_b9de669177-806e2b1fcaea.json  (0.0MB, 07-29 02:46)
+           书单女生温情_dots_local_b9de669177.json  (0.0MB, 07-28 20:39)
+           书单女生温情_dots_local_b9de669177.wav  (0.4MB, 07-28 20:39)
+           少年云希_dots_remote_7bf788542b-6da6c6d270a4.json  (0.0MB, 07-29 02:47)
+           少年云希_dots_remote_7bf788542b-f163af1319cb.wav  (0.3MB, 07-29 02:47)
+           少年云希_dots_remote_7bf788542b.json  (0.0MB, 07-28 20:39)
+           少年云希_dots_remote_7bf788542b.wav  (0.3MB, 07-28 20:39)
+           情感倾诉_dots_remote_31acdbf573-6665f16054fb.wav  (0.7MB, 07-29 02:46)
+           情感倾诉_dots_remote_31acdbf573-7b7dc8c33828.json  (0.0MB, 07-29 02:46)
+           情感倾诉_dots_remote_31acdbf573.json  (0.0MB, 07-28 20:39)
+           情感倾诉_dots_remote_31acdbf573.wav  (0.7MB, 07-28 20:39)
+           情感倾诉_dots_remote_8e2ecf3f6d-61ec9a596493.wav  (0.6MB, 07-29 02:47)
+           情感倾诉_dots_remote_8e2ecf3f6d-bbb45a87c8b9.json  (0.0MB, 07-29 02:46)
+           情感倾诉_dots_remote_8e2ecf3f6d.json  (0.0MB, 07-28 20:39)
+           情感倾诉_dots_remote_8e2ecf3f6d.wav  (0.6MB, 07-28 20:39)
+           情感倾诉_dots_remote_b9e41786b9-a9afeb2b8720.json  (0.0MB, 07-29 02:46)
+           情感倾诉_dots_remote_b9e41786b9-dd7d959f18d3.wav  (0.5MB, 07-29 02:47)
+           情感倾诉_dots_remote_b9e41786b9.json  (0.0MB, 07-28 20:39)
+           情感倾诉_dots_remote_b9e41786b9.wav  (0.5MB, 07-28 20:39)
+           晓辰_dots_remote_b9bcdd64ea-2ba7d3197d82.wav  (0.4MB, 07-29 02:47)
+        …（其余 19 项略）
+         20260724_230954_dots_local_书单女生温情-619ab9c48f0f.json  (0.0MB, 07-29 02:13)
+         20260724_230954_dots_local_书单女生温情-720e1296dc98.wav  (13.1MB, 07-29 02:19)
+         20260724_230954_dots_local_书单女生温情.json  (0.0MB, 07-28 20:38)
+         20260724_230954_dots_local_书单女生温情.wav  (13.1MB, 07-28 20:38)
+         20260725_013529_dots_local_书单女生温情-6b1424afda85.wav  (13.5MB, 07-29 02:19)
+         20260725_013529_dots_local_书单女生温情-845418ee1aac.json  (0.0MB, 07-29 02:13)
+         20260725_013529_dots_local_书单女生温情.json  (0.0MB, 07-28 20:38)
+         20260725_013529_dots_local_书单女生温情.wav  (13.5MB, 07-28 20:38)
+         20260725_145235_dots_local_书单女生温情-63a589bf8ec6.wav  (13.2MB, 07-29 02:19)
+         20260725_145235_dots_local_书单女生温情-f633b3b82f4b.json  (0.0MB, 07-29 02:13)
+         20260725_145235_dots_local_书单女生温情.json  (0.0MB, 07-28 20:38)
+         20260725_145235_dots_local_书单女生温情.wav  (13.2MB, 07-28 20:38)
+         20260725_174714_dots_local_书单女生温情-39f27d7f2608.json  (0.0MB, 07-29 02:13)
+         20260725_174714_dots_local_书单女生温情-9fcc40496fc4.wav  (13.4MB, 07-29 02:19)
+         20260725_174714_dots_local_书单女生温情.json  (0.0MB, 07-28 20:38)
+         20260725_174714_dots_local_书单女生温情.wav  (13.4MB, 07-28 20:38)
+         20260727_022612_dots_remote_书单女生温情-549d411d7894.json  (0.0MB, 07-29 02:13)
+         20260727_022612_dots_remote_书单女生温情-a8b284c0b6b9.wav  (13.2MB, 07-29 02:19)
+         20260727_022612_dots_remote_书单女生温情.json  (0.0MB, 07-28 20:38)
+         20260727_022612_dots_remote_书单女生温情.wav  (13.2MB, 07-28 20:38)
+         20260728_023133_dots_remote_少年云希-28dba40b27e5.json  (0.0MB, 07-29 02:13)
+         20260728_023133_dots_remote_少年云希-c15e53ea6f79.wav  (10.9MB, 07-29 02:25)
+         20260728_023133_dots_remote_少年云希.json  (0.0MB, 07-28 20:38)
+         20260728_023133_dots_remote_少年云希.wav  (10.9MB, 07-28 20:38)
+      …（其余 80 项略）
+    📁 字体/
+         CactusClassicalSerif-Regular-c9df0c15ff9a.ttf  (27.2MB, 07-29 02:29)
+         CactusClassicalSerif-Regular.ttf  (27.2MB, 07-28 20:39)
+         Huninn-Regular-11089bb9588d.ttf  (4.5MB, 07-29 02:14)
+         Huninn-Regular.ttf  (4.5MB, 07-28 20:39)
+         LXGWWenKai-Light-61d6e74ecfb9.ttf  (27.0MB, 07-29 02:30)
+         LXGWWenKai-Light.ttf  (27.0MB, 07-28 20:39)
+         LXGWWenKai-Medium-598ca2ca09b1.ttf  (17.9MB, 07-29 02:30)
+         LXGWWenKai-Medium.ttf  (17.9MB, 07-28 20:39)
+         LXGWWenKai-Regular-9c26ec377932.ttf  (18.4MB, 07-29 02:29)
+         LXGWWenKai-Regular.ttf  (18.4MB, 07-28 20:39)
+         LiuJianMaoCao-Regular-400c8ae53237.ttf  (4.7MB, 07-29 02:14)
+         LiuJianMaoCao-Regular.ttf  (4.7MB, 07-28 20:39)
+         LongCang-Regular-e865320b0b5b.ttf  (4.9MB, 07-29 02:13)
+         LongCang-Regular.ttf  (4.9MB, 07-28 20:39)
+         MaShanZheng-Regular-4c9d38a6e329.ttf  (5.6MB, 07-29 02:14)
+         MaShanZheng-Regular.ttf  (5.6MB, 07-28 20:39)
+         NotoSansSC-Bold-527d72821b7f.otf  (8.1MB, 07-29 02:30)
+         NotoSansSC-Bold.otf  (8.1MB, 07-28 20:39)
+         NotoSansSC-Regular-27540e53a5c4.ttf  (7.9MB, 07-29 02:14)
+         NotoSansSC-Regular.ttf  (7.9MB, 07-28 20:39)
+         NotoSerifSC-Regular-52e503d34d63.otf  (11.1MB, 07-29 02:30)
+         NotoSerifSC-Regular.otf  (11.1MB, 07-28 20:39)
+         SmileySans-Oblique-efc6a89db50b.ttf  (2.5MB, 07-29 02:14)
+         SmileySans-Oblique.ttf  (2.5MB, 07-28 20:39)
+         ZCOOLKuaiLe-Regular-d840f8ff6fb0.ttf  (1.4MB, 07-29 02:14)
+      …（其余 11 项略）
+    📁 组件/
+      📁 dots.tts/
+        📁 dots.tts-soar/
+        📁 wheels/
+      📁 fish-speech/
+        📁 awesome_webui/
+        📁 checkpoints/
+        📁 docker/
+        📁 docs/
+        📁 fish_speech/
+        📁 fish_speech.egg-info/
+        📁 python/
+        📁 python-runtime/
+        📁 tools/
+           -092ecf341911LICENSE  (0.0MB, 07-29 02:47)
+           -100677e6791a.gitignore  (0.0MB, 07-29 02:47)
+           -8eac6219b0b4.dockerignore  (0.0MB, 07-29 02:47)
+           -d5e4b554b4068c9eb608eb13023d4323.project-root  (0.0MB, 07-29 02:47)
+           API_FLAGS-b91252a754f8.txt  (0.0MB, 07-29 02:47)
+           API_FLAGS.txt  (0.0MB, 07-28 20:47)
+           LICENSE  (0.0MB, 07-28 20:50)
+           README-d58663a0061a.md  (0.0MB, 07-29 02:47)
+           README.md  (0.0MB, 07-28 21:04)
+           compose-d33a7a52d869.yml  (0.0MB, 07-29 02:47)
+           compose.base-44552b3b12a1.yml  (0.0MB, 07-29 02:47)
+           compose.base.yml  (0.0MB, 07-28 20:50)
+           compose.rocm-72e7d5948aa1.yml  (0.0MB, 07-29 02:47)
+           compose.rocm.yml  (0.0MB, 07-28 20:50)
+           compose.yml  (0.0MB, 07-28 20:50)
+           dockerfile-56f038e05133.dev  (0.0MB, 07-29 02:47)
+        …（其余 21 项略）
+      📁 pyCapCut/
+        📁 PIL/
+        📁 bin/
+        📁 comtypes/
+        📁 comtypes-1.4.16.dist-info/
+        📁 imageio/
+        📁 imageio-2.37.4.dist-info/
+        📁 numpy/
+        📁 numpy-2.4.6.dist-info/
+        📁 numpy.libs/
+        📁 pillow-12.3.0.dist-info/
+        📁 pycapcut/
+        📁 pycapcut-0.0.3.dist-info/
+        📁 pymediainfo/
+        📁 pymediainfo-7.0.1.dist-info/
+        📁 uiautomation/
+        📁 uiautomation-2.0.29.dist-info/
+        📁 wheels/
+      📁 torch/
+      📁 whisper.cpp/
+        📁 Release/
+        📁 models/
+        📁 runtime_downloads/
+           SDL2-76fe110fa9ed.dll  (2.4MB, 07-29 02:47)
+           SDL2.dll  (2.4MB, 07-28 21:05)
+           bench-71b912d65b02.exe  (0.0MB, 07-29 02:47)
+           bench.exe  (0.0MB, 07-28 21:04)
+           command-e93ef4a1bd56.exe  (0.0MB, 07-29 02:47)
+           command.exe  (0.0MB, 07-28 21:04)
+           ggml-ad1376fe23e5.dll  (0.1MB, 07-29 02:47)
+           ggml-base-8540cf915153.dll  (0.6MB, 07-29 02:47)
+           ggml-base.dll  (0.6MB, 07-28 21:04)
+           ggml-cpu-alderlake-4047bd08997d.dll  (0.8MB, 07-29 02:47)
+           ggml-cpu-alderlake.dll  (0.8MB, 07-28 21:04)
+           ggml-cpu-cannonlake-02604d56e2dd.dll  (0.8MB, 07-29 02:47)
+           ggml-cpu-cannonlake.dll  (0.8MB, 07-28 21:04)
+           ggml-cpu-cascadelake-7319141c7b3a.dll  (0.8MB, 07-29 02:47)
+           ggml-cpu-cascadelake.dll  (0.8MB, 07-28 21:04)
+           ggml-cpu-haswell-6c534051c7eb.dll  (0.8MB, 07-29 02:47)
+           ggml-cpu-haswell.dll  (0.8MB, 07-28 21:04)
+           ggml-cpu-icelake-4f8519f66ba2.dll  (0.8MB, 07-29 02:47)
+           ggml-cpu-icelake.dll  (0.8MB, 07-28 21:04)
+           ggml-cpu-sandybridge-c24f6d868e3e.dll  (0.7MB, 07-29 02:47)
+           ggml-cpu-sandybridge.dll  (0.7MB, 07-28 21:04)
+           ggml-cpu-skylakex-a1d6a55da3ed.dll  (0.8MB, 07-29 02:47)
+        …（其余 52 项略）
+    📁 配乐音效/
+         Anup Kushwaha-Helping Tech-84c6d23b5756.mp3  (7.8MB, 07-29 02:14)
+         Anup Kushwaha-Helping Tech.mp3  (7.8MB, 07-28 21:06)
+         悬疑-紧张-电子-6861b9ee932c.m4a  (1.2MB, 07-29 02:13)
+         悬疑-紧张-电子.m4a  (1.2MB, 07-28 21:06)
+         那艺娜-爱如火-b9ebe1e55db1.flac  (23.9MB, 07-29 02:29)
+         那艺娜-爱如火.flac  (23.9MB, 07-28 21:06)
+         震撼1-5498e73687fa.mp3  (5.0MB, 07-29 02:13)
+         震撼1.mp3  (5.0MB, 07-28 21:06)
+    📁 音色库/
+      📁 三刀/
+           参考音频-3c9d1193e869.mp3  (0.3MB, 07-29 02:47)
+           参考音频.mp3  (0.3MB, 07-28 21:06)
+           转写-34e38fa4d8dd.txt  (0.0MB, 07-29 02:47)
+           转写.txt  (0.0MB, 07-28 21:06)
+           音色-d68c9167a675.json  (0.0MB, 07-29 02:47)
+           音色.json  (0.0MB, 07-28 21:06)
+      📁 书单女生温情/
+           参考音频-a8887105ecee.mp3  (0.5MB, 07-29 02:47)
+           参考音频.mp3  (0.5MB, 07-28 21:06)
+           转写-6149608add97.txt  (0.0MB, 07-29 02:47)
+           转写.txt  (0.0MB, 07-28 21:06)
+           音色-4526175183b5.json  (0.0MB, 07-29 02:47)
+           音色.json  (0.0MB, 07-28 21:06)
+      📁 少年云希/
+           参考音频-b650462a7e58.mp3  (0.2MB, 07-29 02:47)
+           参考音频.mp3  (0.2MB, 07-28 21:06)
+           转写-1d746aae5628.txt  (0.0MB, 07-29 02:47)
+           转写.txt  (0.0MB, 07-28 21:06)
+           音色-a0a7c8beadf3.json  (0.0MB, 07-29 02:47)
+           音色.json  (0.0MB, 07-28 21:06)
+      📁 情感倾诉/
+           参考音频-62a188f8af9d.mp3  (0.3MB, 07-29 02:47)
+           参考音频.mp3  (0.3MB, 07-28 21:06)
+           转写-bddeb5f32a51.txt  (0.0MB, 07-29 02:47)
+           转写.txt  (0.0MB, 07-28 21:06)
+           音色-ef1e57b163e7.json  (0.0MB, 07-29 02:47)
+           音色.json  (0.0MB, 07-28 21:06)
+      📁 晓辰/
+           参考音频-d3bf20d88214.mp3  (0.2MB, 07-29 02:47)
+           参考音频.mp3  (0.2MB, 07-28 21:06)
+           转写-2ca351ff8782.txt  (0.0MB, 07-29 02:47)
+           转写.txt  (0.0MB, 07-28 21:06)
+           音色-b4340632f165.json  (0.0MB, 07-29 02:47)
+           音色.json  (0.0MB, 07-28 21:06)
+      📁 默默讲电影/
+           参考音频-a9542f90436a.mp3  (0.2MB, 07-29 02:47)
+           参考音频.mp3  (0.2MB, 07-28 21:06)
+           转写-786e58d8647b.txt  (0.0MB, 07-29 02:47)
+           转写.txt  (0.0MB, 07-28 21:06)
+           音色-12226dd87533.json  (0.0MB, 07-29 02:47)
+           音色.json  (0.0MB, 07-28 21:06)
+       作品参数预设-7cb0ec7b7ecb.json  (0.0MB, 07-29 02:00)
+       作品参数预设.json  (0.0MB, 07-28 20:38)
