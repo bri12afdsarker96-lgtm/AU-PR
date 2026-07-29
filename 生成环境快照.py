@@ -235,12 +235,16 @@ def data_dir_checkup() -> None:
         except Exception as exc:  # noqa: BLE001
             L.append(f"  <settings.data_root 读取失败: {exc}>")
     if data_dir is None:
-        data_dir = Path(EXPECTED_DATA_DIR)
-        L.append(f"  （无法从 settings 读取，回退到换机约定路径）{data_dir}")
+        data_dir = ROOT / "水星配音数据"
+        L.append(f"  （无法从 settings 读取，回退到软件默认位置）{data_dir}")
 
-    if str(data_dir) != EXPECTED_DATA_DIR:
-        L.append(f"  ⚠ 与换机约定路径不一致，约定为: {EXPECTED_DATA_DIR}")
-        L.append("     在软件『工具箱自检』页把数据总目录指向约定路径，即可复用已下载模型/音色。")
+    # 判定就位：存在且含关键子目录即算 OK——无论在仓库旁默认位置还是 By 约定位置都行
+    if data_dir.is_dir() and (data_dir / "音色库").is_dir():
+        L.append("  ✅ 数据总目录已就位（软件默认自动识别，含音色库/组件，无需在 UI 另设）")
+    else:
+        L.append("  ⚠ 当前指向的目录不存在或缺子目录。把「水星配音数据」放到下面任一处即可：")
+        L.append(f"     · 软件默认（仓库旁，自动识别）：{ROOT / '水星配音数据'}")
+        L.append(f"     · 或 By 位置后在软件『工具箱自检』页指过去：{EXPECTED_DATA_DIR}")
 
     tree(data_dir, depth=2, max_entries=25, exclude={"__pycache__"})
 

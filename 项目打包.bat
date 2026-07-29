@@ -30,9 +30,13 @@ for /d /r "source" %%p in (__pycache__) do rd /s /q "%%p" 2>nul
 if exist "dist\水星配音对齐工作室" goto :LOCKED
 echo [清理] 旧产物与旧缓存已清除。
 
-rem [3] 环境检查：找一个真正能执行的 Python（优先 py 启动器，其次 python / python3）
+rem [3] 环境检查：找一个真正能执行的 Python（逐行试，避免 for/&& 解析歧义）
 set "PYEXE="
-for %%P in ("py -3" "python" "python3") do if not defined PYEXE %%~P -c "import sys" >nul 2>nul && set "PYEXE=%%~P"
+py -3 -c "import sys" >nul 2>nul && set "PYEXE=py -3"
+if not defined PYEXE python -c "import sys" >nul 2>nul && set "PYEXE=python"
+if not defined PYEXE python3 -c "import sys" >nul 2>nul && set "PYEXE=python3"
+if not defined PYEXE if exist "E:\环境依赖\Python311\python.exe" set "PYEXE=E:\环境依赖\Python311\python.exe"
+if not defined PYEXE if exist "D:\Python\Python311\python.exe" set "PYEXE=D:\Python\Python311\python.exe"
 if not defined PYEXE goto :NOPY
 echo [Python] 使用解释器：%PYEXE%
 %PYEXE% -m pip show pyinstaller >nul 2>nul || %PYEXE% -m pip install pyinstaller || goto :PIPFAIL

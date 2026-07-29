@@ -8,10 +8,13 @@ echo   （开发者/新对话窗口直接读 环境快照.txt 即可对齐颗粒
 echo ==========================================
 echo.
 
-rem ── 找一个真正能执行的 Python：优先 py 启动器，其次 python / python3 ──
-rem （新机常见坑：python 没装 / PATH 里是商店占位符 → cmd 报 "The system cannot execute..."）
+rem ── 找一个真正能执行的 Python（逐行试，避免 for/&& 解析歧义）──
 set "PYEXE="
-for %%P in ("py -3" "python" "python3") do if not defined PYEXE %%~P -c "import sys" >nul 2>nul && set "PYEXE=%%~P"
+py -3 -c "import sys" >nul 2>nul && set "PYEXE=py -3"
+if not defined PYEXE python -c "import sys" >nul 2>nul && set "PYEXE=python"
+if not defined PYEXE python3 -c "import sys" >nul 2>nul && set "PYEXE=python3"
+if not defined PYEXE if exist "E:\环境依赖\Python311\python.exe" set "PYEXE=E:\环境依赖\Python311\python.exe"
+if not defined PYEXE if exist "D:\Python\Python311\python.exe" set "PYEXE=D:\Python\Python311\python.exe"
 if not defined PYEXE goto :NOPY
 
 echo [Python] 使用解释器：%PYEXE%
@@ -41,7 +44,8 @@ git add 环境快照.txt
 git commit -m "环境快照：本机对齐状态与仓库深扫" >nul 2>nul
 git push
 if errorlevel 1 (
-  echo [警告] 推送失败（网络/权限）。已为你打开 环境快照.txt，请复制内容发给 Claude。
+  echo [警告] 推送失败（网络/权限，或需在 GitHub Desktop 里 Push）。
+  echo        没关系——已为你打开 环境快照.txt，直接复制内容发给 Claude 即可。
   start "" notepad "环境快照.txt"
 ) else (
   echo.
@@ -50,6 +54,7 @@ if errorlevel 1 (
 
 :done
 echo.
+echo （本窗口不会自动关闭；看完按任意键退出）
 pause
 exit /b 0
 
