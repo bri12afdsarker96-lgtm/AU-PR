@@ -8,6 +8,15 @@ echo   （开发者/新对话窗口直接读 环境快照.txt 即可对齐颗粒
 echo ==========================================
 echo.
 
+rem ── 找一个真正能执行的 Python：优先 py 启动器，其次 python / python3 ──
+rem （新机常见坑：python 没装 / PATH 里是商店占位符 → cmd 报 "The system cannot execute..."）
+set "PYEXE="
+for %%P in ("py -3" "python" "python3") do if not defined PYEXE %%~P -c "import sys" >nul 2>nul && set "PYEXE=%%~P"
+if not defined PYEXE goto :NOPY
+
+echo [Python] 使用解释器：%PYEXE%
+echo.
+
 rem 先拉一次远程引用，保证"本地 vs 真源 v0.5 / main"的领先落后判断是最新的
 where git >nul 2>nul
 if not errorlevel 1 (
@@ -15,7 +24,7 @@ if not errorlevel 1 (
   git fetch origin >nul 2>nul
 )
 
-python 生成环境快照.py
+%PYEXE% 生成环境快照.py
 if errorlevel 1 ( echo [错误] 快照生成失败，请把上方输出截图发给开发。& pause & exit /b 1 )
 
 echo.
@@ -42,3 +51,14 @@ if errorlevel 1 (
 :done
 echo.
 pause
+exit /b 0
+
+:NOPY
+echo [错误] 未找到可用的 Python。请先安装 Python 3.11+：
+echo        官网 https://www.python.org/downloads/ ，安装时务必勾选
+echo        "Add python.exe to PATH"（并建议勾 py launcher）。装完重开本窗口再双击。
+echo.
+echo        已装却仍报错：多半是 PATH 里的 python 是"应用商店占位符"。
+echo        到 设置 → 应用 → 高级应用设置 → 应用执行别名，把 python.exe / python3.exe 关掉。
+pause
+exit /b 1

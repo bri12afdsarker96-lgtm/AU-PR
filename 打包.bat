@@ -30,8 +30,10 @@ if exist "dist\水星配音对齐工作室" goto :LOCKED
 echo [清理] 旧产物与旧缓存已清除。
 
 rem [3] 环境检查
-where python >nul 2>nul || goto :NOPY
-python -m pip show pyinstaller >nul 2>nul || python -m pip install pyinstaller || goto :PIPFAIL
+set "PYEXE="
+for %%P in ("py -3" "python" "python3") do if not defined PYEXE %%~P -c "import sys" >nul 2>nul && set "PYEXE=%%~P"
+if not defined PYEXE goto :NOPY
+%PYEXE% -m pip show pyinstaller >nul 2>nul || %PYEXE% -m pip install pyinstaller || goto :PIPFAIL
 
 rem [4] 版本构建戳（界面右上角 / 工具箱版本行显示）
 set "GITHASH=unknown"
@@ -41,14 +43,14 @@ echo [版本] 本次构建戳：%DATE% %TIME:~0,5% · %GITHASH%
 
 rem [5] 打包（入口必须是 launcher.py；--clean 同时清 PyInstaller 缓存）
 set "PYTHONPATH=source"
-python -m PyInstaller --noconfirm --clean --onedir --name "水星配音对齐工作室" ^
+%PYEXE% -m PyInstaller --noconfirm --clean --onedir --name "水星配音对齐工作室" ^
   --paths source ^
   --add-data "source\dub_align_studio\web;dub_align_studio\web" ^
   --collect-submodules dub_align_studio --collect-submodules integrated_workbench ^
   --console "source\dub_align_studio\launcher.py" || goto :BUILDFAIL
 
 rem [6] 收尾：写版本文件 + 自检产物 + 生成带版本号压缩包（独立脚本，避免 cmd 引号拆断）
-python "打包收尾.py" || goto :SELFFAIL
+%PYEXE% "打包收尾.py" || goto :SELFFAIL
 
 echo.
 echo [完成] 产物目录：dist\水星配音对齐工作室\

@@ -30,9 +30,12 @@ for /d /r "source" %%p in (__pycache__) do rd /s /q "%%p" 2>nul
 if exist "dist\水星配音对齐工作室" goto :LOCKED
 echo [清理] 旧产物与旧缓存已清除。
 
-rem [3] 环境检查
-where python >nul 2>nul || goto :NOPY
-python -m pip show pyinstaller >nul 2>nul || python -m pip install pyinstaller || goto :PIPFAIL
+rem [3] 环境检查：找一个真正能执行的 Python（优先 py 启动器，其次 python / python3）
+set "PYEXE="
+for %%P in ("py -3" "python" "python3") do if not defined PYEXE %%~P -c "import sys" >nul 2>nul && set "PYEXE=%%~P"
+if not defined PYEXE goto :NOPY
+echo [Python] 使用解释器：%PYEXE%
+%PYEXE% -m pip show pyinstaller >nul 2>nul || %PYEXE% -m pip install pyinstaller || goto :PIPFAIL
 
 rem [4] 版本构建戳（界面右上角 / 工具箱版本行显示）
 set "GITHASH=unknown"
@@ -42,7 +45,7 @@ echo [版本] 本次构建戳：%DATE% %TIME:~0,5% · %GITHASH%
 
 rem [5] 打包（入口必须是 launcher.py；--clean 同时清 PyInstaller 缓存）
 set "PYTHONPATH=source"
-python -m PyInstaller --noconfirm --clean --onedir --name "水星配音对齐工作室" ^
+%PYEXE% -m PyInstaller --noconfirm --clean --onedir --name "水星配音对齐工作室" ^
   --paths source ^
   --add-data "source\dub_align_studio\web;dub_align_studio\web" ^
   --collect-submodules dub_align_studio --collect-submodules integrated_workbench ^
@@ -50,7 +53,7 @@ python -m PyInstaller --noconfirm --clean --onedir --name "水星配音对齐工
 
 rem [6] 收尾：优先用仓库既有 打包收尾.py（写版本文件 + 自检 + 出带版本号 zip）；缺失则内联自检
 if exist "打包收尾.py" (
-  python "打包收尾.py" || goto :SELFFAIL
+  %PYEXE% "打包收尾.py" || goto :SELFFAIL
 ) else (
   echo [收尾] 未找到 打包收尾.py，改为内联自检（不生成带版本号 zip）。
   if not exist "dist\水星配音对齐工作室\水星配音对齐工作室.exe" goto :SELFFAIL
@@ -88,7 +91,11 @@ pause
 exit /b 1
 
 :NOPY
-echo [错误] 未找到 python。请安装 Python 3.11+ 并勾选 Add python.exe to PATH。
+echo [错误] 未找到可用的 Python。请先安装 Python 3.11+：
+echo        官网 https://www.python.org/downloads/ ，安装时务必勾选
+echo        "Add python.exe to PATH"（并建议勾 py launcher）。装完重开本窗口再双击。
+echo        已装却仍报错：多半是 PATH 里的 python 是"应用商店占位符"——到
+echo        设置 → 应用 → 高级应用设置 → 应用执行别名，把 python.exe / python3.exe 关掉。
 pause
 exit /b 1
 

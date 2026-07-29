@@ -8,7 +8,12 @@ echo   （开发者直接读文件即可远程定位是哪一环报错，无需�
 echo ==========================================
 echo.
 
-python 环境快照.py
+rem 找一个真正能执行的 Python：优先 py 启动器，其次 python / python3
+set "PYEXE="
+for %%P in ("py -3" "python" "python3") do if not defined PYEXE %%~P -c "import sys" >nul 2>nul && set "PYEXE=%%~P"
+if not defined PYEXE goto :NOPY
+
+%PYEXE% 环境快照.py
 if errorlevel 1 ( echo [错误] 快照生成失败，请把上方输出截图发给开发。& pause & exit /b 1 )
 
 echo.
@@ -35,3 +40,12 @@ if errorlevel 1 (
 :done
 echo.
 pause
+exit /b 0
+
+:NOPY
+echo [错误] 未找到可用的 Python。请先安装 Python 3.11+：
+echo        官网 https://www.python.org/downloads/ ，安装时务必勾选 "Add python.exe to PATH"。
+echo        已装却仍报错：多半是 PATH 里的 python 是"应用商店占位符"，到
+echo        设置 → 应用 → 高级应用设置 → 应用执行别名，把 python.exe / python3.exe 关掉。
+pause
+exit /b 1
