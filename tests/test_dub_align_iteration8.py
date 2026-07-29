@@ -32,10 +32,12 @@ class UiContractV8Tests(unittest.TestCase):
 
 class PackagingScriptTests(unittest.TestCase):
     def _bat(self) -> str:
-        for cand in (Path("打包.bat"), Path(__file__).resolve().parents[1] / "打包.bat"):
-            if cand.exists():
-                return cand.read_text(encoding="utf-8")
-        self.skipTest("打包.bat 不在此仓库根")
+        root = Path(__file__).resolve().parents[1]
+        for name in ("项目打包.bat", "打包.bat"):  # 新名优先，兼容旧名
+            for cand in (Path(name), root / name):
+                if cand.exists():
+                    return cand.read_text(encoding="utf-8")
+        self.skipTest("项目打包.bat / 打包.bat 均不在此仓库根")
 
     def test_cleans_stale_and_selfchecks(self):
         bat = self._bat()

@@ -1,6 +1,6 @@
 """打包收尾：写版本文件 → 自检产物 → 生成带版本号的发布压缩包。
 
-由 打包.bat 在 PyInstaller 构建成功后调用（python 打包收尾.py）。
+由 项目打包.bat 在 PyInstaller 构建成功后调用（python 打包收尾.py）。
 独立脚本，避免在 .bat 里用 python -c 复杂引号被 cmd 拆断。
 成功退出码 0；产物缺失退出码 1（供 .bat 判定自检）。
 """
