@@ -269,23 +269,44 @@ def ucloud_call(endpoint: str, action: str, public_key: str, private_key: str,
 
 
 def _compshare_creds(config: CloudConfig) -> tuple[str, str] | None:
-    """返回 (public_key, private_key) 或 None（凭据不全）。"""
+    """返回 (public_key, private_key) 或 None（必填三项不齐：PublicKey + PrivateKey + InstanceId）。
+
+    优云智算 API 密钥页只发一对 pub/private，实例卡里只保证有 `uhost-*` ID；
+    Region/Zone/Project **不强求**——容器实例许多接口不需要。UI 也把这三项
+    折进"高级"（默认不填），用户按需再填。"""
     pk = (config.cs_public_key or "").strip()
     sk = decrypt_str(config.cs_private_key_cipher)
-    if not pk or not sk or not (config.cs_region or "").strip() or not (config.cs_instance_id or "").strip():
+    if not pk or not sk or not (config.cs_instance_id or "").strip():
         return None
     return pk, sk
 
 
+def _cs_optional_extras(config: CloudConfig, include_zone: bool = False) -> dict:
+    """把非空的可选字段拼进 API 参数；空的**不传**——避免签名把空串带进去、以及
+    带上容器实例根本不认的 UHost 特有字段（Zone 只有 Start/Stop 才可能需要）。"""
+    extras: dict = {}
+    if (config.cs_region or "").strip():
+        extras["Region"] = config.cs_region.strip()
+    if include_zone and (config.cs_zone or "").strip():
+        extras["Zone"] = config.cs_zone.strip()
+    if (config.cs_project_id or "").strip():
+        extras["ProjectId"] = config.cs_project_id.strip()
+    return extras
+
+
 def compshare_stop(config: CloudConfig) -> tuple[bool, str]:
-    """走 UCloud OpenAPI 停机（等价"控制台点关机"，不再计费）。"""
+    """走优云智算/UCloud OpenAPI 停机（等价"控制台点关机"，不再计费）。
+
+    ⚠ 优云智算的容器实例 API 规格与官方 UHostInstance 未必完全一致——首次调用如
+    RetCode≠0，把 Message 反馈给开发按真实文档调 Action 名（当前默认
+    StopUHostInstance）。API 失败时 CloudManager 会自动回退 SSH shutdown 兜底。"""
     creds = _compshare_creds(config)
     if not creds:
-        return False, "云 API 凭据/Region/InstanceId 不齐，回退 SSH 关机。"
+        return False, "云 API 凭据/InstanceId 不齐（至少要 PublicKey + PrivateKey + InstanceId），回退 SSH 关机。"
     pk, sk = creds
-    j = ucloud_call(config.cs_endpoint or _UCLOUD_ENDPOINT, "StopUHostInstance", pk, sk,
-                     extra={"Region": config.cs_region, "Zone": config.cs_zone,
-                            "ProjectId": config.cs_project_id, "UHostId": config.cs_instance_id})
+    extras = _cs_optional_extras(config, include_zone=True)
+    extras["UHostId"] = config.cs_instance_id
+    j = ucloud_call(config.cs_endpoint or _UCLOUD_ENDPOINT, "StopUHostInstance", pk, sk, extra=extras)
     rc = j.get("RetCode")
     msg = j.get("Message") or ""
     if rc == 0:
@@ -296,11 +317,11 @@ def compshare_stop(config: CloudConfig) -> tuple[bool, str]:
 def compshare_start(config: CloudConfig) -> tuple[bool, str]:
     creds = _compshare_creds(config)
     if not creds:
-        return False, "云 API 凭据/Region/InstanceId 不齐。"
+        return False, "云 API 凭据/InstanceId 不齐（至少要 PublicKey + PrivateKey + InstanceId）。"
     pk, sk = creds
-    j = ucloud_call(config.cs_endpoint or _UCLOUD_ENDPOINT, "StartUHostInstance", pk, sk,
-                     extra={"Region": config.cs_region, "Zone": config.cs_zone,
-                            "ProjectId": config.cs_project_id, "UHostId": config.cs_instance_id})
+    extras = _cs_optional_extras(config, include_zone=True)
+    extras["UHostId"] = config.cs_instance_id
+    j = ucloud_call(config.cs_endpoint or _UCLOUD_ENDPOINT, "StartUHostInstance", pk, sk, extra=extras)
     rc = j.get("RetCode")
     msg = j.get("Message") or ""
     if rc == 0:
@@ -314,9 +335,9 @@ def compshare_state(config: CloudConfig) -> str:
     if not creds:
         return ""
     pk, sk = creds
-    j = ucloud_call(config.cs_endpoint or _UCLOUD_ENDPOINT, "DescribeUHostInstance", pk, sk,
-                     extra={"Region": config.cs_region, "ProjectId": config.cs_project_id,
-                            "UHostIds.0": config.cs_instance_id})
+    extras = _cs_optional_extras(config, include_zone=False)
+    extras["UHostIds.0"] = config.cs_instance_id
+    j = ucloud_call(config.cs_endpoint or _UCLOUD_ENDPOINT, "DescribeUHostInstance", pk, sk, extra=extras)
     if j.get("RetCode") != 0:
         return ""
     sets = j.get("UHostSet") or []

@@ -888,24 +888,29 @@ footer b{color:var(--muted);font-weight:600}
           <label class="row mini" style="gap:6px"><input type="radio" name="cgProvider" value="ssh" checked onchange="onProviderChange()">SSH · sudo shutdown</label>
           <label class="row mini" style="gap:6px"><input type="radio" name="cgProvider" value="compshare" onchange="onProviderChange()">CompShare 云 API · StopUHostInstance（真正停机不计费）</label>
         </div>
+        <p class="hint" style="margin:6px 0 8px;line-height:1.8">
+          <b style="color:var(--gold)">对齐优云智算控制台：</b>
+          实例卡里点「ssh登录指令 ssh*****」旁的📋 → 粘贴的字符串形如 <code>ssh -p <b>34567</b> root@<b>117.50.190.54</b></code>，
+          <b>-p</b> 后是端口，<b>@</b> 后是主机；密码到「密码 *****」点👁/📋看明文。
+        </p>
         <div class="grid g2e" style="gap:8px">
           <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:60px">主机</span>
-            <input type="text" id="cgHost" placeholder="ssh.compshare.com 或 IP" style="flex:1"></div>
+            <input type="text" id="cgHost" placeholder="控制台「基础网络（外网）」的 IP，如 117.50.190.54" style="flex:1"></div>
           <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:60px">端口</span>
-            <input type="number" id="cgPort" value="22" min="1" max="65535" style="width:80px"></div>
+            <input type="number" id="cgPort" value="22" min="1" max="65535" style="width:80px" title="从「ssh登录指令」的 -p 后取；容器实例通常不是 22"></div>
           <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:60px">用户</span>
             <input type="text" id="cgUser" value="root" style="flex:1"></div>
           <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:60px">密码</span>
-            <input type="password" id="cgPass" placeholder="留空=不改；已设会显示 ✓" style="flex:1"></div>
+            <input type="password" id="cgPass" placeholder="控制台「密码」字段的明文（首次必填一次）" style="flex:1"></div>
         </div>
         <div class="row" style="gap:6px;margin-top:8px"><span class="mini" style="flex:none;width:60px">密钥</span>
           <input type="text" id="cgKey" placeholder="（可选）私钥路径，如 C:\Users\me\.ssh\id_ed25519（有则优先密码）" style="flex:1"></div>
         <div class="row" style="gap:6px;margin-top:8px"><span class="mini" style="flex:none;width:60px">唤醒命令</span>
-          <input type="text" id="cgWake" placeholder="登录服务器后要跑的命令，比如：nohup bash /root/start_dots.sh &" style="flex:1"></div>
+          <input type="text" id="cgWake" placeholder="机器开机后要跑的命令，比如：nohup bash /root/start_dots.sh &（关机状态 SSH 连不上，需先控制台点启动）" style="flex:1"></div>
         <div class="row" style="gap:6px;margin-top:8px"><span class="mini" style="flex:none;width:60px">关机命令</span>
           <input type="text" id="cgSleep" value="sudo shutdown -h now" style="flex:1"></div>
         <div class="row" style="gap:6px;margin-top:8px"><span class="mini" style="flex:none;width:60px">探活 URL</span>
-          <input type="text" id="cgHealth" placeholder="（可选）用来判定服务已上线，如 https://xxx.compshare.com/health" style="flex:1"></div>
+          <input type="text" id="cgHealth" placeholder="判定服务已上线的 URL，如 http://外网IP:8080/health；没 /health 就填服务根地址" style="flex:1"></div>
         <div class="row" style="gap:12px;margin-top:8px;flex-wrap:wrap">
           <label class="row mini" style="gap:6px"><input type="checkbox" id="cgEnabled">启用云 GPU 会话</label>
           <label class="row mini" style="gap:6px"><input type="checkbox" id="cgAuto" checked>空闲自动关机</label>
@@ -914,26 +919,46 @@ footer b{color:var(--muted);font-weight:600}
         </div>
         <!-- CompShare 云 API（默认折起；provider=compshare 时展开） -->
         <div id="cgCsBox" style="display:none;border-top:1px dashed var(--line);margin-top:10px;padding-top:10px">
-          <p class="hint" style="margin:0 0 8px">优云智算复用 UCloud OpenAPI 网关（<code>api.ucloud.cn</code>）；到控制台生成 API 密钥后填入。SecretKey 同样 DPAPI 加密后仅存本机。</p>
+          <p class="hint" style="margin:0 0 8px;line-height:1.8">
+            <b style="color:#e08c58">⚠ 未验证：</b>
+            优云智算的 GPU 容器实例 API 规格尚未在软件里对齐，此处默认按 UCloud OpenAPI（<code>api.ucloud.cn</code> · <code>StopUHostInstance</code>）尝试。
+            若报错，会自动回退 SSH shutdown 兜底；把返回的 <code>RetCode/Message</code> 反馈可按真实文档改。
+          </p>
+          <p class="hint" style="margin:0 0 8px;line-height:1.8">
+            <b style="color:var(--gold)">对齐控制台三处即可：</b>
+            <b>Public Key / Private Key</b> 到「API 密钥」页点📋复制；
+            <b>Instance ID</b> 到实例卡「ID: uhost-xxxxxxxx」点📋复制。
+            <a href="https://console.compshare.cn/light-gpu/api-keys" target="_blank" style="color:var(--gold);text-decoration:underline">🔑 打开 API 密钥页</a> ·
+            <a href="https://console.compshare.cn/light-gpu/instance" target="_blank" style="color:var(--gold);text-decoration:underline">🖥 打开实例列表</a>
+          </p>
           <div class="grid g2e" style="gap:8px">
-            <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:78px">API Endpoint</span>
-              <input type="text" id="csEndpoint" value="https://api.ucloud.cn/" style="flex:1"></div>
-            <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:78px">Region</span>
-              <input type="text" id="csRegion" placeholder="如 cn-bj2" style="flex:1"></div>
-            <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:78px">Zone</span>
-              <input type="text" id="csZone" placeholder="如 cn-bj2-04（部分 Action 需要）" style="flex:1"></div>
-            <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:78px">Project Id</span>
-              <input type="text" id="csProject" placeholder="（可选）项目 ID" style="flex:1"></div>
-            <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:78px">Instance Id</span>
-              <input type="text" id="csInstance" placeholder="如 uhost-xxxxxxxx" style="flex:1"></div>
-            <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:78px">Public Key</span>
-              <input type="text" id="csPub" placeholder="控制台 → API 密钥 · Public Key" style="flex:1"></div>
+            <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:88px">API Endpoint</span>
+              <input type="text" id="csEndpoint" value="https://api.ucloud.cn/" style="flex:1"
+                     title="默认 UCloud 网关；若优云智算文档给了独立 endpoint 请覆盖"></div>
+            <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:88px">Instance ID</span>
+              <input type="text" id="csInstance" placeholder="如 uhost-1tx6jx1ufb1a（图1「ID:」旁点📋）" style="flex:1"></div>
+            <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:88px">Public Key</span>
+              <input type="text" id="csPub" placeholder="控制台「API 密钥」→「公钥」列点📋" style="flex:1"></div>
+            <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:88px">Private Key</span>
+              <input type="password" id="csSec" placeholder="控制台「API 密钥」→「私钥」列点📋（DPAPI 本机加密）" style="flex:1"></div>
           </div>
-          <div class="row" style="gap:6px;margin-top:8px"><span class="mini" style="flex:none;width:78px">Private Key</span>
-            <input type="password" id="csSec" placeholder="留空=不改；已设会显示 ✓" style="flex:1"></div>
-          <div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap">
+          <!-- 高级：Region/Zone/Project 容器实例通常不需要；控制台文档若要求再填 -->
+          <p style="margin:10px 0 4px">
+            <span id="cgAdvToggle" style="cursor:pointer;color:var(--faint);font-size:12px;user-select:none" onclick="toggleCsAdv()">▸ 高级：Region / Zone / Project（容器实例通常留空即可）</span>
+          </p>
+          <div id="cgCsAdv" style="display:none">
+            <div class="grid g2e" style="gap:8px">
+              <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:88px">Region</span>
+                <input type="text" id="csRegion" placeholder="如 cn-bj2（华北二 A）；控制台文档若要求再填" style="flex:1"></div>
+              <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:88px">Zone</span>
+                <input type="text" id="csZone" placeholder="如 cn-bj2-04；仅 Start/Stop Action 可能需要" style="flex:1"></div>
+              <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:88px">Project Id</span>
+                <input type="text" id="csProject" placeholder="（可选）项目 ID；个人默认项目留空" style="flex:1"></div>
+            </div>
+          </div>
+          <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap">
             <button class="btn line" style="flex:none" onclick="cloudStartApi()">▶ 云 API 开机（Start）</button>
-            <span class="mini" style="color:var(--faint)">机器已关机时 SSH 连不上，必须走云 API 拉起来</span>
+            <span class="mini" style="color:var(--faint)">机器已关时 SSH 连不上，只有云 API 能远程拉起来</span>
           </div>
         </div>
         <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap">
@@ -2006,6 +2031,13 @@ function _pickProvider(){
 function onProviderChange(){
   const box=$('cgCsBox');
   if(box)box.style.display=(_pickProvider()==='compshare')?'block':'none';
+}
+function toggleCsAdv(){
+  const el=$('cgCsAdv'), t=$('cgAdvToggle');
+  if(!el||!t)return;
+  const open=el.style.display==='none';
+  el.style.display=open?'block':'none';
+  t.textContent=(open?'▾':'▸')+' 高级：Region / Zone / Project（容器实例通常留空即可）';
 }
 async function loadCloudGpu(){
   try{

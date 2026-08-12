@@ -274,7 +274,10 @@ class UiWiringTests(unittest.TestCase):
                         'id="cloudBadge"', "jumpToCloud", 'id="cgWakeBox"',
                         'name="cgProvider"', 'id="csPub"', 'id="csSec"',
                         'id="csRegion"', 'id="csInstance"', "cloudStartApi",
-                        "/api/cloud/start_api"):
+                        "/api/cloud/start_api",
+                        # 重做后：控制台跳转链接 + 高级折叠 + 对齐图1的填写指引
+                        "console.compshare.cn", "toggleCsAdv", 'id="cgCsAdv"',
+                        "ssh登录指令", "基础网络"):
             self.assertIn(marker, html, marker)
 
 
@@ -380,11 +383,12 @@ class ProviderDispatchTests(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_sleep_uses_compshare_when_creds_ready(self):
+        """新规则：只要 pub + private + instance 就算凭据齐（Region/Zone 不再强求，容器实例常留空）。"""
         with mock.patch.object(cloud_gpu, "_dpapi_available", return_value=False):
             cloud_gpu.save_cloud_config({
                 "enabled": True, "provider": "compshare",
                 "cs_public_key": "pk", "cs_private_key": "sk",
-                "cs_region": "cn-bj2", "cs_instance_id": "uhost-x",
+                "cs_instance_id": "uhost-x",   # 无 Region 也算齐
             })
         with mock.patch.object(cloud_gpu, "compshare_stop", return_value=(True, "OK")) as m_stop, \
              mock.patch.object(cloud_gpu, "ssh_exec", side_effect=AssertionError("SSH 不该被调用")):
@@ -392,12 +396,50 @@ class ProviderDispatchTests(unittest.TestCase):
         self.assertTrue(j["ok"])
         m_stop.assert_called_once()
 
+    def test_compshare_creds_requires_instance_id(self):
+        """反向：缺 InstanceId 就不算凭据齐——回退 SSH。"""
+        with mock.patch.object(cloud_gpu, "_dpapi_available", return_value=False):
+            cloud_gpu.save_cloud_config({
+                "enabled": True, "provider": "compshare",
+                "cs_public_key": "pk", "cs_private_key": "sk",
+                "cs_instance_id": "",   # 缺 → 不算齐
+                "host": "x", "password": "pw",
+            })
+        with mock.patch.object(cloud_gpu, "compshare_stop", side_effect=AssertionError("API 不该被调用")), \
+             mock.patch.object(cloud_gpu, "ssh_exec", return_value=(0, "", "")) as m_ssh:
+            cloud_gpu.manager().sleep(reason="test")
+        m_ssh.assert_called_once()
+
+    def test_compshare_call_omits_empty_optional_fields(self):
+        """Region/Zone/Project 空时**不**传给 API——避免签名把空串带进去。"""
+        with mock.patch.object(cloud_gpu, "_dpapi_available", return_value=False):
+            cloud_gpu.save_cloud_config({
+                "enabled": True, "provider": "compshare",
+                "cs_public_key": "pk", "cs_private_key": "sk",
+                "cs_instance_id": "uhost-y",
+                # 有意留空 cs_region / cs_zone / cs_project_id
+            })
+        cfg = cloud_gpu.load_cloud_config()
+        captured = {}
+
+        def fake_call(endpoint, action, pk, sk, extra=None, timeout=10.0):
+            captured["extra"] = dict(extra or {})
+            return {"RetCode": 0, "Message": ""}
+
+        with mock.patch.object(cloud_gpu, "ucloud_call", side_effect=fake_call):
+            ok, _ = cloud_gpu.compshare_stop(cfg)
+        self.assertTrue(ok)
+        self.assertNotIn("Region", captured["extra"])
+        self.assertNotIn("Zone", captured["extra"])
+        self.assertNotIn("ProjectId", captured["extra"])
+        self.assertEqual(captured["extra"].get("UHostId"), "uhost-y")
+
     def test_sleep_falls_back_to_ssh_when_api_fails(self):
         with mock.patch.object(cloud_gpu, "_dpapi_available", return_value=False):
             cloud_gpu.save_cloud_config({
                 "enabled": True, "provider": "compshare",
                 "cs_public_key": "pk", "cs_private_key": "sk",
-                "cs_region": "cn-bj2", "cs_instance_id": "uhost-x",
+                "cs_instance_id": "uhost-x",
                 "sleep_cmd": "sudo shutdown -h now", "host": "x",
                 "password": "pw",
             })
