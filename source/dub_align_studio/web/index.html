@@ -265,8 +265,9 @@ footer b{color:var(--muted);font-weight:600}
     <div style="margin-top:14px;border-top:1px solid var(--line);padding-top:14px">
       <div class="grid g2e" style="gap:14px">
         <div>
-          <span class="f">🔊 配音总音量 <span class="val" id="mVolV">100%</span></span>
-          <input type="range" id="mVol" min="0" max="200" step="5" value="100" oninput="onMixChange()">
+          <span class="f">🔊 配音总音量 <span class="val" id="mVolV">120%</span>
+            <span class="mini" style="color:var(--faint);margin-left:8px">默认 120%（新用户默认基准；旧预设按保存值还原）</span></span>
+          <input type="range" id="mVol" min="0" max="200" step="5" value="120" oninput="onMixChange()">
         </div>
         <div>
           <span class="f">🎬 原视频音效音量 <span class="val" id="oVolV">100%</span>
@@ -2182,7 +2183,7 @@ function getMasterSeconds(){
 function collectAudio(){
   const bgmFile=$('bgmSel')?.value||'';
   return {
-    master_volume:num($('mVol').value,100)/100,
+    master_volume:num($('mVol').value,120)/100,
     orig_video_volume:num($('oVol')?.value,100)/100,   // 原视频音效音量：0=关，1=原音
     bgm:bgmFile?{file:bgmFile,volume:num($('bVol').value,35)/100,loop:$('bLoop').checked}:null,
     sfx:sfxCues.map(c=>({file:c.file,at:+c.at||0,volume:(c.volume==null?1:+c.volume)}))
@@ -2195,7 +2196,7 @@ function onMixChange(){
   $('bgmCtl').style.display=$('bgmSel').value?'flex':'none';
   // 试听中实时改总音量/BGM 音量（无需重新试听）——各路独立增益，BGM 不受音效影响
   if(mixPlaying){
-    if(mixGains.master)mixGains.master.gain.value=num($('mVol').value,100)/100;
+    if(mixGains.master)mixGains.master.gain.value=num($('mVol').value,120)/100;
     if(mixGains.bgm)mixGains.bgm.gain.value=num($('bVol').value,35)/100;
     // 原视频音效仅在成片渲染时生效；试听是前端 Web Audio 合成 master+BGM+SFX，
     // 不含真实分镜视频，所以此处**不联动增益**——避免给出"能试听到"的错觉。
@@ -2305,7 +2306,7 @@ async function toggleMixPreview(){
     const t0=actx.currentTime+0.06;
     const dur=masterBuf?masterBuf.duration:getMasterSeconds();
     mixNodes=[];mixGains={master:null,bgm:null,sfx:[]};
-    if(masterBuf)mixGains.master=schedule(masterBuf,t0,num($('mVol').value,100)/100,false,0);
+    if(masterBuf)mixGains.master=schedule(masterBuf,t0,num($('mVol').value,120)/100,false,0);
     if(bgmBuf)mixGains.bgm=schedule(bgmBuf,t0,num($('bVol').value,35)/100,$('bLoop').checked,dur);
     sfxCues.forEach((c,i)=>{if(sfxBufs[i])mixGains.sfx[i]=schedule(sfxBufs[i],t0+(+c.at||0),(c.volume==null?1:+c.volume),false,0);});
     mixPlaying=true;$('mixPlay').textContent='⏹ 停止试听';
@@ -2335,7 +2336,8 @@ function collectConfig(){
 // 还原音频设置（总音量/原视频音效/BGM/音效）——作品预设与待编辑队列选中项共用
 function restoreAudio(a){
   if(!a)return;
-  $('mVol').value=Math.round((a.master_volume??1)*100);
+  // 新基准 120%；老预设有明确 master_volume（含 1.0）时按保存值还原，只有字段缺失才用 1.2
+  $('mVol').value=Math.round((a.master_volume==null?1.2:+a.master_volume)*100);
   // 旧预设/旧队列项无 orig_video_volume 字段 → 按 100% 兜底（与新默认一致，避免重烧时突然没声）
   if($('oVol'))$('oVol').value=Math.round(((a.orig_video_volume==null?1:+a.orig_video_volume))*100);
   if(a.bgm){$('bgmSel').value=a.bgm.file||'';$('bVol').value=Math.round((a.bgm.volume??.35)*100);$('bLoop').checked=a.bgm.loop!==false;}

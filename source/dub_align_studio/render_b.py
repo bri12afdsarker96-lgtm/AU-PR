@@ -89,6 +89,23 @@ class RenderConfig:
     ffprobe: str = "ffprobe"
     mode: str = DEFAULT_MODE
 
+    def __post_init__(self):
+        """把 ffmpeg/ffprobe 冻结成**绝对路径**（能解析到就用；解析不到保留原值，
+        由 _require_binaries 给友好中文错）。调用方即使传裸名或忘了走 make_render_config，
+        也不会因子进程时的 CWD 抖动而报「找不到 ffmpeg」——这是用户在长队列渲染中偶发失败的
+        直接触发。settings 延迟 import 以避免 render_b ↔ settings 循环。"""
+        for attr, tool in (("ffmpeg", "ffmpeg"), ("ffprobe", "ffprobe")):
+            cur = getattr(self, attr, "")
+            if cur and Path(cur).is_absolute() and Path(cur).is_file():
+                continue  # 已是可用绝对路径，不动
+            try:
+                from . import settings as _s
+                resolved = _s.ffmpeg_tool(tool)
+            except Exception:  # noqa: BLE001
+                continue
+            if resolved and Path(resolved).is_absolute() and Path(resolved).is_file():
+                object.__setattr__(self, attr, resolved)
+
 
 @dataclass
 class ShotPlan:
@@ -515,9 +532,11 @@ _FFMPEG_HINT = (
 
 
 def _require_binaries(config: "RenderConfig") -> None:
-    """渲染前预检 ffmpeg/ffprobe；缺失时给看得懂的中文指引，而非裸 WinError 2。"""
+    """渲染前预检 ffmpeg/ffprobe；缺失时给看得懂的中文指引，而非裸 WinError 2。
+    RenderConfig.__post_init__ 已尽力冻结成绝对路径；这里 which 兜底一次 PATH，
+    仍找不到才判缺失——避免"文件明明存在但 PATH 不含"这种误报。"""
     missing = [name for name, exe in (("ffmpeg", config.ffmpeg), ("ffprobe", config.ffprobe))
-               if shutil.which(exe) is None]
+               if not (Path(exe).is_absolute() and Path(exe).is_file()) and shutil.which(exe) is None]
     if missing:
         raise RuntimeError(_FFMPEG_HINT.format(miss=" 与 ".join(missing)))
 
@@ -528,12 +547,45 @@ def _guard_missing(exc: FileNotFoundError, command: list[str]) -> RuntimeError:
     return RuntimeError(_FFMPEG_HINT.format(miss=Path(exe).name))
 
 
+def _resolve_exe_last_ditch(name_or_path: str) -> str | None:
+    """子进程 FileNotFoundError 兜底：再走一次 settings.ffmpeg_tool 扫已知目录。
+    命令首字段若是裸名或已失效相对路径，尝试拿回一条绝对可执行路径；解析不到返 None。
+    settings 延迟 import 以避免循环。"""
+    tool = Path(name_or_path).name
+    stem = tool.lower()
+    if stem.startswith("ffprobe"):
+        which_name = "ffprobe"
+    elif stem.startswith("ffmpeg"):
+        which_name = "ffmpeg"
+    else:
+        return None
+    try:
+        from . import settings as _s
+        resolved = _s.ffmpeg_tool(which_name)
+    except Exception:  # noqa: BLE001
+        return None
+    if resolved and Path(resolved).is_absolute() and Path(resolved).is_file():
+        return resolved
+    fallback = shutil.which(which_name)
+    return fallback
+
+
 # ------------------------------------------------------------------ 子进程
 def _run(command: list[str], label: str) -> None:
     try:
         completed = run_silent(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
     except FileNotFoundError as exc:
-        raise _guard_missing(exc, command) from exc
+        # 兜底一次：CWD 抖动或 config 里是相对名时，主动搜绝对路径重试；仍失败给友好指引。
+        resolved = _resolve_exe_last_ditch(command[0] if command else "")
+        if resolved and resolved != command[0]:
+            try:
+                completed = run_silent([resolved] + command[1:],
+                                        capture_output=True, text=True,
+                                        encoding="utf-8", errors="replace")
+            except FileNotFoundError as exc2:
+                raise _guard_missing(exc2, command) from exc2
+        else:
+            raise _guard_missing(exc, command) from exc
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "").strip()[-2000:]
         raise RuntimeError(f"{label}失败：{detail or '未知错误'}")
@@ -543,7 +595,16 @@ def _run_out(command: list[str], label: str, allow_empty: bool = False) -> str:
     try:
         completed = run_silent(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
     except FileNotFoundError as exc:
-        raise _guard_missing(exc, command) from exc
+        resolved = _resolve_exe_last_ditch(command[0] if command else "")
+        if resolved and resolved != command[0]:
+            try:
+                completed = run_silent([resolved] + command[1:],
+                                        capture_output=True, text=True,
+                                        encoding="utf-8", errors="replace")
+            except FileNotFoundError as exc2:
+                raise _guard_missing(exc2, command) from exc2
+        else:
+            raise _guard_missing(exc, command) from exc
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "").strip()[-2000:]
         raise RuntimeError(f"{label}失败：{detail or '未知错误'}")

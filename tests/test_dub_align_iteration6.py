@@ -1,7 +1,9 @@
 """第六轮迭代测试：音频混流(BGM循环/音效定点/音量) 纯逻辑 + 素材与配置端点 + UI 契约。"""
 
 import json
+import os
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -11,8 +13,9 @@ import urllib.parse
 import urllib.request
 import wave
 from pathlib import Path
+from unittest import mock
 
-from dub_align_studio import audio_mix, settings as studio_settings, web_server
+from dub_align_studio import audio_mix, render_b, settings as studio_settings, web_server
 from dub_align_studio.audio_mix import AudioMix, BgmTrack, SfxCue
 
 
@@ -193,7 +196,79 @@ class AssetAndConfigEndpointTests(unittest.TestCase):
         self.assertIn("落盘验证", json.loads(preset_file.read_text(encoding="utf-8")))
 
 
+class RenderConfigFfmpegResolutionTests(unittest.TestCase):
+    """RenderConfig 归一化 ffmpeg 路径：无论调用方传裸名还是忘了走 make_render_config，
+    只要机器上装了 ffmpeg，任务过程中就不该因 PATH/CWD 变化报「找不到 ffmpeg」。"""
+
+    def test_post_init_resolves_bare_names_to_absolute(self):
+        tmp = Path(tempfile.mkdtemp(prefix="ffmpeg_stub_"))
+        try:
+            fake_ffmpeg = tmp / ("ffmpeg.exe" if sys.platform == "win32" else "ffmpeg")
+            fake_ffprobe = tmp / ("ffprobe.exe" if sys.platform == "win32" else "ffprobe")
+            fake_ffmpeg.write_text("stub")
+            fake_ffprobe.write_text("stub")
+            os.chmod(fake_ffmpeg, 0o755)
+            os.chmod(fake_ffprobe, 0o755)
+            # 让 settings.ffmpeg_tool 命中我们的假 ffmpeg（把 tmp 塞进已知目录之首）
+            with mock.patch.object(studio_settings, "ffmpeg_tool",
+                                    side_effect=lambda name="ffmpeg":
+                                        str(tmp / (name + (".exe" if sys.platform == "win32" else "")))):
+                cfg = render_b.RenderConfig()  # 默认 ffmpeg="ffmpeg" / ffprobe="ffprobe"
+            self.assertEqual(cfg.ffmpeg, str(fake_ffmpeg))
+            self.assertEqual(cfg.ffprobe, str(fake_ffprobe))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_post_init_keeps_working_absolute_path(self):
+        """已给绝对可执行路径时不覆盖——避免每次实例化都跑一遍全盘搜。"""
+        tmp = Path(tempfile.mkdtemp(prefix="ffmpeg_keep_"))
+        try:
+            good = tmp / ("ffmpeg" + (".exe" if sys.platform == "win32" else ""))
+            good.write_text("x")
+            os.chmod(good, 0o755)
+            called = {"n": 0}
+
+            def _spy(name="ffmpeg"):
+                called["n"] += 1
+                return "/nowhere"
+
+            with mock.patch.object(studio_settings, "ffmpeg_tool", side_effect=_spy):
+                cfg = render_b.RenderConfig(ffmpeg=str(good), ffprobe=str(good))
+            self.assertEqual(cfg.ffmpeg, str(good))
+            self.assertEqual(called["n"], 0)   # 有效绝对路径 → 不再问 settings
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_last_ditch_resolver_recognizes_variants(self):
+        """_resolve_exe_last_ditch：ffmpeg.exe / ffmpeg / 相对路径 都要能识别成 ffmpeg。"""
+        tmp = Path(tempfile.mkdtemp(prefix="ffmpeg_last_"))
+        try:
+            real = tmp / ("ffmpeg" + (".exe" if sys.platform == "win32" else ""))
+            real.write_text("x")
+            os.chmod(real, 0o755)
+            with mock.patch.object(studio_settings, "ffmpeg_tool",
+                                    side_effect=lambda name="ffmpeg": str(real)):
+                self.assertEqual(render_b._resolve_exe_last_ditch("ffmpeg"), str(real))
+                self.assertEqual(render_b._resolve_exe_last_ditch("ffmpeg.exe"), str(real))
+                self.assertEqual(render_b._resolve_exe_last_ditch("./ffmpeg"), str(real))
+            # 非 ffmpeg 系列返回 None，不越界解析（比如 whisper-cli）
+            self.assertIsNone(render_b._resolve_exe_last_ditch("whisper-cli"))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 class UiAudioContractTests(unittest.TestCase):
+    def test_mvol_default_is_120_percent(self):
+        """配音总音量滑杆默认 120%（用户 2026-08 反馈：100% 感觉太闷，把新基准调到 120%）。
+        用正则捕获 mVol 那一行，确认 value="120"——纯搜 'value="120"' 会误命中别处。"""
+        import re
+        html = (Path(web_server.__file__).parent / "web" / "index.html").read_text(encoding="utf-8")
+        match = re.search(r'<input[^>]*id="mVol"[^>]*>', html)
+        self.assertIsNotNone(match, "缺失 mVol 滑杆")
+        self.assertIn('value="120"', match.group(0))
+        # 显示文本也应为 120%
+        self.assertRegex(html, r'id="mVolV">120%</span>')
+
     def test_index_wires_audio_and_config(self):
         html = (Path(web_server.__file__).parent / "web" / "index.html").read_text(encoding="utf-8")
         for marker in ('id="mVol"', 'id="bgmSel"', 'id="sfxTrack"', "toggleMixPreview",
