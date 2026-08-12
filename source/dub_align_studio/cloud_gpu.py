@@ -19,9 +19,12 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import threading
 import time
+import urllib.parse
+import urllib.request
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -36,6 +39,9 @@ _TICK_SECONDS = 30.0           # 看门狗心跳间隔
 _PROBE_TIMEOUT = 4.0           # 探活 HTTP 请求超时（秒）
 _SSH_TIMEOUT = 15.0            # SSH 连接超时（秒）
 _SSH_EXEC_TIMEOUT = 60.0       # 单条命令执行超时（秒）
+_WAKE_TIMEOUT_SECONDS = 5 * 60 # 唤醒等待就绪最长（秒）
+_WAKE_POLL_INTERVAL = 5.0      # 唤醒等待就绪的探活轮询间隔（秒）
+_UCLOUD_ENDPOINT = "https://api.ucloud.cn/"   # 默认 UCloud OpenAPI base；优云智算复用同一网关
 
 
 # ────────────────────────────────────────────────────────────────── 凭据加密
@@ -106,17 +112,27 @@ def credential_mode() -> str:
 @dataclass
 class CloudConfig:
     enabled: bool = False
+    provider: str = "ssh"          # 'ssh' | 'compshare'（compshare 走 UCloud OpenAPI 真正停机）
     host: str = ""
     port: int = 22
     user: str = "root"
     password_cipher: str = ""      # encrypt_str 的产物
     key_path: str = ""             # 私钥文件路径（优先于密码）
-    wake_cmd: str = ""             # 唤醒后要执行的命令（比如启动 dots.tts 服务）
+    wake_cmd: str = ""             # SSH 唤醒后要执行的命令（比如启动 dots.tts 服务）
     sleep_cmd: str = "sudo shutdown -h now"
     health_url: str = ""           # 探活 URL（一般=dots_remote_endpoint + /health 或 /ping）
     idle_minutes: float = _DEFAULT_IDLE_MINUTES
     auto_sleep: bool = True        # 关掉即彻底手动
     idle_paused_until: float = 0.0 # 用户临时暂停自动关（epoch 秒；<=now 视为未暂停）
+    # CompShare / UCloud OpenAPI：填了 provider=compshare 就走 API 停机（不计费），
+    # 空缺退回 SSH shutdown。key/secret 同样 DPAPI 加密存储。
+    cs_endpoint: str = _UCLOUD_ENDPOINT
+    cs_public_key: str = ""
+    cs_private_key_cipher: str = ""
+    cs_project_id: str = ""
+    cs_region: str = ""            # 例："cn-bj2"
+    cs_zone: str = ""              # 例："cn-bj2-04"（部分 Action 需要）
+    cs_instance_id: str = ""       # 例："uhost-xxxxxxxx"
 
 
 def load_cloud_config() -> CloudConfig:
@@ -139,17 +155,22 @@ def load_cloud_config() -> CloudConfig:
 
 
 def save_cloud_config(update: dict) -> CloudConfig:
-    """合并保存云 GPU 配置。password 明文来时自动加密；password_cipher 传空串=清空。
+    """合并保存云 GPU 配置。password / cs_private_key 明文来时自动加密；空串=清空。
 
     换机后 dpapi 密文变空还原——需重设密码；这是 DPAPI 用户级作用域的既有约束。"""
     current = asdict(load_cloud_config())
     if "password" in update:
         pw = str(update.pop("password") or "")
         current["password_cipher"] = encrypt_str(pw) if pw else ""
+    if "cs_private_key" in update:
+        sk = str(update.pop("cs_private_key") or "")
+        current["cs_private_key_cipher"] = encrypt_str(sk) if sk else ""
     for key, val in update.items():
         if key not in CloudConfig.__dataclass_fields__:
             continue
         current[key] = val
+    prov = str(current.get("provider") or "ssh").lower()
+    current["provider"] = prov if prov in ("ssh", "compshare") else "ssh"
     # 归一化数字类型（前端可能传字符串）
     try:
         current["port"] = int(current.get("port") or 22)
@@ -216,6 +237,92 @@ def ssh_exec(config: CloudConfig, command: str, timeout: float = _SSH_EXEC_TIMEO
         return rc, out, err
     finally:
         client.close()
+
+
+# ────────────────────────────────────────────────────────────────── UCloud/CompShare OpenAPI
+def ucloud_signature(params: dict, private_key: str) -> str:
+    """UCloud 官方签名算法：把参数按 key 字典序拼成 k1v1k2v2... 后追加 private_key，取 SHA1 hex。
+    优云智算复用同一网关，签名规则一致；若你的账号走不同的端点，只需改 cs_endpoint。"""
+    items = sorted((str(k), str(v)) for k, v in params.items() if v is not None and v != "")
+    joined = "".join(f"{k}{v}" for k, v in items)
+    return hashlib.sha1((joined + private_key).encode("utf-8")).hexdigest()
+
+
+def ucloud_call(endpoint: str, action: str, public_key: str, private_key: str,
+                extra: dict | None = None, timeout: float = 10.0) -> dict:
+    """通用 UCloud OpenAPI 调用；返回解析后的 JSON（含 RetCode/Message/…）。
+    RetCode != 0 时保留返回值给上层，让 UI 显示原文，不改字段避免与官方文档失配。"""
+    params: dict = {"Action": action, "PublicKey": public_key}
+    if extra:
+        params.update({k: v for k, v in extra.items() if v is not None and v != ""})
+    params["Signature"] = ucloud_signature(params, private_key)
+    url = endpoint.rstrip("/") + "/?" + urllib.parse.urlencode(params)
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+    except Exception as exc:  # noqa: BLE001
+        return {"RetCode": -1, "Message": f"HTTP 请求失败：{exc}"}
+    try:
+        return json.loads(body)
+    except Exception:  # noqa: BLE001
+        return {"RetCode": -1, "Message": f"响应非 JSON：{body[:400]}"}
+
+
+def _compshare_creds(config: CloudConfig) -> tuple[str, str] | None:
+    """返回 (public_key, private_key) 或 None（凭据不全）。"""
+    pk = (config.cs_public_key or "").strip()
+    sk = decrypt_str(config.cs_private_key_cipher)
+    if not pk or not sk or not (config.cs_region or "").strip() or not (config.cs_instance_id or "").strip():
+        return None
+    return pk, sk
+
+
+def compshare_stop(config: CloudConfig) -> tuple[bool, str]:
+    """走 UCloud OpenAPI 停机（等价"控制台点关机"，不再计费）。"""
+    creds = _compshare_creds(config)
+    if not creds:
+        return False, "云 API 凭据/Region/InstanceId 不齐，回退 SSH 关机。"
+    pk, sk = creds
+    j = ucloud_call(config.cs_endpoint or _UCLOUD_ENDPOINT, "StopUHostInstance", pk, sk,
+                     extra={"Region": config.cs_region, "Zone": config.cs_zone,
+                            "ProjectId": config.cs_project_id, "UHostId": config.cs_instance_id})
+    rc = j.get("RetCode")
+    msg = j.get("Message") or ""
+    if rc == 0:
+        return True, f"云 API StopUHostInstance 已下发（{config.cs_instance_id}）。"
+    return False, f"云 API StopUHostInstance 失败 RetCode={rc}：{msg}"
+
+
+def compshare_start(config: CloudConfig) -> tuple[bool, str]:
+    creds = _compshare_creds(config)
+    if not creds:
+        return False, "云 API 凭据/Region/InstanceId 不齐。"
+    pk, sk = creds
+    j = ucloud_call(config.cs_endpoint or _UCLOUD_ENDPOINT, "StartUHostInstance", pk, sk,
+                     extra={"Region": config.cs_region, "Zone": config.cs_zone,
+                            "ProjectId": config.cs_project_id, "UHostId": config.cs_instance_id})
+    rc = j.get("RetCode")
+    msg = j.get("Message") or ""
+    if rc == 0:
+        return True, f"云 API StartUHostInstance 已下发（{config.cs_instance_id}）。"
+    return False, f"云 API StartUHostInstance 失败 RetCode={rc}：{msg}"
+
+
+def compshare_state(config: CloudConfig) -> str:
+    """查询实例当前 State（Running / Stopped / Starting / Stopping / …）。空串=查询失败。"""
+    creds = _compshare_creds(config)
+    if not creds:
+        return ""
+    pk, sk = creds
+    j = ucloud_call(config.cs_endpoint or _UCLOUD_ENDPOINT, "DescribeUHostInstance", pk, sk,
+                     extra={"Region": config.cs_region, "ProjectId": config.cs_project_id,
+                            "UHostIds.0": config.cs_instance_id})
+    if j.get("RetCode") != 0:
+        return ""
+    sets = j.get("UHostSet") or []
+    if not sets:
+        return ""
+    return str(sets[0].get("State") or "")
 
 
 def http_probe(url: str, timeout: float = _PROBE_TIMEOUT) -> bool:
@@ -309,10 +416,24 @@ class IdleWatchdog:
 
 
 # ────────────────────────────────────────────────────────────────── 管理器（web_server 唯一入口）
+@dataclass
+class WakeState:
+    """异步唤醒工作线程的进度快照——供前端顶栏灯 + 进度条读取。"""
+    stage: str = "idle"        # idle / starting / probing / ready / failed
+    started_at: float = 0.0
+    updated_at: float = 0.0
+    elapsed: float = 0.0
+    attempts: int = 0          # 探活尝试次数
+    message: str = ""
+
+
 class CloudManager:
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._last_status: dict = {"state": "unknown", "message": ""}
+        self._last_status: dict = {"action": "", "ok": False, "message": "", "at": 0.0}
+        self._wake_state = WakeState()
+        self._wake_lock = threading.Lock()
+        self._wake_thread: threading.Thread | None = None
         self._watchdog = IdleWatchdog(load_cloud_config, self._auto_sleep_now)
         self._watchdog.start()
 
@@ -323,10 +444,14 @@ class CloudManager:
         auto_paused = bool(config.idle_paused_until and self._watchdog._now() < float(config.idle_paused_until))
         with self._lock:
             snapshot = dict(self._last_status)
+        with self._wake_lock:
+            wake = asdict(self._wake_state)
         # 探活（可选）：health_url 有值则实时探
         alive = http_probe(config.health_url) if config.health_url else None
+        cs_ready = bool(_compshare_creds(config))
         return {
             "enabled": config.enabled,
+            "provider": config.provider,
             "host": config.host,
             "port": config.port,
             "user": config.user,
@@ -343,6 +468,15 @@ class CloudManager:
             "idle_seconds": round(idle_seconds, 1),
             "alive": alive,
             "last_action": snapshot,
+            "wake_state": wake,
+            "cs_ready": cs_ready,
+            "cs_endpoint": config.cs_endpoint,
+            "cs_public_key": config.cs_public_key,
+            "cs_project_id": config.cs_project_id,
+            "cs_region": config.cs_region,
+            "cs_zone": config.cs_zone,
+            "cs_instance_id": config.cs_instance_id,
+            "has_cs_secret": bool(config.cs_private_key_cipher),
         }
 
     def mark_active(self) -> None:
@@ -350,31 +484,45 @@ class CloudManager:
 
     # ---- 动作 ----
     def wake(self) -> dict:
-        config = load_cloud_config()
-        self.mark_active()   # 唤醒即活跃
-        if not config.wake_cmd.strip():
-            return self._record("wake", ok=False, message="未配置唤醒命令。")
-        try:
-            rc, out, err = ssh_exec(config, config.wake_cmd)
-        except SshUnavailable as exc:
-            return self._record("wake", ok=False, message=str(exc))
-        detail = (out or err or "").strip()[:2000]
-        if rc != 0:
-            return self._record("wake", ok=False, message=f"唤醒命令 rc={rc}：{detail or '无输出'}")
-        return self._record("wake", ok=True, message=detail or "唤醒指令已下发。")
+        """异步唤醒：立即返回；后台线程执行 ssh + 轮询 health_url。
+        再次点击时若上一轮在跑就复用当前进度，不并发多个 wake 工作线程。"""
+        self.mark_active()
+        with self._wake_lock:
+            if self._wake_thread and self._wake_thread.is_alive():
+                snap = asdict(self._wake_state)
+                return {"started": False, "message": "唤醒已在进行中…", "wake_state": snap}
+            now = self._watchdog._now()
+            self._wake_state = WakeState(stage="starting", started_at=now, updated_at=now,
+                                          message="正在通过 SSH 下发唤醒命令…")
+            self._wake_thread = threading.Thread(target=self._wake_worker, name="cloud-wake",
+                                                  daemon=True)
+            self._wake_thread.start()
+            snap = asdict(self._wake_state)
+        return {"started": True, "wake_state": snap}
 
     def sleep(self, reason: str = "manual") -> dict:
+        """按 provider 分派：compshare 走 UCloud API 停机（真正停机不计费）；
+        ssh 走 sudo shutdown。CompShare 凭据不齐时自动回退 SSH，保证总有兜底。"""
         config = load_cloud_config()
-        if not config.sleep_cmd.strip():
-            return self._record("sleep", ok=False, message="未配置关机命令。")
-        try:
-            # shutdown 命令通常在通道关闭后才关机；不等 rc 严格判定，只要 SSH 通过即视为已下发
-            rc, out, err = ssh_exec(config, config.sleep_cmd, timeout=10.0)
-        except SshUnavailable as exc:
-            return self._record("sleep", ok=False, message=f"[{reason}] {exc}")
-        detail = (out or err or "").strip()[:2000]
-        # shutdown 命令 rc 常见非 0（连接被服务器主动断），仍视为下发成功
-        return self._record("sleep", ok=True, message=f"[{reason}] 关机指令已下发（rc={rc}）。{detail}".strip())
+        if config.provider == "compshare" and _compshare_creds(config):
+            ok, msg = compshare_stop(config)
+            if ok:
+                return self._record("sleep", ok=True, message=f"[{reason}] {msg}")
+            # 云 API 失败 → 回退 SSH，避免"忘关"计费
+            fallback = self._ssh_sleep(config, reason=f"{reason} · cloud-api-fallback")
+            fallback["message"] = f"云 API 失败：{msg}；已回退 SSH：{fallback.get('message', '')}"
+            return fallback
+        return self._ssh_sleep(config, reason)
+
+    def start_via_api(self) -> dict:
+        """用 UCloud API 开机（前提：实例是 Stopped 状态）。SSH 无法完成这一步——
+        机器已关机时 SSH 连不上；对已释放/暂停计费的实例，只有云 API 能拉起来。"""
+        config = load_cloud_config()
+        if config.provider != "compshare" or not _compshare_creds(config):
+            return self._record("start_api", ok=False, message="未启用 CompShare provider 或凭据不齐。")
+        ok, msg = compshare_start(config)
+        self.mark_active()
+        return self._record("start_api", ok=ok, message=msg)
 
     def pause_auto(self, minutes: float) -> dict:
         """暂停自动关机 N 分钟；minutes<=0 表示取消暂停。"""
@@ -384,6 +532,18 @@ class CloudManager:
         return self.status()
 
     # ---- 内部 ----
+    def _ssh_sleep(self, config: CloudConfig, reason: str) -> dict:
+        if not config.sleep_cmd.strip():
+            return self._record("sleep", ok=False, message="未配置 SSH 关机命令。")
+        try:
+            rc, out, err = ssh_exec(config, config.sleep_cmd, timeout=10.0)
+        except SshUnavailable as exc:
+            return self._record("sleep", ok=False, message=f"[{reason}] {exc}")
+        detail = (out or err or "").strip()[:2000]
+        # shutdown 命令 rc 常见非 0（连接被服务器主动断），仍视为下发成功
+        return self._record("sleep", ok=True,
+                             message=f"[{reason}] 关机指令已下发（rc={rc}）。{detail}".strip())
+
     def _auto_sleep_now(self) -> None:
         self.sleep(reason="auto-idle")
 
@@ -392,6 +552,55 @@ class CloudManager:
         with self._lock:
             self._last_status = entry
         return entry
+
+    # ---- wake 工作线程 ----
+    def _wake_update(self, **fields) -> None:
+        with self._wake_lock:
+            now = self._watchdog._now()
+            for k, v in fields.items():
+                setattr(self._wake_state, k, v)
+            self._wake_state.updated_at = now
+            if self._wake_state.started_at:
+                self._wake_state.elapsed = round(now - self._wake_state.started_at, 1)
+
+    def _wake_worker(self) -> None:
+        config = load_cloud_config()
+        # 阶段 1：SSH 下发唤醒（若配了；不配就跳到探活阶段）
+        if config.wake_cmd.strip():
+            self._wake_update(stage="starting", message="SSH 下发唤醒命令…")
+            try:
+                rc, out, err = ssh_exec(config, config.wake_cmd)
+            except SshUnavailable as exc:
+                self._wake_update(stage="failed", message=str(exc))
+                self._record("wake", ok=False, message=str(exc))
+                return
+            if rc != 0:
+                snippet = (out or err or "").strip()[:400]
+                msg = f"唤醒命令 rc={rc}：{snippet or '无输出'}"
+                self._wake_update(stage="failed", message=msg)
+                self._record("wake", ok=False, message=msg)
+                return
+        # 阶段 2：无探活 URL → 直接就绪；有则轮询直至 200 或超时
+        if not config.health_url.strip():
+            self._wake_update(stage="ready", message="唤醒命令已下发（未配置探活 URL）。")
+            self._record("wake", ok=True, message="唤醒指令已下发。")
+            return
+        self._wake_update(stage="probing", message="等待服务上线（每 5 秒探活一次）…")
+        deadline = self._watchdog._now() + _WAKE_TIMEOUT_SECONDS
+        attempts = 0
+        while self._watchdog._now() < deadline:
+            attempts += 1
+            self._wake_update(attempts=attempts, message=f"探活第 {attempts} 次…")
+            if http_probe(config.health_url):
+                msg = f"服务已上线（探活 {attempts} 次后就绪）。"
+                self._wake_update(stage="ready", message=msg)
+                self._record("wake", ok=True, message=msg)
+                return
+            # 用 stop_event.wait 更快响应停止（沿用 watchdog 的机制）
+            time.sleep(_WAKE_POLL_INTERVAL)
+        msg = f"等待服务上线超时（{attempts} 次探活，{_WAKE_TIMEOUT_SECONDS}s）。"
+        self._wake_update(stage="failed", message=msg)
+        self._record("wake", ok=False, message=msg)
 
 
 _MANAGER: CloudManager | None = None

@@ -224,7 +224,12 @@ footer b{color:var(--muted);font-weight:600}
   <div class="bar">
     <div class="mark" aria-hidden="true"></div>
     <div class="brand"><b>水星配音对齐工作室</b><i>MERCURY&nbsp;DUB&nbsp;ALIGN</i></div>
-    <div class="flags"><span class="flag" id="verFlag" title="版本 · 打包时间 · 提交号">v—</span><span class="flag">整篇克隆</span><span class="flag">逐行对齐</span><span class="flag">本地离线</span></div>
+    <div class="flags">
+      <span class="flag" id="verFlag" title="版本 · 打包时间 · 提交号">v—</span>
+      <!-- 云 GPU 顶栏灯：点即跳工具箱定位面板；文案由 loadCloudGpu() 实时刷 -->
+      <span class="flag" id="cloudBadge" title="点击到「工具箱」调整云 GPU 会话"
+            style="cursor:pointer;background:#333;color:#ccc" onclick="jumpToCloud()">☁ 未启用</span>
+      <span class="flag">整篇克隆</span><span class="flag">逐行对齐</span><span class="flag">本地离线</span></div>
   </div>
   <nav id="nav">
     <button data-p="p1" class="on">一键成片</button>
@@ -872,12 +877,17 @@ footer b{color:var(--muted);font-weight:600}
         <p class="hint" id="remoteHint" style="line-height:1.8;margin-top:2px">填好后到「配音引擎」下拉里选 <b style="color:var(--gold)">dots.tts（云 GPU · 远程）</b> 即可用云显卡克隆。部署见 <code>server/</code> 目录的部署文档。</p></div>
 
       <!-- ═══ 云 GPU 会话（优云智算 / 通用 SSH）：一键唤醒 · 一键关机 · 空闲自动关（DPAPI 本机加密） ═══ -->
-      <div class="sp"><span class="f">🖥 云 GPU 会话（SSH 唤醒/关机，避免手工登录）</span>
+      <div class="sp" id="cloudGpuAnchor"><span class="f">🖥 云 GPU 会话（SSH 唤醒 / 关机 · 可选 CompShare 云 API 停机不计费）</span>
         <p class="hint" style="margin:2px 0 10px">
           密码经 <b>Windows DPAPI</b> 加密后仅存本机（换机需重设）；
           任务活跃时不触发自动关，空闲 <b><span id="cgIdleMinDisp">5</span></b> 分钟才关。
           <span id="cgCredWarn" style="color:#e08c58;display:none">·（当前机器无 DPAPI，密码降级明文存储）</span>
         </p>
+        <div class="row" style="gap:12px;margin-bottom:8px;flex-wrap:wrap">
+          <span class="mini" style="flex:none">停机方式</span>
+          <label class="row mini" style="gap:6px"><input type="radio" name="cgProvider" value="ssh" checked onchange="onProviderChange()">SSH · sudo shutdown</label>
+          <label class="row mini" style="gap:6px"><input type="radio" name="cgProvider" value="compshare" onchange="onProviderChange()">CompShare 云 API · StopUHostInstance（真正停机不计费）</label>
+        </div>
         <div class="grid g2e" style="gap:8px">
           <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:60px">主机</span>
             <input type="text" id="cgHost" placeholder="ssh.compshare.com 或 IP" style="flex:1"></div>
@@ -902,12 +912,45 @@ footer b{color:var(--muted);font-weight:600}
           <span class="mini">空闲阈值(分钟) <input type="number" id="cgIdleMin" value="5" min="1" max="240" style="width:60px" oninput="document.getElementById('cgIdleMinDisp').textContent=this.value"></span>
           <button class="btn line" style="flex:none" onclick="saveCloudGpu()">💾 保存云 GPU 配置</button>
         </div>
+        <!-- CompShare 云 API（默认折起；provider=compshare 时展开） -->
+        <div id="cgCsBox" style="display:none;border-top:1px dashed var(--line);margin-top:10px;padding-top:10px">
+          <p class="hint" style="margin:0 0 8px">优云智算复用 UCloud OpenAPI 网关（<code>api.ucloud.cn</code>）；到控制台生成 API 密钥后填入。SecretKey 同样 DPAPI 加密后仅存本机。</p>
+          <div class="grid g2e" style="gap:8px">
+            <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:78px">API Endpoint</span>
+              <input type="text" id="csEndpoint" value="https://api.ucloud.cn/" style="flex:1"></div>
+            <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:78px">Region</span>
+              <input type="text" id="csRegion" placeholder="如 cn-bj2" style="flex:1"></div>
+            <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:78px">Zone</span>
+              <input type="text" id="csZone" placeholder="如 cn-bj2-04（部分 Action 需要）" style="flex:1"></div>
+            <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:78px">Project Id</span>
+              <input type="text" id="csProject" placeholder="（可选）项目 ID" style="flex:1"></div>
+            <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:78px">Instance Id</span>
+              <input type="text" id="csInstance" placeholder="如 uhost-xxxxxxxx" style="flex:1"></div>
+            <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:78px">Public Key</span>
+              <input type="text" id="csPub" placeholder="控制台 → API 密钥 · Public Key" style="flex:1"></div>
+          </div>
+          <div class="row" style="gap:6px;margin-top:8px"><span class="mini" style="flex:none;width:78px">Private Key</span>
+            <input type="password" id="csSec" placeholder="留空=不改；已设会显示 ✓" style="flex:1"></div>
+          <div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap">
+            <button class="btn line" style="flex:none" onclick="cloudStartApi()">▶ 云 API 开机（Start）</button>
+            <span class="mini" style="color:var(--faint)">机器已关机时 SSH 连不上，必须走云 API 拉起来</span>
+          </div>
+        </div>
         <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap">
           <span class="badge" id="cgBadge" style="background:#333;color:#ccc">未启用</span>
           <button class="btn gold" style="flex:none" onclick="cloudWake()">▶ 唤醒服务器</button>
           <button class="btn" style="flex:none" onclick="cloudSleep()">⏹ 立即关机</button>
           <button class="btn line" style="flex:none" onclick="cloudPauseAuto(30)">⏸ 暂停自动关 30 分钟</button>
           <button class="btn line" style="flex:none" onclick="cloudPauseAuto(0)">▶ 取消暂停</button>
+        </div>
+        <!-- 唤醒进度条：wake_state.stage != idle 时展示 -->
+        <div id="cgWakeBox" style="display:none;margin-top:10px;padding:10px 12px;border-radius:8px;background:#1e2432;border:1px solid var(--line2)">
+          <div class="row" style="gap:8px">
+            <span class="mini" style="flex:none">唤醒进度</span>
+            <span class="mini" id="cgWakeStage" style="flex:none;color:var(--gold);font-weight:700">—</span>
+            <span class="mini" id="cgWakeElapsed" style="flex:none;color:var(--faint)">0s</span>
+            <span class="mini" id="cgWakeMsg" style="flex:1;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+          </div>
         </div>
         <p class="hint" id="cgHint" style="margin-top:6px;line-height:1.7">—— 未加载 ——</p>
       </div>
@@ -1955,15 +1998,23 @@ async function saveRemote(){
   toast('已保存云配音配置','ok');
   loadSettings();loadState();
 }
-/* ── 云 GPU 会话（SSH 唤醒/关机） ── */
+/* ── 云 GPU 会话（SSH 唤醒/关机 + CompShare 云 API 停机） ── */
+function _pickProvider(){
+  const r=document.querySelector('input[name="cgProvider"]:checked');
+  return r?r.value:'ssh';
+}
+function onProviderChange(){
+  const box=$('cgCsBox');
+  if(box)box.style.display=(_pickProvider()==='compshare')?'block':'none';
+}
 async function loadCloudGpu(){
   try{
     const s=await (await fetch('/api/cloud/status')).json();
     if(s.error){$('cgHint').textContent=s.error;return;}
+    // SSH 字段
     if($('cgHost'))$('cgHost').value=s.host||'';
     if($('cgPort'))$('cgPort').value=s.port||22;
     if($('cgUser'))$('cgUser').value=s.user||'root';
-    if($('cgKey'))$('cgKey').value=s.wake_cmd==null?$('cgKey').value:(s.key_path||'');
     if($('cgWake'))$('cgWake').value=s.wake_cmd||'';
     if($('cgSleep'))$('cgSleep').value=s.sleep_cmd||'sudo shutdown -h now';
     if($('cgHealth'))$('cgHealth').value=s.health_url||'';
@@ -1972,19 +2023,41 @@ async function loadCloudGpu(){
     if($('cgIdleMin')){$('cgIdleMin').value=s.idle_minutes||5;$('cgIdleMinDisp').textContent=$('cgIdleMin').value;}
     if($('cgPass'))$('cgPass').placeholder=s.has_password?'密码已存 ✓（留空=不改；重填=覆盖；DPAPI 本机加密）':'密码（首次必填一次）';
     if($('cgCredWarn'))$('cgCredWarn').style.display=(s.credential_mode==='dpapi')?'none':'inline';
-    // 状态徽标
-    let label='未启用', bg='#333', fg='#ccc';
-    if(s.enabled){
-      if(s.alive===true){label='🟢 在线'; bg='#1e5c3a'; fg='#dff5e6';}
-      else if(s.alive===false){label='⚫ 未响应'; bg='#5c1e1e'; fg='#f5dfe0';}
-      else{label='🟡 已配置（未探活）'; bg='#5c4a1e'; fg='#fbeecd';}
-      if(s.auto_paused)label+=' · 自动关已暂停';
+    // Provider 单选
+    const prov=s.provider||'ssh';
+    document.querySelectorAll('input[name="cgProvider"]').forEach(r=>{r.checked=(r.value===prov);});
+    onProviderChange();
+    // CompShare 字段
+    if($('csEndpoint'))$('csEndpoint').value=s.cs_endpoint||'https://api.ucloud.cn/';
+    if($('csRegion'))$('csRegion').value=s.cs_region||'';
+    if($('csZone'))$('csZone').value=s.cs_zone||'';
+    if($('csProject'))$('csProject').value=s.cs_project_id||'';
+    if($('csInstance'))$('csInstance').value=s.cs_instance_id||'';
+    if($('csPub'))$('csPub').value=s.cs_public_key||'';
+    if($('csSec'))$('csSec').placeholder=s.has_cs_secret?'Private Key 已存 ✓（留空=不改；DPAPI 本机加密）':'Private Key（首次必填一次）';
+    // 状态徽标 + 顶栏灯（复用同一算法）
+    const label=_cloudLabel(s);
+    if($('cgBadge')){$('cgBadge').textContent=label.text;$('cgBadge').style.background=label.bg;$('cgBadge').style.color=label.fg;}
+    if($('cloudBadge')){$('cloudBadge').textContent='☁ '+label.text;$('cloudBadge').style.background=label.bg;$('cloudBadge').style.color=label.fg;
+      $('cloudBadge').title=label.tooltip;}
+    // 唤醒进度：stage != idle 时显示
+    const w=s.wake_state||{};
+    const box=$('cgWakeBox');
+    if(box){
+      const active=(w.stage&&w.stage!=='idle');
+      box.style.display=active?'block':'none';
+      if(active){
+        const zh={starting:'🚀 SSH 下发中',probing:'⏳ 探活中',ready:'✅ 就绪',failed:'❌ 失败'};
+        $('cgWakeStage').textContent=zh[w.stage]||w.stage;
+        $('cgWakeElapsed').textContent=Math.round(w.elapsed||0)+'s'+(w.attempts?(' · 探活 '+w.attempts+' 次'):'');
+        $('cgWakeMsg').textContent=w.message||'';
+      }
     }
-    if($('cgBadge')){$('cgBadge').textContent=label;$('cgBadge').style.background=bg;$('cgBadge').style.color=fg;}
     // 详细提示
     const bits=[];
+    bits.push('停机方式：'+(prov==='compshare'?('CompShare 云 API '+(s.cs_ready?'✓':'（凭据/Region/Instance 缺）')):'SSH shutdown'));
     bits.push(`空闲已 ${Math.round(s.idle_seconds||0)}s / 阈值 ${s.idle_minutes}min`);
-    if(s.last_action&&s.last_action.action)bits.push(`上次动作：${s.last_action.action} · ${s.last_action.ok?'成功':'失败'} · ${esc(s.last_action.message||'').slice(0,120)}`);
+    if(s.last_action&&s.last_action.action)bits.push(`上次动作：${s.last_action.action} · ${s.last_action.ok?'成功':'失败'} · ${esc(s.last_action.message||'').slice(0,140)}`);
     if(s.auto_paused&&s.idle_paused_until){
       const remain=Math.max(0,s.idle_paused_until-Date.now()/1000);
       bits.push(`暂停自动关 · 剩余 ${Math.round(remain/60)}min`);
@@ -1992,9 +2065,30 @@ async function loadCloudGpu(){
     if($('cgHint'))$('cgHint').innerHTML=bits.join(' · ');
   }catch(e){if($('cgHint'))$('cgHint').textContent='加载状态失败：'+String(e);}
 }
+function _cloudLabel(s){
+  if(!s.enabled)return {text:'未启用',bg:'#333',fg:'#ccc',tooltip:'云 GPU 会话未启用，去「工具箱」开启'};
+  const w=s.wake_state||{};
+  if(w.stage==='starting'||w.stage==='probing')
+    return {text:'🚀 唤醒中',bg:'#4a3c1a',fg:'#fbeecd',tooltip:'正在唤醒服务器：'+(w.message||'')};
+  if(s.alive===true)return {text:'🟢 在线'+(s.auto_paused?' · 已暂停自动关':''),bg:'#1e5c3a',fg:'#dff5e6',tooltip:'服务已上线'};
+  if(s.alive===false)return {text:'⚫ 未响应',bg:'#5c1e1e',fg:'#f5dfe0',tooltip:'探活失败，可能已关机或服务未起'};
+  return {text:'🟡 已配置',bg:'#5c4a1e',fg:'#fbeecd',tooltip:'未配置探活 URL，无法判定在线状态'};
+}
+function jumpToCloud(){
+  // 顶栏灯点击 → 切到工具箱页 + 滚到面板 + 高亮
+  const btn=document.querySelector('#nav button[data-p="p4"]');
+  if(btn)btn.click();
+  const anchor=$('cloudGpuAnchor');
+  if(anchor){
+    setTimeout(()=>{anchor.scrollIntoView({behavior:'smooth',block:'start'});
+      anchor.style.transition='box-shadow .3s';anchor.style.boxShadow='0 0 0 2px var(--gold)';
+      setTimeout(()=>{anchor.style.boxShadow='';},1800);},80);
+  }
+}
 async function saveCloudGpu(){
   const body={
     enabled:$('cgEnabled').checked,
+    provider:_pickProvider(),
     host:$('cgHost').value.trim(),
     port:+$('cgPort').value||22,
     user:$('cgUser').value.trim()||'root',
@@ -2004,13 +2098,28 @@ async function saveCloudGpu(){
     health_url:$('cgHealth').value.trim(),
     idle_minutes:+$('cgIdleMin').value||5,
     auto_sleep:$('cgAuto').checked,
+    // CompShare 字段
+    cs_endpoint:$('csEndpoint')?$('csEndpoint').value.trim():'',
+    cs_region:$('csRegion')?$('csRegion').value.trim():'',
+    cs_zone:$('csZone')?$('csZone').value.trim():'',
+    cs_project_id:$('csProject')?$('csProject').value.trim():'',
+    cs_instance_id:$('csInstance')?$('csInstance').value.trim():'',
+    cs_public_key:$('csPub')?$('csPub').value.trim():'',
   };
-  if($('cgPass').value!=='')body.password=$('cgPass').value;   // 明文进入后端立即 DPAPI 加密
+  if($('cgPass').value!=='')body.password=$('cgPass').value;      // 明文进入后端立即 DPAPI 加密
+  if($('csSec')&&$('csSec').value!=='')body.cs_private_key=$('csSec').value;
   const j=await (await fetch('/api/cloud/save',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify(body)})).json();
   if(j.error){alert(j.error);return;}
   $('cgPass').value='';
+  if($('csSec'))$('csSec').value='';
   toast('已保存云 GPU 配置','ok');
+  loadCloudGpu();
+}
+async function cloudStartApi(){
+  const j=await (await fetch('/api/cloud/start_api',{method:'POST'})).json();
+  if(j.error){alert(j.error);return;}
+  toast((j.ok?'✅ ':'⛔ ')+(j.message||''),j.ok?'ok':'err');
   loadCloudGpu();
 }
 async function cloudWake(){

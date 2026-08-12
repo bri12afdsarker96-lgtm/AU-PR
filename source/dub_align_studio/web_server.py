@@ -1011,6 +1011,9 @@ class _Handler(BaseHTTPRequestHandler):
                     minutes = float(payload.get("minutes") or 0.0)
                     self._json(cloud_gpu.manager().pause_auto(minutes))
                     return
+                if route == "/api/cloud/start_api":
+                    self._json(cloud_gpu.manager().start_via_api())
+                    return
             except Exception as exc:
                 self._json({"error": f"云 GPU 操作失败：{exc}"}, 500)
                 return

@@ -237,10 +237,21 @@ class CloudApiEndpointsTests(unittest.TestCase):
         self.assertNotIn("S3cret!", raw)
 
     def test_wake_without_cmd_reports_friendly(self):
-        self._post("/api/cloud/save", {"enabled": True, "host": "x", "wake_cmd": ""})
+        """wake 改成异步：立即返 started；未配 wake_cmd 也不能崩，直接就绪（等同 no-op）。"""
+        self._post("/api/cloud/save", {"enabled": True, "host": "x", "wake_cmd": "",
+                                        "health_url": ""})
         j = self._post("/api/cloud/wake", {})
-        self.assertFalse(j["ok"])
-        self.assertIn("未配置", j["message"])
+        self.assertTrue(j.get("started"))
+        # 等到 worker 结束（wake_cmd 空、health_url 空 → 直接 ready）
+        import time as _t
+        deadline = _t.time() + 2.0
+        while _t.time() < deadline:
+            st = json.loads(urllib.request.urlopen(self.base + "/api/cloud/status").read())
+            if st["wake_state"]["stage"] in ("ready", "failed"):
+                break
+            _t.sleep(0.05)
+        st = json.loads(urllib.request.urlopen(self.base + "/api/cloud/status").read())
+        self.assertEqual(st["wake_state"]["stage"], "ready")
 
     def test_pause_auto_and_resume(self):
         self._post("/api/cloud/save", {"enabled": True, "host": "x", "wake_cmd": "true",
@@ -258,8 +269,157 @@ class UiWiringTests(unittest.TestCase):
                         'id="cgSleep"', 'id="cgEnabled"', 'id="cgAuto"', 'id="cgIdleMin"',
                         "saveCloudGpu", "cloudWake", "cloudSleep", "cloudPauseAuto",
                         "loadCloudGpu", "/api/cloud/status", "/api/cloud/save",
-                        "/api/cloud/wake", "/api/cloud/sleep", "/api/cloud/pause_auto"):
+                        "/api/cloud/wake", "/api/cloud/sleep", "/api/cloud/pause_auto",
+                        # 顶栏灯 + 唤醒进度 + CompShare provider 字段（本轮升级）
+                        'id="cloudBadge"', "jumpToCloud", 'id="cgWakeBox"',
+                        'name="cgProvider"', 'id="csPub"', 'id="csSec"',
+                        'id="csRegion"', 'id="csInstance"', "cloudStartApi",
+                        "/api/cloud/start_api"):
             self.assertIn(marker, html, marker)
+
+
+class WakeWorkerTests(unittest.TestCase):
+    """异步 wake：状态机 starting → probing → ready/failed；失败路径也要写 last_action。"""
+
+    def setUp(self):
+        self._backup = studio_settings.SETTINGS_FILE
+        self.tmp = Path(tempfile.mkdtemp(prefix="wake_"))
+        studio_settings.SETTINGS_FILE = self.tmp / "settings.json"
+        cloud_gpu.reset_manager_for_tests()
+
+    def tearDown(self):
+        cloud_gpu.reset_manager_for_tests()
+        studio_settings.SETTINGS_FILE = self._backup
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _wait_for_stage(self, mgr, stages, timeout=3.0):
+        import time as _t
+        deadline = _t.time() + timeout
+        while _t.time() < deadline:
+            st = mgr.status()["wake_state"]["stage"]
+            if st in stages:
+                return st
+            _t.sleep(0.02)
+        return mgr.status()["wake_state"]["stage"]
+
+    def test_ready_when_ssh_ok_and_probe_hits(self):
+        cloud_gpu.save_cloud_config({"enabled": True, "host": "x", "wake_cmd": "true",
+                                       "health_url": "http://x/health"})
+        with mock.patch.object(cloud_gpu, "ssh_exec", return_value=(0, "started", "")), \
+             mock.patch.object(cloud_gpu, "http_probe", return_value=True):
+            mgr = cloud_gpu.manager()
+            mgr.wake()
+            stage = self._wait_for_stage(mgr, ("ready", "failed"))
+        self.assertEqual(stage, "ready")
+        # 就绪后 last_action 也要写好，供 UI 显示
+        self.assertTrue(mgr.status()["last_action"]["ok"])
+
+    def test_ready_when_no_probe_url(self):
+        cloud_gpu.save_cloud_config({"enabled": True, "host": "x", "wake_cmd": "true",
+                                       "health_url": ""})
+        with mock.patch.object(cloud_gpu, "ssh_exec", return_value=(0, "", "")):
+            mgr = cloud_gpu.manager()
+            mgr.wake()
+            stage = self._wait_for_stage(mgr, ("ready", "failed"))
+        self.assertEqual(stage, "ready")
+
+    def test_failed_when_ssh_rc_nonzero(self):
+        cloud_gpu.save_cloud_config({"enabled": True, "host": "x", "wake_cmd": "false"})
+        with mock.patch.object(cloud_gpu, "ssh_exec", return_value=(1, "", "err")):
+            mgr = cloud_gpu.manager()
+            mgr.wake()
+            stage = self._wait_for_stage(mgr, ("ready", "failed"))
+        self.assertEqual(stage, "failed")
+        self.assertFalse(mgr.status()["last_action"]["ok"])
+
+    def test_second_wake_reuses_running(self):
+        """连点两次唤醒，第二次要看到 started=False，不并发多个 worker。"""
+        cloud_gpu.save_cloud_config({"enabled": True, "host": "x", "wake_cmd": "true",
+                                       "health_url": "http://x/health"})
+        # 让 http_probe 永远 False，wake 会持续 probing
+        with mock.patch.object(cloud_gpu, "ssh_exec", return_value=(0, "", "")), \
+             mock.patch.object(cloud_gpu, "http_probe", return_value=False):
+            mgr = cloud_gpu.manager()
+            first = mgr.wake()
+            second = mgr.wake()
+            self.assertTrue(first["started"])
+            self.assertFalse(second["started"])
+
+
+class UCloudSignatureTests(unittest.TestCase):
+    def test_sign_matches_reference(self):
+        """UCloud 官方签名规则：字典序拼接 kv 后加 private_key 取 SHA1 hex。锁死这一等式。"""
+        import hashlib
+        params = {"Action": "CreateUHostInstance",
+                   "PublicKey": "ucloudsomeone@example.com1296235120854146120",
+                   "Region": "cn-bj2"}
+        sig = cloud_gpu.ucloud_signature(params, "46f09bb9fab4f12dfc160dae12273d5332b5debe")
+        plain = ("ActionCreateUHostInstance"
+                  "PublicKeyucloudsomeone@example.com1296235120854146120"
+                  "Regioncn-bj2"
+                  "46f09bb9fab4f12dfc160dae12273d5332b5debe")
+        self.assertEqual(sig, hashlib.sha1(plain.encode("utf-8")).hexdigest())
+
+    def test_none_and_empty_values_excluded(self):
+        """空串/None 不参与签名，避免不同请求签名漂移。"""
+        sig1 = cloud_gpu.ucloud_signature({"A": "1", "B": ""}, "k")
+        sig2 = cloud_gpu.ucloud_signature({"A": "1"}, "k")
+        self.assertEqual(sig1, sig2)
+
+
+class ProviderDispatchTests(unittest.TestCase):
+    def setUp(self):
+        self._backup = studio_settings.SETTINGS_FILE
+        self.tmp = Path(tempfile.mkdtemp(prefix="prov_"))
+        studio_settings.SETTINGS_FILE = self.tmp / "settings.json"
+        cloud_gpu.reset_manager_for_tests()
+
+    def tearDown(self):
+        cloud_gpu.reset_manager_for_tests()
+        studio_settings.SETTINGS_FILE = self._backup
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_sleep_uses_compshare_when_creds_ready(self):
+        with mock.patch.object(cloud_gpu, "_dpapi_available", return_value=False):
+            cloud_gpu.save_cloud_config({
+                "enabled": True, "provider": "compshare",
+                "cs_public_key": "pk", "cs_private_key": "sk",
+                "cs_region": "cn-bj2", "cs_instance_id": "uhost-x",
+            })
+        with mock.patch.object(cloud_gpu, "compshare_stop", return_value=(True, "OK")) as m_stop, \
+             mock.patch.object(cloud_gpu, "ssh_exec", side_effect=AssertionError("SSH 不该被调用")):
+            j = cloud_gpu.manager().sleep(reason="test")
+        self.assertTrue(j["ok"])
+        m_stop.assert_called_once()
+
+    def test_sleep_falls_back_to_ssh_when_api_fails(self):
+        with mock.patch.object(cloud_gpu, "_dpapi_available", return_value=False):
+            cloud_gpu.save_cloud_config({
+                "enabled": True, "provider": "compshare",
+                "cs_public_key": "pk", "cs_private_key": "sk",
+                "cs_region": "cn-bj2", "cs_instance_id": "uhost-x",
+                "sleep_cmd": "sudo shutdown -h now", "host": "x",
+                "password": "pw",
+            })
+        with mock.patch.object(cloud_gpu, "compshare_stop", return_value=(False, "配额超限")), \
+             mock.patch.object(cloud_gpu, "ssh_exec", return_value=(0, "bye", "")) as m_ssh:
+            j = cloud_gpu.manager().sleep(reason="test")
+        self.assertTrue(j["ok"])
+        m_ssh.assert_called_once()
+        self.assertIn("回退 SSH", j["message"])
+
+    def test_sleep_uses_ssh_when_provider_ssh(self):
+        cloud_gpu.save_cloud_config({"enabled": True, "provider": "ssh", "host": "x",
+                                       "sleep_cmd": "sudo shutdown -h now"})
+        with mock.patch.object(cloud_gpu, "ssh_exec", return_value=(0, "bye", "")) as m_ssh:
+            cloud_gpu.manager().sleep(reason="test")
+        m_ssh.assert_called_once()
+
+    def test_start_api_requires_compshare(self):
+        cloud_gpu.save_cloud_config({"enabled": True, "provider": "ssh"})
+        j = cloud_gpu.manager().start_via_api()
+        self.assertFalse(j["ok"])
+        self.assertIn("CompShare", j["message"])
 
 
 if __name__ == "__main__":
