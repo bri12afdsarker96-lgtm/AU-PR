@@ -377,6 +377,12 @@ def _gen_queue_clear_finished() -> int:
 
 def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 —— 沿用旧函数体的 JOB 名
     log = JOB.append
+    # 云 GPU 空闲看门狗：每次任务起手/收尾都刷活跃时间，避免任务跑到一半被误关
+    try:
+        from . import cloud_gpu
+        cloud_gpu.manager().mark_active()
+    except Exception:  # noqa: BLE001
+        pass
     try:
         text = str(payload.get("text") or "")
         output_dir = Path(str(payload.get("output_dir") or "")) if payload.get("output_dir") else None
@@ -754,6 +760,12 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
         with JOB.lock:
             JOB.running = False
             JOB.done = True
+        # 任务收尾再打一次活跃点：从"刚结束"起算 5 分钟才空闲，避免任务刚完就被误关
+        try:
+            from . import cloud_gpu
+            cloud_gpu.manager().mark_active()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 # ------------------------------------------------------------------ HTTP
@@ -906,6 +918,10 @@ class _Handler(BaseHTTPRequestHandler):
                                 "detail": "渲染就绪。" if ff else "未找到 ffmpeg/ffprobe，无法渲染成片。"})
             self._json({"components": statuses})
             return
+        if route == "/api/cloud/status":
+            from . import cloud_gpu
+            self._json(cloud_gpu.manager().status())
+            return
         self._json({"error": "not found"}, 404)
 
     def do_POST(self) -> None:
@@ -971,6 +987,34 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(out)
             except Exception as exc:
                 self._json({"error": f"保存失败：{exc}"}, 400)
+            return
+        if route.startswith("/api/cloud/") and route != "/api/cloud/status":
+            from . import cloud_gpu
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}") if length else {}
+            except Exception as exc:
+                self._json({"error": f"参数解析失败：{exc}"}, 400)
+                return
+            try:
+                if route == "/api/cloud/save":
+                    cloud_gpu.save_cloud_config(payload)
+                    self._json(cloud_gpu.manager().status())
+                    return
+                if route == "/api/cloud/wake":
+                    self._json(cloud_gpu.manager().wake())
+                    return
+                if route == "/api/cloud/sleep":
+                    self._json(cloud_gpu.manager().sleep(reason="manual"))
+                    return
+                if route == "/api/cloud/pause_auto":
+                    minutes = float(payload.get("minutes") or 0.0)
+                    self._json(cloud_gpu.manager().pause_auto(minutes))
+                    return
+            except Exception as exc:
+                self._json({"error": f"云 GPU 操作失败：{exc}"}, 500)
+                return
+            self._json({"error": "not found"}, 404)
             return
         if route == "/api/fonts":
             query = {k: v[0] for k, v in parse_qs(parsed.query).items()}

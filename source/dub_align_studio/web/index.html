@@ -870,6 +870,47 @@ footer b{color:var(--muted);font-weight:600}
           <button class="btn" style="flex:none" onclick="testRemote()">🔌 测试连接</button>
         </div>
         <p class="hint" id="remoteHint" style="line-height:1.8;margin-top:2px">填好后到「配音引擎」下拉里选 <b style="color:var(--gold)">dots.tts（云 GPU · 远程）</b> 即可用云显卡克隆。部署见 <code>server/</code> 目录的部署文档。</p></div>
+
+      <!-- ═══ 云 GPU 会话（优云智算 / 通用 SSH）：一键唤醒 · 一键关机 · 空闲自动关（DPAPI 本机加密） ═══ -->
+      <div class="sp"><span class="f">🖥 云 GPU 会话（SSH 唤醒/关机，避免手工登录）</span>
+        <p class="hint" style="margin:2px 0 10px">
+          密码经 <b>Windows DPAPI</b> 加密后仅存本机（换机需重设）；
+          任务活跃时不触发自动关，空闲 <b><span id="cgIdleMinDisp">5</span></b> 分钟才关。
+          <span id="cgCredWarn" style="color:#e08c58;display:none">·（当前机器无 DPAPI，密码降级明文存储）</span>
+        </p>
+        <div class="grid g2e" style="gap:8px">
+          <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:60px">主机</span>
+            <input type="text" id="cgHost" placeholder="ssh.compshare.com 或 IP" style="flex:1"></div>
+          <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:60px">端口</span>
+            <input type="number" id="cgPort" value="22" min="1" max="65535" style="width:80px"></div>
+          <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:60px">用户</span>
+            <input type="text" id="cgUser" value="root" style="flex:1"></div>
+          <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:60px">密码</span>
+            <input type="password" id="cgPass" placeholder="留空=不改；已设会显示 ✓" style="flex:1"></div>
+        </div>
+        <div class="row" style="gap:6px;margin-top:8px"><span class="mini" style="flex:none;width:60px">密钥</span>
+          <input type="text" id="cgKey" placeholder="（可选）私钥路径，如 C:\Users\me\.ssh\id_ed25519（有则优先密码）" style="flex:1"></div>
+        <div class="row" style="gap:6px;margin-top:8px"><span class="mini" style="flex:none;width:60px">唤醒命令</span>
+          <input type="text" id="cgWake" placeholder="登录服务器后要跑的命令，比如：nohup bash /root/start_dots.sh &" style="flex:1"></div>
+        <div class="row" style="gap:6px;margin-top:8px"><span class="mini" style="flex:none;width:60px">关机命令</span>
+          <input type="text" id="cgSleep" value="sudo shutdown -h now" style="flex:1"></div>
+        <div class="row" style="gap:6px;margin-top:8px"><span class="mini" style="flex:none;width:60px">探活 URL</span>
+          <input type="text" id="cgHealth" placeholder="（可选）用来判定服务已上线，如 https://xxx.compshare.com/health" style="flex:1"></div>
+        <div class="row" style="gap:12px;margin-top:8px;flex-wrap:wrap">
+          <label class="row mini" style="gap:6px"><input type="checkbox" id="cgEnabled">启用云 GPU 会话</label>
+          <label class="row mini" style="gap:6px"><input type="checkbox" id="cgAuto" checked>空闲自动关机</label>
+          <span class="mini">空闲阈值(分钟) <input type="number" id="cgIdleMin" value="5" min="1" max="240" style="width:60px" oninput="document.getElementById('cgIdleMinDisp').textContent=this.value"></span>
+          <button class="btn line" style="flex:none" onclick="saveCloudGpu()">💾 保存云 GPU 配置</button>
+        </div>
+        <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap">
+          <span class="badge" id="cgBadge" style="background:#333;color:#ccc">未启用</span>
+          <button class="btn gold" style="flex:none" onclick="cloudWake()">▶ 唤醒服务器</button>
+          <button class="btn" style="flex:none" onclick="cloudSleep()">⏹ 立即关机</button>
+          <button class="btn line" style="flex:none" onclick="cloudPauseAuto(30)">⏸ 暂停自动关 30 分钟</button>
+          <button class="btn line" style="flex:none" onclick="cloudPauseAuto(0)">▶ 取消暂停</button>
+        </div>
+        <p class="hint" id="cgHint" style="margin-top:6px;line-height:1.7">—— 未加载 ——</p>
+      </div>
       <p class="hint">缺什么点击即可下载/安装（多源 + SHA256 校验 + 断点续传）；<b style="color:var(--gold)">多个下载可同时进行</b>，互不阻塞，进度在下方与各行实时显示。</p>
       <div id="compList"><p class="empty">读取中…</p></div>
       <div class="console" id="dlog" style="height:150px;margin-top:14px"><span class="dim">—— 下载/安装日志 · 多任务并行 ——</span></div>
@@ -1914,6 +1955,86 @@ async function saveRemote(){
   toast('已保存云配音配置','ok');
   loadSettings();loadState();
 }
+/* ── 云 GPU 会话（SSH 唤醒/关机） ── */
+async function loadCloudGpu(){
+  try{
+    const s=await (await fetch('/api/cloud/status')).json();
+    if(s.error){$('cgHint').textContent=s.error;return;}
+    if($('cgHost'))$('cgHost').value=s.host||'';
+    if($('cgPort'))$('cgPort').value=s.port||22;
+    if($('cgUser'))$('cgUser').value=s.user||'root';
+    if($('cgKey'))$('cgKey').value=s.wake_cmd==null?$('cgKey').value:(s.key_path||'');
+    if($('cgWake'))$('cgWake').value=s.wake_cmd||'';
+    if($('cgSleep'))$('cgSleep').value=s.sleep_cmd||'sudo shutdown -h now';
+    if($('cgHealth'))$('cgHealth').value=s.health_url||'';
+    if($('cgEnabled'))$('cgEnabled').checked=!!s.enabled;
+    if($('cgAuto'))$('cgAuto').checked=!!s.auto_sleep;
+    if($('cgIdleMin')){$('cgIdleMin').value=s.idle_minutes||5;$('cgIdleMinDisp').textContent=$('cgIdleMin').value;}
+    if($('cgPass'))$('cgPass').placeholder=s.has_password?'密码已存 ✓（留空=不改；重填=覆盖；DPAPI 本机加密）':'密码（首次必填一次）';
+    if($('cgCredWarn'))$('cgCredWarn').style.display=(s.credential_mode==='dpapi')?'none':'inline';
+    // 状态徽标
+    let label='未启用', bg='#333', fg='#ccc';
+    if(s.enabled){
+      if(s.alive===true){label='🟢 在线'; bg='#1e5c3a'; fg='#dff5e6';}
+      else if(s.alive===false){label='⚫ 未响应'; bg='#5c1e1e'; fg='#f5dfe0';}
+      else{label='🟡 已配置（未探活）'; bg='#5c4a1e'; fg='#fbeecd';}
+      if(s.auto_paused)label+=' · 自动关已暂停';
+    }
+    if($('cgBadge')){$('cgBadge').textContent=label;$('cgBadge').style.background=bg;$('cgBadge').style.color=fg;}
+    // 详细提示
+    const bits=[];
+    bits.push(`空闲已 ${Math.round(s.idle_seconds||0)}s / 阈值 ${s.idle_minutes}min`);
+    if(s.last_action&&s.last_action.action)bits.push(`上次动作：${s.last_action.action} · ${s.last_action.ok?'成功':'失败'} · ${esc(s.last_action.message||'').slice(0,120)}`);
+    if(s.auto_paused&&s.idle_paused_until){
+      const remain=Math.max(0,s.idle_paused_until-Date.now()/1000);
+      bits.push(`暂停自动关 · 剩余 ${Math.round(remain/60)}min`);
+    }
+    if($('cgHint'))$('cgHint').innerHTML=bits.join(' · ');
+  }catch(e){if($('cgHint'))$('cgHint').textContent='加载状态失败：'+String(e);}
+}
+async function saveCloudGpu(){
+  const body={
+    enabled:$('cgEnabled').checked,
+    host:$('cgHost').value.trim(),
+    port:+$('cgPort').value||22,
+    user:$('cgUser').value.trim()||'root',
+    key_path:$('cgKey').value.trim(),
+    wake_cmd:$('cgWake').value,
+    sleep_cmd:$('cgSleep').value,
+    health_url:$('cgHealth').value.trim(),
+    idle_minutes:+$('cgIdleMin').value||5,
+    auto_sleep:$('cgAuto').checked,
+  };
+  if($('cgPass').value!=='')body.password=$('cgPass').value;   // 明文进入后端立即 DPAPI 加密
+  const j=await (await fetch('/api/cloud/save',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body)})).json();
+  if(j.error){alert(j.error);return;}
+  $('cgPass').value='';
+  toast('已保存云 GPU 配置','ok');
+  loadCloudGpu();
+}
+async function cloudWake(){
+  const j=await (await fetch('/api/cloud/wake',{method:'POST'})).json();
+  if(j.error){alert(j.error);return;}
+  toast((j.ok?'✅ ':'⛔ ')+(j.message||'唤醒指令已下发'),j.ok?'ok':'err');
+  loadCloudGpu();
+}
+async function cloudSleep(){
+  if(!confirm('立即关机云 GPU 服务器？（若有任务未完成会被中断）'))return;
+  const j=await (await fetch('/api/cloud/sleep',{method:'POST'})).json();
+  if(j.error){alert(j.error);return;}
+  toast((j.ok?'✅ ':'⛔ ')+(j.message||'关机指令已下发'),j.ok?'ok':'err');
+  loadCloudGpu();
+}
+async function cloudPauseAuto(minutes){
+  await fetch('/api/cloud/pause_auto',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({minutes:+minutes||0})});
+  toast(minutes>0?('已暂停自动关 '+minutes+' 分钟'):'已恢复自动关','ok');
+  loadCloudGpu();
+}
+// 每 15 秒刷新云 GPU 状态（心跳）——不改 loadState，避免拖累现有节奏
+setInterval(()=>{try{loadCloudGpu();}catch(e){}},15000);
+
 async function testRemote(){
   $('remoteHint').innerHTML='测试中…（首次会等云端响应）';
   try{
@@ -2655,7 +2776,7 @@ function cvTplDel(){
 }
 function cvInit(){cvInitGrid9();cvTplList();cvSync();}
 
-renderMyColors();loadTpls();renderOverlays();loadState();loadComponents();loadSettings();loadFonts();loadClones();loadChunks();loadAssets();loadConfigs();cvInit();pollAll();  /* 载入时同步任务状态：刷新不丢日志/时间轴/下载进度 */
+renderMyColors();loadTpls();renderOverlays();loadState();loadComponents();loadSettings();loadFonts();loadClones();loadChunks();loadAssets();loadConfigs();loadCloudGpu();cvInit();pollAll();  /* 载入时同步任务状态：刷新不丢日志/时间轴/下载进度 */
 </script>
 </body>
 </html>
