@@ -128,14 +128,14 @@ echo [编译] Inno Setup 编译安装程序 ...
 if errorlevel 1 ( echo [失败] Inno 编译失败。看上方日志排查。& pause & exit /b 1 )
 
 echo.
-echo [完成②] 安装程序：%PKGROOT%\水星配音对齐工作室_轻量云配版安装程序_v%VER%.exe
+echo [完成②] 安装程序：发布包\水星配音对齐工作室_云配版安装程序_v%VER%.exe
 
 :DONE
 echo.
 echo ============================================================
 echo   全部完成
 echo   ① 目录版：%PKG%\
-echo   ② 安装程序：%PKGROOT%\水星配音对齐工作室_轻量云配版安装程序_v%VER%.exe（若装了 Inno Setup 6）
+echo   ② 安装程序：发布包\水星配音对齐工作室_云配版安装程序_v%VER%.exe（若装了 Inno Setup 6）
 echo ============================================================
 pause
 exit /b 0
