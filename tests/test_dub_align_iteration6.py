@@ -31,6 +31,10 @@ class AudioFiltergraphTests(unittest.TestCase):
         self.assertFalse(AudioMix(master_volume=0.5).is_trivial())
         self.assertFalse(AudioMix(bgm=BgmTrack(Path("b.wav"))).is_trivial())
         self.assertFalse(AudioMix(sfx=[SfxCue(Path("s.wav"))]).is_trivial())
+        # 原视频音效 > 0 也要视为非平凡：必须走 filter_complex 才能把 [0:a] 混入
+        # （旧版没这一路 → -an 剥音 → 用户抱怨「原视频音效被剪辑掉、音量控件失效」）
+        self.assertFalse(AudioMix(orig_video_volume=1.0).is_trivial())
+        self.assertFalse(AudioMix(orig_video_volume=0.35).is_trivial())
 
     def test_master_only_volume_graph(self):
         graph, out = audio_mix.build_audio_filtergraph(AudioMix(master_volume=0.5))
@@ -63,6 +67,41 @@ class AudioFiltergraphTests(unittest.TestCase):
     def test_volume_clamped(self):
         graph, _ = audio_mix.build_audio_filtergraph(AudioMix(master_volume=99))
         self.assertIn("volume=4.000", graph)  # 上限 4
+
+    def test_orig_video_audio_participates_when_volume_positive(self):
+        """orig_video_volume>0 时把 [0:a] 拉进 amix，volume 由该字段决定；
+        video_input=None 或 orig_video_volume=0 时**不**接入这一路（避免误引用不存在的音轨）。"""
+        graph, out = audio_mix.build_audio_filtergraph(
+            AudioMix(master_volume=1.0, orig_video_volume=0.4), master_input=1, video_input=0)
+        self.assertEqual(out, "[aout]")
+        self.assertIn("[0:a]volume=0.400", graph)
+        self.assertIn("amix=inputs=2", graph)  # master + 原视频音效
+        # video_input=None → 忽略这一路
+        graph2, _ = audio_mix.build_audio_filtergraph(
+            AudioMix(orig_video_volume=1.0), master_input=1, video_input=None)
+        self.assertNotIn("[0:a]", graph2)
+        # orig_video_volume<=0 → 忽略这一路（即使指定了 video_input）
+        graph3, _ = audio_mix.build_audio_filtergraph(
+            AudioMix(orig_video_volume=0.0), master_input=1, video_input=0)
+        self.assertNotIn("[0:a]", graph3)
+
+    def test_orig_video_audio_coexists_with_bgm_and_sfx(self):
+        mix = AudioMix(orig_video_volume=0.5, bgm=BgmTrack(Path("b.wav"), volume=0.3),
+                       sfx=[SfxCue(Path("s.wav"), at_seconds=1.0, volume=0.8)])
+        graph, _ = audio_mix.build_audio_filtergraph(mix, master_input=1, video_input=0)
+        # 原音是"master 之后紧接"，BGM 输入号仍是 master+1=2、音效仍是 3（不受原音路影响，
+        # 因为原音复用 video_input，不占额外的 -i 输入号）
+        self.assertIn("[0:a]volume=0.500", graph)
+        self.assertIn("[2:a]volume=0.300", graph)
+        self.assertIn("[3:a]adelay=1000|1000,volume=0.800", graph)
+        self.assertIn("amix=inputs=4", graph)  # master + orig + bgm + sfx
+
+    def test_mix_from_payload_reads_orig_video_volume(self):
+        mix = audio_mix.mix_from_payload({"orig_video_volume": 0.7}, lambda _: None)
+        self.assertAlmostEqual(mix.orig_video_volume, 0.7)
+        # 未下发时兜底 0（保持旧行为，未升级过前端的老 payload 不会突然带原音）
+        mix2 = audio_mix.mix_from_payload({"master_volume": 1.0}, lambda _: None)
+        self.assertEqual(mix2.orig_video_volume, 0.0)
 
     def test_mix_from_payload_resolves_and_skips_missing(self):
         got = {}
@@ -159,7 +198,9 @@ class UiAudioContractTests(unittest.TestCase):
         html = (Path(web_server.__file__).parent / "web" / "index.html").read_text(encoding="utf-8")
         for marker in ('id="mVol"', 'id="bgmSel"', 'id="sfxTrack"', "toggleMixPreview",
                        "collectAudio", "AudioContext", "saveColor", 'id="cfgSel"',
-                       "saveConfig", "togglePaths", "strokeShadow", "renderSfxPins"):
+                       "saveConfig", "togglePaths", "strokeShadow", "renderSfxPins",
+                       # 原视频音效滑杆——必须存在，否则用户没法在成片里保留分镜自带音效
+                       'id="oVol"', "orig_video_volume"):
             self.assertIn(marker, html, marker)
 
 

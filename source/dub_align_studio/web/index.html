@@ -269,6 +269,13 @@ footer b{color:var(--muted);font-weight:600}
           <input type="range" id="mVol" min="0" max="200" step="5" value="100" oninput="onMixChange()">
         </div>
         <div>
+          <span class="f">🎬 原视频音效音量 <span class="val" id="oVolV">100%</span>
+            <span class="mini" style="color:var(--faint);margin-left:8px">分镜自带音效；拉到 0 = 关掉原声</span></span>
+          <input type="range" id="oVol" min="0" max="200" step="5" value="100" oninput="onMixChange()">
+        </div>
+      </div>
+      <div class="grid g2e" style="gap:14px;margin-top:10px">
+        <div style="grid-column:1/-1">
           <span class="f">🎵 背景音乐 BGM（比视频短会自动循环到片尾）</span>
           <div class="row">
             <select id="bgmSel" onchange="onMixChange()" style="flex:1 1 140px"></select>
@@ -2176,18 +2183,22 @@ function collectAudio(){
   const bgmFile=$('bgmSel')?.value||'';
   return {
     master_volume:num($('mVol').value,100)/100,
+    orig_video_volume:num($('oVol')?.value,100)/100,   // 原视频音效音量：0=关，1=原音
     bgm:bgmFile?{file:bgmFile,volume:num($('bVol').value,35)/100,loop:$('bLoop').checked}:null,
     sfx:sfxCues.map(c=>({file:c.file,at:+c.at||0,volume:(c.volume==null?1:+c.volume)}))
   };
 }
 function onMixChange(){
   $('mVolV').textContent=$('mVol').value+'%';
+  if($('oVolV')&&$('oVol'))$('oVolV').textContent=$('oVol').value+'%';
   $('bVolV').textContent=$('bVol').value+'%';
   $('bgmCtl').style.display=$('bgmSel').value?'flex':'none';
   // 试听中实时改总音量/BGM 音量（无需重新试听）——各路独立增益，BGM 不受音效影响
   if(mixPlaying){
     if(mixGains.master)mixGains.master.gain.value=num($('mVol').value,100)/100;
     if(mixGains.bgm)mixGains.bgm.gain.value=num($('bVol').value,35)/100;
+    // 原视频音效仅在成片渲染时生效；试听是前端 Web Audio 合成 master+BGM+SFX，
+    // 不含真实分镜视频，所以此处**不联动增益**——避免给出"能试听到"的错觉。
   }
 }
 function setSfxVol(i,v){
@@ -2321,10 +2332,12 @@ function collectConfig(){
     pb:collectProgressBar(),wm:collectWatermark(),
     audio:collectAudio(),overlays:overlays};
 }
-// 还原音频设置（总音量/BGM/音效）——作品预设与待编辑队列选中项共用
+// 还原音频设置（总音量/原视频音效/BGM/音效）——作品预设与待编辑队列选中项共用
 function restoreAudio(a){
   if(!a)return;
   $('mVol').value=Math.round((a.master_volume??1)*100);
+  // 旧预设/旧队列项无 orig_video_volume 字段 → 按 100% 兜底（与新默认一致，避免重烧时突然没声）
+  if($('oVol'))$('oVol').value=Math.round(((a.orig_video_volume==null?1:+a.orig_video_volume))*100);
   if(a.bgm){$('bgmSel').value=a.bgm.file||'';$('bVol').value=Math.round((a.bgm.volume??.35)*100);$('bLoop').checked=a.bgm.loop!==false;}
   else{$('bgmSel').value='';}
   sfxCues=(a.sfx||[]).map(s=>({file:s.file,at:+s.at||0,volume:+s.volume||1}));

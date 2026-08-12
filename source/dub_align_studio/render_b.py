@@ -346,18 +346,61 @@ def render_b(
     )
 
 
+def _has_audio_stream(config: RenderConfig, source: Path) -> bool:
+    """探测视频是否带音轨——ffprobe 输出音频编码名；空/异常均视为无音。"""
+    try:
+        out = _run_out([
+            config.ffprobe, "-v", "error", "-select_streams", "a:0",
+            "-show_entries", "stream=codec_name",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(source),
+        ], f"探测音轨 {source.name}", allow_empty=True)
+    except RuntimeError:
+        return False
+    return bool(out.strip())
+
+
 def _render_silent_segment(
     config: RenderConfig, source: Path, vf: str, frame_count: int, output: Path
 ) -> None:
-    command = [
-        config.ffmpeg, "-y", "-i", str(source),
-        "-an", "-vf", vf,
-        "-frames:v", str(frame_count),
-        "-c:v", "libx264", "-preset", config.preset, "-crf", str(config.crf),
-        "-pix_fmt", "yuv420p", "-fps_mode", "cfr", "-r", str(config.fps),
-        "-video_track_timescale", str(config.fps * 512),
-        str(output),
-    ]
+    """按帧数渲染一段分镜；**保留原视频音轨**（无音自动补静音），供 _overlay_master
+    按 orig_video_volume 混入成片。旧版一律 `-an` 剥掉原音 → 用户抱怨「原视频音效
+    被剪辑掉、音量控件怎么拖都无效」；此处改为保留 + 统一编码，是那两个问题的根因修复。
+
+    统一 aac/44100/stereo 保证后续 `concat demuxer` 拼接时音轨参数一致（否则会拒拼）。
+    音频用 `-shortest`（无音路径）或裁到视频时长（有音路径）避免多出音尾。"""
+    has_audio = _has_audio_stream(config, source)
+    target_seconds = max(0.05, frame_count / max(1, config.fps))
+    if has_audio:
+        command = [
+            config.ffmpeg, "-y", "-i", str(source),
+            "-vf", vf,
+            "-frames:v", str(frame_count),
+            # 音频侧：随视频段裁到目标时长（画面短→变速/克隆末帧撑长时，原音自然截断；
+            # 画面长→变速/裁剪缩短时，`-t` 一并对齐）——`apad` 兜底短原音，`aformat` 保编码一致
+            "-af", (f"aformat=sample_rates=44100:channel_layouts=stereo,"
+                     f"apad,atrim=0:{target_seconds:.3f},asetpts=PTS-STARTPTS"),
+            "-c:v", "libx264", "-preset", config.preset, "-crf", str(config.crf),
+            "-pix_fmt", "yuv420p", "-fps_mode", "cfr", "-r", str(config.fps),
+            "-video_track_timescale", str(config.fps * 512),
+            "-c:a", "aac", "-b:a", config.audio_bitrate, "-ar", "44100", "-ac", "2",
+            str(output),
+        ]
+    else:
+        # 无音源：合成一段静音伴随视频，编码同样为 aac/44100/stereo → 拼接时无缝
+        command = [
+            config.ffmpeg, "-y", "-i", str(source),
+            "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+            "-vf", vf,
+            "-frames:v", str(frame_count),
+            "-shortest",
+            "-map", "0:v:0", "-map", "1:a:0",
+            "-c:v", "libx264", "-preset", config.preset, "-crf", str(config.crf),
+            "-pix_fmt", "yuv420p", "-fps_mode", "cfr", "-r", str(config.fps),
+            "-video_track_timescale", str(config.fps * 512),
+            "-c:a", "aac", "-b:a", config.audio_bitrate, "-ar", "44100", "-ac", "2",
+            str(output),
+        ]
     _run(command, f"渲染画面段 {output.name}")
 
 
@@ -437,10 +480,12 @@ def _overlay_master(
         _run(command, "叠加整轨配音" + burn_note + pb_note)
         return
 
-    # 混流路径：master 之后追加 BGM/音效输入，音频走 filter_complex
+    # 混流路径：master 之后追加 BGM/音效输入，音频走 filter_complex；
+    # video_input=0 让 build_audio_filtergraph 有能力把「拼接后视频」的音轨作为一路混入
+    # （orig_video_volume 由 audio_mix 决定是否接入；>0 才写 `[0:a]volume=X`）。
     for extra in build_audio_inputs(mix):
         command += extra
-    audio_graph, aout = build_audio_filtergraph(mix, master_input=1)
+    audio_graph, aout = build_audio_filtergraph(mix, master_input=1, video_input=0)
     if below or has_fill:
         video_graph = _build_video_graph(below, pb_fill, pb_above)
         command += ["-filter_complex", audio_graph + ";" + video_graph,
