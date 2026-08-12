@@ -178,6 +178,37 @@ def has_audio_stream(config: RenderConfig, path: Path) -> bool:
 
 
 # ------------------------------------------------------------------ 单段画面滤镜（纯逻辑，可单测）
+def shot_speed(src_seconds: float, target_seconds: float, mode: str = DEFAULT_MODE) -> float:
+    """预取本段的画面速率比（1.0=无变速；<1.0=放慢；>1.0=加速）。
+    与 shot_video_filter 里 match_video_to_audio 完全等价——用于主循环把 speed 传给
+    _render_silent_segment 决定音频侧策略（不重构 shot_video_filter 的返回签名以保
+    持既有测试与调用方兼容）。"""
+    return match_video_to_audio(src_seconds, target_seconds, mode).video_speed
+
+
+def shot_audio_filter(speed: float, src_seconds: float, target_seconds: float) -> str:
+    """构造单段音频滤镜（纯字符串，可单测）。
+
+    用户 2026-08 决策：**画面可变速，原音永不变速**——避免加速时"音效尖啸"、
+    放慢时"闷成低音"。所以本函数**从不**输出 `atempo` / `asetpts=PTS*speed`。
+
+    两条路径（按 speed 分派 atrim 长度）：
+      - **裁剪路径**（speed==1.0）：音频跟画面一起裁到 target_seconds；
+      - **变速路径**（speed!=1.0）：音频保持原速率，长度 = min(src, target)：
+          · 加速段（src>target）→ 原音在段末自然截断，避免溢出到下段与其原音打架；
+          · 放慢段（src<target）→ 原音用尽，段末由 apad 自动补静音。
+
+    统一 aformat=44100/stereo 保证后续 concat demuxer 拼接安全。"""
+    fmt = "aformat=sample_rates=44100:channel_layouts=stereo"
+    if abs(speed - 1.0) < 1e-3:
+        atrim_len = max(0.05, target_seconds)
+    else:
+        # src_seconds<=0 时（探测失败）退回 target，保底不越界
+        cap = src_seconds if src_seconds > 1e-3 else target_seconds
+        atrim_len = max(0.05, min(target_seconds, cap))
+    return f"{fmt},apad,atrim=0:{atrim_len:.3f},asetpts=PTS-STARTPTS"
+
+
 def shot_video_filter(
     src_seconds: float,
     target_seconds: float,
@@ -254,8 +285,10 @@ def render_b(
         vf, note = shot_video_filter(
             src_seconds, target_seconds, config.width, config.height, config.fps, config.mode
         )
+        speed = shot_speed(src_seconds, target_seconds, config.mode)
         segment = work_dir / f"{position:03d}.mp4"
-        _render_silent_segment(config, video, ",".join(vf), frame_count, segment)
+        _render_silent_segment(config, video, ",".join(vf), frame_count, segment,
+                               speed=speed, src_seconds=src_seconds)
         if progress is not None:
             try:
                 progress(position, len(lines))  # 逐段渲染进度回调
@@ -378,14 +411,19 @@ def _has_audio_stream(config: RenderConfig, source: Path) -> bool:
 
 
 def _render_silent_segment(
-    config: RenderConfig, source: Path, vf: str, frame_count: int, output: Path
+    config: RenderConfig, source: Path, vf: str, frame_count: int, output: Path,
+    speed: float = 1.0, src_seconds: float = 0.0,
 ) -> None:
     """按帧数渲染一段分镜；**保留原视频音轨**（无音自动补静音），供 _overlay_master
     按 orig_video_volume 混入成片。旧版一律 `-an` 剥掉原音 → 用户抱怨「原视频音效
     被剪辑掉、音量控件怎么拖都无效」；此处改为保留 + 统一编码，是那两个问题的根因修复。
 
-    统一 aac/44100/stereo 保证后续 `concat demuxer` 拼接时音轨参数一致（否则会拒拼）。
-    音频用 `-shortest`（无音路径）或裁到视频时长（有音路径）避免多出音尾。"""
+    音频侧滤镜由 shot_audio_filter 按 speed 分派：**画面可变速，原音永不变速**。
+    - speed==1.0（裁剪路径）：音频跟画面等长 atrim=0:target；
+    - speed!=1.0（变速路径）：音频保持原速率，atrim=0:min(src,target)——加速段原音
+      在段末自然截断（不外溢下段），放慢段用 apad 补静音到段尾。
+
+    统一 aac/44100/stereo 保证后续 `concat demuxer` 拼接时音轨参数一致（否则会拒拼）。"""
     has_audio = _has_audio_stream(config, source)
     target_seconds = max(0.05, frame_count / max(1, config.fps))
     if has_audio:
@@ -393,10 +431,7 @@ def _render_silent_segment(
             config.ffmpeg, "-y", "-i", str(source),
             "-vf", vf,
             "-frames:v", str(frame_count),
-            # 音频侧：随视频段裁到目标时长（画面短→变速/克隆末帧撑长时，原音自然截断；
-            # 画面长→变速/裁剪缩短时，`-t` 一并对齐）——`apad` 兜底短原音，`aformat` 保编码一致
-            "-af", (f"aformat=sample_rates=44100:channel_layouts=stereo,"
-                     f"apad,atrim=0:{target_seconds:.3f},asetpts=PTS-STARTPTS"),
+            "-af", shot_audio_filter(speed, src_seconds, target_seconds),
             "-c:v", "libx264", "-preset", config.preset, "-crf", str(config.crf),
             "-pix_fmt", "yuv420p", "-fps_mode", "cfr", "-r", str(config.fps),
             "-video_track_timescale", str(config.fps * 512),

@@ -196,6 +196,46 @@ class AssetAndConfigEndpointTests(unittest.TestCase):
         self.assertIn("落盘验证", json.loads(preset_file.read_text(encoding="utf-8")))
 
 
+class ShotAudioFilterTests(unittest.TestCase):
+    """画面变速 → 原音永不变速；音频长度按裁剪/变速两条路径分派。"""
+
+    def test_no_speed_uses_target_length(self):
+        af = render_b.shot_audio_filter(speed=1.0, src_seconds=8.0, target_seconds=5.0)
+        self.assertIn("atrim=0:5.000", af)
+        self.assertNotIn("atempo", af)      # 关键约定：音频永不变速
+        self.assertNotIn("PTS*", af)
+        self.assertIn("aformat=sample_rates=44100:channel_layouts=stereo", af)
+        self.assertIn("apad", af)           # 短原音兜底静音
+
+    def test_slowdown_keeps_src_length_pads_to_end(self):
+        """放慢：原 3s → 段 6s。原音只有 3s，用 apad 补静音到 6s；atrim 取 min=3s。"""
+        af = render_b.shot_audio_filter(speed=0.5, src_seconds=3.0, target_seconds=6.0)
+        self.assertIn("atrim=0:3.000", af)
+        self.assertNotIn("atempo", af)      # 放慢时也不给音频降速
+
+    def test_speedup_truncates_at_segment_end(self):
+        """加速：原 6s → 段 3s。原音保原速率但只保留能进段内的 3s，不外溢下段。"""
+        af = render_b.shot_audio_filter(speed=2.0, src_seconds=6.0, target_seconds=3.0)
+        self.assertIn("atrim=0:3.000", af)
+        self.assertNotIn("atempo", af)
+
+    def test_src_unknown_falls_back_to_target(self):
+        """src_seconds<=0（探测失败）时按 target 保底，避免 atrim=0:0.000 空段。"""
+        af = render_b.shot_audio_filter(speed=2.0, src_seconds=0.0, target_seconds=4.0)
+        self.assertIn("atrim=0:4.000", af)
+
+    def test_shot_speed_matches_video_filter_setpts(self):
+        """shot_speed 与 shot_video_filter 内 match_video_to_audio 得到同一 speed——
+        主循环预取 speed 给音频侧决策，与画面 setpts 完全一致。"""
+        # 变速匹配模式：src=10, target=5 → speed=2.0；shot_video_filter 会用 setpts/2
+        speed = render_b.shot_speed(10.0, 5.0, "变速匹配")
+        self.assertAlmostEqual(speed, 2.0)
+        vf, _ = render_b.shot_video_filter(10.0, 5.0, 720, 1280, 30, "变速匹配")
+        self.assertTrue(any("setpts=(PTS-STARTPTS)/2.000000" in p for p in vf))
+        # 裁剪模式：speed=1.0
+        self.assertEqual(render_b.shot_speed(10.0, 5.0, "裁剪多余画面"), 1.0)
+
+
 class RenderConfigFfmpegResolutionTests(unittest.TestCase):
     """RenderConfig 归一化 ffmpeg 路径：无论调用方传裸名还是忘了走 make_render_config，
     只要机器上装了 ffmpeg，任务过程中就不该因 PATH/CWD 变化报「找不到 ffmpeg」。"""
