@@ -1076,11 +1076,59 @@ class _Handler(BaseHTTPRequestHandler):
             from . import cloud_gpu
             self._json(cloud_gpu.manager().status())
             return
+        # Excel 批量带货配音（独立页面 + 独立 API 前缀）
+        if route == "/bulk_dub" or route == "/bulk_dub.html":
+            page = Path(__file__).parent / "web" / "bulk_dub.html"
+            if page.is_file():
+                body = page.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+        if route.startswith("/api/bulk_dub"):
+            from .bulk_dub import api as bulk_api
+
+            query = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+            try:
+                handled, status, body, ctype = bulk_api.dispatch_get(route, query)
+            except Exception as exc:  # noqa: BLE001
+                self._json({"error": f"bulk_dub GET 异常：{exc}"}, 500)
+                return
+            if handled:
+                self.send_response(status)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
         self._json({"error": "not found"}, 404)
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         route = parsed.path
+        if route.startswith("/api/bulk_dub"):
+            from .bulk_dub import api as bulk_api
+
+            query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+            length = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(length) if length > 0 else b""
+            ctype = self.headers.get("Content-Type") or ""
+            try:
+                handled, status, out_body, out_ctype = bulk_api.dispatch_post(
+                    route, query, body, ctype,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._json({"error": f"bulk_dub POST 异常：{exc}"}, 500)
+                return
+            if handled:
+                self.send_response(status)
+                self.send_header("Content-Type", out_ctype)
+                self.send_header("Content-Length", str(len(out_body)))
+                self.end_headers()
+                self.wfile.write(out_body)
+                return
         if route == "/api/voices":
             query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
             length = int(self.headers.get("Content-Length") or 0)
