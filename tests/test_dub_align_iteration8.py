@@ -45,27 +45,51 @@ class PackagingScriptTests(unittest.TestCase):
         "import sys",
     }
 
-    #: 覆盖所有可能的 Python 命令前缀（含 %PYEXE% / !PYEXE! 变量展开、py -3、
-    #: python3.exe 等），确保长命令不会因正则前缀不匹配而**逃过检查**。
+    #: **当前明确支持**的 Python 命令前缀（共 9 种，含带引号绝对路径）——
+    #: 若未来打包脚本用了其它前缀，先在 test_py_c_regex_matches_supported_prefixes
+    #: 里加对应样本、再改这里；宁可扩正则也不要留缺口让长命令逃过白名单检查。
+    #: 支持的前缀：
+    #:   1) python           2) python.exe
+    #:   3) python3          4) python3.exe
+    #:   5) py               6) py -3
+    #:   7) %VAR%            （环境变量展开，如 %PYEXE%）
+    #:   8) !VAR!            （延迟变量展开，如 !PYEXE!）
+    #:   9) "C:\...\python.exe"  （带引号绝对路径，如 setup 打包机的 Python 装在
+    #:                            "C:\Program Files\Python311\python.exe"）
     _PY_C_RE = re.compile(
         r'(?:'
-        r'python(?:3)?(?:\.exe)?'    # python / python3 / python.exe / python3.exe
-        r'|py(?:\s+-3)?'             # py / py -3
-        r'|%[A-Za-z_]\w*%'           # %PYEXE% 之类环境变量展开
-        r'|![A-Za-z_]\w*!'           # !PYEXE! 延迟展开
+        r'"[^"]*python(?:3)?(?:\.exe)?"'   # 9) 带引号的绝对/相对路径
+        r'|python(?:3)?(?:\.exe)?'          # 1)-4) 裸命令名
+        r'|py(?:\s+-3)?'                    # 5)-6) py / py -3
+        r'|%[A-Za-z_]\w*%'                  # 7) 环境变量展开
+        r'|![A-Za-z_]\w*!'                  # 8) 延迟变量展开
         r')'
-        r'\s+-c\s+"([^"]*)"',        # 匹配全长，不设上限——长命令必被抓到
+        r'\s+-c\s+"([^"]*)"',               # 匹配全长，长命令必被抓到
         re.IGNORECASE,
     )
 
     def _bat(self) -> str:
-        """读取主打包脚本 `项目打包.bat`；缺失时 skip（不假成功）。"""
-        root = Path(__file__).resolve().parents[1]
-        for name in ("项目打包.bat", "打包.bat"):  # 新名优先，兼容旧名
-            for cand in (Path(name), root / name):
-                if cand.exists():
-                    return cand.read_text(encoding="utf-8")
-        self.skipTest("项目打包.bat / 打包.bat 均不在此仓库根")
+        """严格读取仓库根 `项目打包.bat`——契约文件；缺失即测试**失败**（不 skip）。
+
+        `打包.bat` 旧名兼容已随契约收紧而移除：本套契约只约束仓库根这一个文件。"""
+        cand = Path(__file__).resolve().parents[1] / "项目打包.bat"
+        self.assertTrue(
+            cand.is_file(),
+            f"`项目打包.bat` 是本契约的必要文件，但不在仓库根：{cand}",
+        )
+        return cand.read_text(encoding="utf-8")
+
+    def _finalize_script_path(self) -> Path:
+        return Path(__file__).resolve().parents[1] / "打包收尾.py"
+
+    def test_finalize_script_exists(self):
+        """契约必要文件：`打包收尾.py` 是 `项目打包.bat` 迁出的收尾脚本；
+        缺失说明契约已破，必须**失败**（不 skip）。"""
+        path = self._finalize_script_path()
+        self.assertTrue(
+            path.is_file(),
+            f"`打包收尾.py` 是本契约的必要文件，但不在仓库根：{path}",
+        )
 
     def test_project_pack_bat_cleans_stale_and_selfchecks(self):
         bat = self._bat()
@@ -100,10 +124,13 @@ class PackagingScriptTests(unittest.TestCase):
             + "\n（新增合法探测请加进 PackagingScriptTests.ALLOWED_INLINE_PY_C。）"
         )
 
-    def test_py_c_regex_matches_all_prefix_forms(self):
-        """自检：`_PY_C_RE` 必须能匹配到 python / python.exe / py / py -3 /
-        python3 / %PYEXE% / !PYEXE! 各种前缀的 `-c "..."`，防止未来有人加了
-        `%PYEXE% -c "shutil.make_archive(...)"` 因前缀不匹配而逃过检查。"""
+    def test_py_c_regex_matches_supported_prefixes(self):
+        """自检：`_PY_C_RE` 必须能匹配到**当前明确支持的 9 种前缀**——
+        python / python.exe / python3 / python3.exe / py / py -3 / %PYEXE% /
+        !PYEXE! / "C:\\...\\python.exe"（带引号绝对路径）。
+
+        这不是"所有可能前缀"，而是当前枚举支持的清单。若打包脚本将来用了
+        清单外的形式，先加进 samples 让此测试提示，再回去扩正则。"""
         samples = [
             ('python -c "import sys"', "import sys"),
             ('python.exe -c "print(1)"', "print(1)"),
@@ -114,6 +141,12 @@ class PackagingScriptTests(unittest.TestCase):
             ('%PYEXE% -c "shutil.make_archive(\'a\',\'zip\',\'b\',\'c\')"',
              "shutil.make_archive('a','zip','b','c')"),
             ('!PYEXE! -c "bb"', "bb"),
+            # 带引号绝对路径（Windows 打包机常见），必须也被抓到，避免长命令逃逸
+            # 用非 raw 字符串以便 \\ 表示反斜杠、\' 表示单个单引号（raw 里 \' 是两字符）
+            ('"C:\\Program Files\\Python311\\python.exe" -c "shutil.make_archive(\'z\')"',
+             "shutil.make_archive('z')"),
+            (r'"D:\Python\python3.exe" -c "long stuff here"',
+             "long stuff here"),
         ]
         for bat_line, expected in samples:
             hits = self._PY_C_RE.findall(bat_line)
@@ -123,17 +156,19 @@ class PackagingScriptTests(unittest.TestCase):
             )
             self.assertEqual(hits[0], expected, bat_line)
 
-    def test_finalize_script_present_and_valid(self):
-        for cand in (Path("打包收尾.py"), Path(__file__).resolve().parents[1] / "打包收尾.py"):
-            if cand.exists():
-                src = cand.read_text(encoding="utf-8")
-                self.assertIn("make_archive", src)   # 生成压缩包
-                self.assertIn("发布包", src)          # 输出目录
-                self.assertIn("APP_VERSION", src)    # 文件名含版本号
-                self.assertIn("版本.txt", src)        # 写版本文件
-                compile(src, str(cand), "exec")      # 语法可编译
-                return
-        self.skipTest("打包收尾.py 不在此仓库根")
+    def test_finalize_script_valid(self):
+        """`打包收尾.py` 是本契约必要文件（其存在性由 test_finalize_script_exists 保证）；
+        本测试进一步检查内容契约：压缩包/输出目录/版本文件三个关键字必须都在，
+        且脚本本身语法可编译。"""
+        cand = self._finalize_script_path()
+        self.assertTrue(cand.is_file(),
+                         f"`打包收尾.py` 必须存在（本契约必要文件），未找到：{cand}")
+        src = cand.read_text(encoding="utf-8")
+        self.assertIn("make_archive", src)   # 生成压缩包
+        self.assertIn("发布包", src)          # 输出目录
+        self.assertIn("APP_VERSION", src)    # 文件名含版本号
+        self.assertIn("版本.txt", src)        # 写版本文件
+        compile(src, str(cand), "exec")      # 语法可编译
 
 
 class VersionedZipLogicTests(unittest.TestCase):
