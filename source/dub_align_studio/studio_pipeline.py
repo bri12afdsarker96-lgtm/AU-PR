@@ -25,6 +25,7 @@ from .engines import (
     DotsLocalEngine,
     DotsRemoteEngine,
     DubEngine,
+    EdgeTtsEngine,
     FishLocalEngine,
     MasterAudio,
     MockEngine,
@@ -50,7 +51,9 @@ MASTER_NAME = "master.wav"
 FILM_NAME = "成片.mp4"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
 
-ENGINE_KEYS = ["mock", "dots_local", "dots_remote", "fish_local"]
+ENGINE_KEYS = ["mock", "dots_local", "dots_remote", "fish_local", "edge_tts"]
+# 云配版可选引擎：dots.tts 云端 GPU 走克隆 + Edge TTS 免费预设兜底
+CLOUD_ENGINE_KEYS = ["dots_remote", "edge_tts"]
 ALIGNER_KEYS = ["whisper", "均分兜底"]
 
 # 五种常见画面比例（名称取自内核 edit_compose.ASPECT_RATIOS，画布由 aspect_canvas 计算）
@@ -120,7 +123,17 @@ def make_engine(key: str) -> DubEngine:
         return DotsRemoteEngine()
     if key == "fish_local":
         return FishLocalEngine()
+    if key == "edge_tts":
+        return EdgeTtsEngine()
     raise KeyError(f"未知引擎：{key}（可选：{'、'.join(ENGINE_KEYS)}）")
+
+
+def is_cloud_gpu_engine(key: str) -> bool:
+    """判断某引擎是否会真的用到 cloud_gpu 管理器（目前只有 dots_remote 会）。
+
+    edge_tts 走第三方 Cloudflare Worker，与优云智算/dots_remote 无关——它触发的任务
+    不应唤醒/续期 cloud_gpu 看门狗，避免污染顶栏 GPU 状态。"""
+    return key == "dots_remote"
 
 
 def list_shot_videos(directory: Path) -> list[Path]:
@@ -167,11 +180,14 @@ def step_dub(
     per_line: bool = True,
     progress=None,
     heartbeat=None,
+    before_engine_call=None,
+    after_engine_call=None,
 ) -> MasterAudio:
-    """① 逐行克隆并拼接 master。per_line=True（默认）时一行一段，分镜时长按单行音频精确对齐。
+    """① 逐行克隆并拼接 master。per_line=True（默认）时一行一段。
 
-    progress(done, total)：每完成一行回调，供 UI 进度条实时前进（配音是最耗时一步）。
-    heartbeat(stage)：模型加载/每行开始等不动百分比的时刻刷新看门狗心跳，防冷启动误判卡死。
+    progress / heartbeat：UI 进度条 + 看门狗心跳。
+    v0.7.71 P0-4：`before_engine_call / after_engine_call` 透传到 synthesize_long，
+    在紧邻**每个** `engine.synthesize_full` 的位置调用（after 放 finally）。
     mock 引擎按每行 5s 生成假音频（供无 GPU 环境走通全流程）。
     """
     output_dir = Path(output_dir)
@@ -179,10 +195,11 @@ def step_dub(
     engine = make_engine(engine_key)
     from .engines.longform import synthesize_long
 
-    # 逐行一段：一行=一段音频=一个分镜时长，精确对齐、避免截断/漂移；同一音色参考锚定音色。
     max_chars = int(getattr(engine, "max_chars", 1_000_000))
     master = synthesize_long(engine, text, voice, output_dir / MASTER_NAME, options, max_chars,
-                             log=log, per_line=per_line, progress=progress, heartbeat=heartbeat)
+                             log=log, per_line=per_line, progress=progress, heartbeat=heartbeat,
+                             before_engine_call=before_engine_call,
+                             after_engine_call=after_engine_call)
     _archive_clone(master, voice)
     return master
 
@@ -285,16 +302,21 @@ def step_capcut(
     output_dir: Path,
     style: SubtitleStyle | None = None,
     canvas: tuple[int, int] = (1080, 1920),
+    film_mp4: Path | None = None,
 ) -> CapcutPackage:
     """④ 导出剪映草稿交接包（素材=渲染产出的逐行分镜段，与成片同一时间线）。
 
-    result 为 None 时（软件重启后）从输出目录磁盘读回分镜段，照常导出。"""
+    result 为 None 时（软件重启后）从输出目录磁盘读回分镜段，照常导出。
+    v0.7.71 P1-1：film_mp4 缺省时用 `output_dir / FILM_NAME`，A1 走"成片同款混音单轨"；
+    没有成片时 export_capcut_package 会抛错，禁止静默用裸 master 冒充成功。"""
     if result is not None:
         segments = [shot.segment_file for shot in result.shots if shot.segment_file]
     else:
         segments = segments_from_output(output_dir, len(timings))
+    if film_mp4 is None:
+        film_mp4 = Path(output_dir) / FILM_NAME
     return export_capcut_package(timings, segments, Path(master_wav), Path(output_dir), style,
-                                 canvas=canvas)
+                                 canvas=canvas, film_mp4=film_mp4)
 
 
 @dataclass

@@ -44,6 +44,13 @@ class SynthesisOptions:
     max_pause_seconds: float = 0.0
     seed: int = 42
     normalize_text: bool = False
+    # Edge TTS 独占参数（其他引擎收到时忽略，保持向后兼容）：
+    # · edge_voice：预设声线 id，如 "zh-CN-XiaoxiaoNeural"；
+    # · edge_pitch：音调 -50~+50；
+    # · edge_style：语气风格（general / cheerful / newscast …），默认 general。
+    edge_voice: str = ""
+    edge_pitch: int = 0
+    edge_style: str = "general"
 
     def to_payload(self) -> dict:
         return asdict(self)
@@ -56,6 +63,29 @@ class EngineStatus:
     key: str
     available: bool
     detail: str
+
+
+@dataclass(frozen=True)
+class EngineCapabilities:
+    """引擎能力矩阵——**统一声明**每个 SynthesisOptions 字段是否被引擎原生消费。
+
+    调度层（longform.synthesize_long / rechunk / voice_try）根据这里决定：
+      · native_speed=False → 后处理用 ffmpeg `atempo` 真改语速（不再"设置了没生效"）；
+      · native_speed=True 且 speed!=1 → **不做**后处理（防 Edge TTS 被二次变速）；
+      · supports_seed=False → 前端展示灰色提示"seed 不改变声音"（素材选择仍生效）；
+      · 其它字段用于前端 tooltip 明确"哪些原生 / 哪些软件后处理"。
+
+    max_pause_seconds 不进本表——它是**通用后处理**（所有引擎统一压缩长静音，
+    与引擎无关），因此不用能力开关。"""
+
+    native_speed: bool = False        # 是否在引擎请求里直接传 speed 并生效
+    supports_seed: bool = False       # seed 是否真的影响声音（Edge/云端多数不支持）
+    supports_num_steps: bool = False  # num_steps 是否被引擎消费
+    supports_guidance: bool = False   # guidance_scale 是否被引擎消费
+    supports_edge_pitch: bool = False # Edge 专属：音调
+    supports_edge_style: bool = False # Edge 专属：语气风格
+    supports_voice_ref: bool = True   # 是否使用参考音频（音色克隆）
+    detail: str = ""                  # 人类可读描述，前端 tooltip 用
 
 
 @dataclass(frozen=True)

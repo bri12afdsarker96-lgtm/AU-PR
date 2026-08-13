@@ -81,7 +81,8 @@ class UiContractPhase3Tests(unittest.TestCase):
             with clock:
                 cnt[kind] -= 1
 
-        def fake_dub(text, engine_key, output_dir, voice, options, log=None, progress=None, heartbeat=None):
+        def fake_dub(text, engine_key, output_dir, voice, options, log=None, progress=None,
+                      heartbeat=None, before_engine_call=None, after_engine_call=None):
             label = Path(output_dir).name
             _enter("dub"); rec(label, "dub", "start"); time.sleep(0.2); rec(label, "dub", "end"); _exit("dub")
             (Path(output_dir) / ws.pipeline.MASTER_NAME).write_bytes(b"")

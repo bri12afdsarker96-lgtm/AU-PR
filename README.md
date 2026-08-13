@@ -79,3 +79,40 @@ python -m unittest discover -s tests -p "test_*.py"
 软件在水星剪辑仓库（Mercury-Premiere-Pro）内孵化完成（PR #5），本仓库为
 全套源码主线；`source/integrated_workbench/` 为水星内核完整收录，
 两侧后续演进以本仓库为准。
+
+## 免费云端引擎 · Edge TTS（v0.7.71）
+
+新增一个**独立**的配音引擎 `edge_tts`，与 `dots_remote` **并列**（不替代）。
+接的是开源项目 [wangwangit/tts](https://github.com/wangwangit/tts)（MIT），
+把 Cloudflare Worker 包装成 OpenAI 兼容的 `POST /v1/audio/speech`，背后调用
+**Microsoft Edge Read Aloud** 免费朗读接口。
+
+用途定位：
+- 无 GPU / dots.tts 服务器未起时的**兜底**，让整条流水线仍能出声；
+- 展示 / 短剧 / 解说等**不需要克隆用户音色**的场景；
+- 与 dots.tts 并存，用户随时切引擎。
+
+**不做的事**：
+- 不做音色克隆（20+ 中文预设声线：晓晓/晓伊/云希/云扬…）；
+- 不读取参考音频，也不写入 `音色库/`；
+- 不宣传"无限免费/高可用/可商用"——微软 Edge 内部朗读接口不承诺 SLA 与商用授权。
+
+配置（软件内 · 无需 API Key）：
+1. 到 [Cloudflare](https://dash.cloudflare.com/sign-up) 注册免费账户；
+2. 打开 [wangwangit/tts 官方 Deploy Workers 直达链接](https://deploy.workers.cloudflare.com/?url=https://github.com/wangwangit/tts)，
+   一键部署到你自己的账户 → 拿到 `https://xxx.workers.dev`；
+3. 软件「工具箱 → 免费 Edge TTS」填这个地址 → 保存 → 「测试连接」；
+4. 「配音引擎」下拉选「Edge TTS（免费云端 · 预设音色 · 不支持克隆）」→ 选声线/风格/音调 → 一键成片。
+
+**免费额度归属你自己的 Cloudflare 账户**（个人使用绰绰有余）；作者公共 Worker
+仅适合临时试用、共用限流。软件不预置任何公共 Worker 地址。
+
+许可与归属：
+- Worker 源码 [MIT](https://github.com/wangwangit/tts/blob/master/LICENSE)——本项目
+  仅调用其 HTTP 接口，未复制其代码；接口字段命名为兼容而对齐。
+- MIT 只覆盖 Worker 源码；Microsoft Edge 生成音频的商业发布授权不在此内，
+  用户按自己场景自负合规责任。
+
+云配版口径不变：`MERCURY_CLOUD_ONLY=1` 时引擎下拉曝光 `dots_remote + edge_tts`
+两选；顶栏 ☁ 云 GPU 状态灯仍**只代表 dots_remote**（Edge TTS 走 Cloudflare，与
+优云智算/云 GPU 会话完全独立，不会因用 Edge 而误报"GPU 正在工作"）。

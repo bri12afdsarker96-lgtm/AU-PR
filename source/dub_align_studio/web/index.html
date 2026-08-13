@@ -224,7 +224,12 @@ footer b{color:var(--muted);font-weight:600}
   <div class="bar">
     <div class="mark" aria-hidden="true"></div>
     <div class="brand"><b>水星配音对齐工作室</b><i>MERCURY&nbsp;DUB&nbsp;ALIGN</i></div>
-    <div class="flags"><span class="flag" id="verFlag" title="版本 · 打包时间 · 提交号">v—</span><span class="flag">整篇克隆</span><span class="flag">逐行对齐</span><span class="flag">本地离线</span></div>
+    <div class="flags">
+      <span class="flag" id="verFlag" title="版本 · 打包时间 · 提交号">v—</span>
+      <!-- 云 GPU 顶栏灯：点即跳工具箱定位面板；文案由 loadCloudGpu() 实时刷 -->
+      <span class="flag" id="cloudBadge" title="点击到「工具箱」调整云 GPU 会话"
+            style="cursor:pointer;background:#333;color:#ccc" onclick="jumpToCloud()">☁ 未启用</span>
+      <span class="flag">整篇克隆</span><span class="flag">逐行对齐</span><span class="flag">本地离线</span></div>
   </div>
   <nav id="nav">
     <button data-p="p1" class="on">一键成片</button>
@@ -265,10 +270,21 @@ footer b{color:var(--muted);font-weight:600}
     <div style="margin-top:14px;border-top:1px solid var(--line);padding-top:14px">
       <div class="grid g2e" style="gap:14px">
         <div>
-          <span class="f">🔊 配音总音量 <span class="val" id="mVolV">100%</span></span>
-          <input type="range" id="mVol" min="0" max="200" step="5" value="100" oninput="onMixChange()">
+          <span class="f">🔊 配音总音量 <span class="val" id="mVolV">120%</span>
+            <span class="mini" style="color:var(--faint);margin-left:8px">默认 120%（新用户默认基准；旧预设按保存值还原）</span></span>
+          <input type="range" id="mVol" min="0" max="200" step="5" value="120" oninput="onMixChange()">
         </div>
         <div>
+          <span class="f">🎬 原视频音效音量 <span class="val" id="oVolV">100%</span>
+            <span class="mini" style="color:var(--faint);margin-left:8px">分镜自带音效；拉到 0 = 关掉原声</span></span>
+          <input type="range" id="oVol" min="0" max="200" step="5" value="100" oninput="onMixChange()">
+          <p class="mini" style="color:#e08c58;margin:6px 0 0;line-height:1.6">
+            ⓘ <b>仅生成/重烧成片时生效</b>；网页「混音试听」不含分镜原音（试听是前端 Web Audio 合成 master+BGM+音效，无法读真实分镜视频）。
+          </p>
+        </div>
+      </div>
+      <div class="grid g2e" style="gap:14px;margin-top:10px">
+        <div style="grid-column:1/-1">
           <span class="f">🎵 背景音乐 BGM（比视频短会自动循环到片尾）</span>
           <div class="row">
             <select id="bgmSel" onchange="onMixChange()" style="flex:1 1 140px"></select>
@@ -321,9 +337,31 @@ footer b{color:var(--muted);font-weight:600}
         </div>
         <textarea id="text" placeholder="第一句台词……&#10;第二句台词……&#10;第三句台词……&#10;也可点上方按钮从 xlsx（默认 B 列）或 TXT 导入"></textarea></div>
       <div class="grid g2e sp">
-        <div><span class="f">配音引擎</span><select id="engine"></select></div>
-        <div><span class="f">音色</span>
+        <div><span class="f">配音引擎</span><select id="engine" onchange="onEngineChange()"></select></div>
+        <!-- 普通引擎（dots/fish/mock）：音色下拉，读取克隆音色库 -->
+        <div id="voiceRow"><span class="f">音色</span>
           <div class="row"><select id="voice"></select><button class="btn" onclick="loadState()" title="刷新">↻</button></div></div>
+        <!-- Edge TTS：预设声线；不读音色库，也不需要参考音频 -->
+        <div id="edgeRow" style="display:none">
+          <span class="f">Edge 声线 <span class="mini" style="color:var(--faint)">（预设合成音色 · 不是声音克隆）</span></span>
+          <select id="edgeVoice"></select>
+        </div>
+      </div>
+      <!-- Edge TTS 专属参数：仅在选 edge_tts 时显示 -->
+      <div class="grid g2e sp" id="edgeParamsRow" style="display:none">
+        <div><span class="f">Edge 音调 <span class="val" id="edgePitchV">0</span></span>
+          <input type="range" id="edgePitch" min="-50" max="50" step="1" value="0"
+                 oninput="document.getElementById('edgePitchV').textContent=this.value"></div>
+        <div><span class="f">Edge 风格</span>
+          <select id="edgeStyle"></select></div>
+      </div>
+      <p class="mini" id="edgeNotice" style="display:none;color:#e08c58;margin:-4px 0 8px;line-height:1.7">
+        ⚠ Edge TTS 使用预设合成音色，<b>不读取参考音频</b>；这是第三方非官方 Edge 接口，
+        稳定性及内容使用授权不由本软件承诺。若未配置服务地址，去「工具箱 · 免费 Edge TTS」填写。
+      </p>
+      <div class="row" id="edgeTryRow" style="display:none;margin:-2px 0 8px">
+        <button class="btn line" id="edgeTryBtn" onclick="tryEdgeVoice(this)">🎧 用当前 Edge 声线试听</button>
+        <span class="mini" style="color:var(--faint)">合成一句短话验证声线/音调/风格</span>
       </div>
       <div class="grid g2e sp">
         <div><span class="f">计时尺子</span><select id="aligner"></select></div>
@@ -350,11 +388,14 @@ footer b{color:var(--muted);font-weight:600}
         <div><span class="f">语速 · 1.0 = 原速</span>
           <div class="row"><input type="range" id="speed" min="0.5" max="2" step="0.05" value="1" oninput="sv.textContent=(+this.value).toFixed(2)"><span class="val" id="sv">1.00</span></div></div>
       </div>
+      <p class="mini" id="engineCapHint" style="color:var(--faint);margin:-4px 0 8px;line-height:1.7">
+        当前引擎能力：<span id="engineCapText">加载中…</span>
+      </p>
       <div class="row" style="gap:22px;flex-wrap:wrap">
         <label class="row mini" style="gap:7px"><input type="checkbox" id="burn" checked>烧录字幕</label>
         <span class="mini" style="color:var(--faint)">字幕位置/字号/字体/进度条 → 下方「烧录列表」设置</span>
-        <span class="row mini" style="gap:7px">Seed <input type="number" id="seed" value="42" style="width:92px"></span>
-        <span class="mini" style="color:var(--faint)">剪映草稿导出 → 成片后在「文本框」页校对完成时一并导出</span>
+        <span class="row mini" style="gap:7px" title="素材选择（换 Seed = 同文案换一套画面）永远生效；TTS 复现性按引擎能力，dots.tts 云端支持、Edge/fish/dots 本地视 SDK 支持情况而定">Seed <input type="number" id="seed" value="42" style="width:92px"></span>
+        <span class="mini" style="color:var(--faint)">Seed：素材选择始终生效；TTS 可复现性按引擎能力（<span id="engineSeedHint">加载中…</span>）</span>
       </div>
       <div class="row" style="margin-top:14px;border-top:1px solid var(--line);padding-top:14px">
         <span class="f" style="margin:0;flex:none">💾 作品参数预设</span>
@@ -862,6 +903,131 @@ footer b{color:var(--muted);font-weight:600}
           <button class="btn" style="flex:none" onclick="testRemote()">🔌 测试连接</button>
         </div>
         <p class="hint" id="remoteHint" style="line-height:1.8;margin-top:2px">填好后到「配音引擎」下拉里选 <b style="color:var(--gold)">dots.tts（云 GPU · 远程）</b> 即可用云显卡克隆。部署见 <code>server/</code> 目录的部署文档。</p></div>
+
+      <!-- ═══ 免费 Edge TTS（Cloudflare Worker · OpenAI 兼容接口 · 预设合成音色 · 非克隆） ═══ -->
+      <div class="sp" id="edgeTtsAnchor"><span class="f">🌐 免费 Edge TTS（Cloudflare Worker · 预设合成音色，不是克隆）</span>
+        <p class="hint" style="margin:2px 0 10px;line-height:1.8">
+          调用 <a href="https://github.com/wangwangit/tts" target="_blank" style="color:var(--gold)">wangwangit/tts（MIT）</a> 部署到 Cloudflare 的 Worker，背后是 <b>Microsoft Edge Read Aloud</b>。
+          <b style="color:#e08c58">建议部署到你自己的 Cloudflare 免费账户</b>；作者公共地址仅适合临时试用，
+          不保证稳定；免费额度归属你的账户。稳定性及生成内容授权不由本软件承诺。
+        </p>
+        <div class="row" style="gap:6px">
+          <input type="text" id="edgeEp" placeholder="Worker 服务根地址，如 https://xxx.workers.dev（软件自动拼 /v1/audio/speech）" style="flex:1">
+          <button class="btn line" style="flex:none" onclick="saveEdgeEndpoint()">💾 保存</button>
+          <button class="btn" style="flex:none" onclick="testEdgeEndpoint()">🔌 测试连接</button>
+        </div>
+        <p class="hint" style="margin-top:8px;line-height:1.8">
+          自建步骤（5 分钟）：
+          <a href="https://github.com/wangwangit/tts" target="_blank" style="color:var(--gold);text-decoration:underline">📖 wangwangit/tts（MIT）</a> ·
+          <a href="https://deploy.workers.cloudflare.com/?url=https://github.com/wangwangit/tts" target="_blank" style="color:var(--gold);text-decoration:underline">🚀 Deploy to Cloudflare Workers</a> ·
+          注册 <a href="https://dash.cloudflare.com/sign-up" target="_blank" style="color:var(--gold);text-decoration:underline">Cloudflare 免费账户</a> → 点 Deploy → 拿到 xxx.workers.dev 填入上方 → 引擎选 <b style="color:var(--gold)">Edge TTS（免费云端 · 预设音色 · 不支持克隆）</b>。
+        </p>
+        <p class="hint" id="edgeHint" style="line-height:1.8;margin-top:2px;color:var(--faint)">—— 未加载 ——</p>
+      </div>
+
+      <!-- ═══ 云 GPU 会话（优云智算 / 通用 SSH）：一键唤醒 · 一键关机 · 空闲自动关（DPAPI 本机加密） ═══ -->
+      <div class="sp" id="cloudGpuAnchor"><span class="f">🖥 云 GPU 会话（SSH 唤醒 / 关机 · 可选 CompShare 云 API 停机不计费）</span>
+        <p class="hint" style="margin:2px 0 10px">
+          密码经 <b>Windows DPAPI</b> 加密后仅存本机（换机需重设）；
+          任务活跃时不触发自动关，空闲 <b><span id="cgIdleMinDisp">5</span></b> 分钟才关。
+          <span id="cgCredWarn" style="color:#e08c58;display:none">·（当前机器无 DPAPI，密码降级明文存储）</span>
+        </p>
+        <div class="row" style="gap:12px;margin-bottom:8px;flex-wrap:wrap">
+          <span class="mini" style="flex:none">停机方式</span>
+          <label class="row mini" style="gap:6px"><input type="radio" name="cgProvider" value="ssh" checked onchange="onProviderChange()">SSH · sudo shutdown</label>
+          <label class="row mini" style="gap:6px"><input type="radio" name="cgProvider" value="compshare" onchange="onProviderChange()">CompShare 云 API · StopUHostInstance（真正停机不计费）</label>
+        </div>
+        <p class="hint" style="margin:6px 0 8px;line-height:1.8">
+          <b style="color:var(--gold)">对齐优云智算控制台：</b>
+          实例卡里点「ssh登录指令 ssh*****」旁的📋 → 粘贴的字符串形如 <code>ssh -p <b>34567</b> root@<b>117.50.190.54</b></code>，
+          <b>-p</b> 后是端口，<b>@</b> 后是主机；密码到「密码 *****」点👁/📋看明文。
+        </p>
+        <div class="grid g2e" style="gap:8px">
+          <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:60px">主机</span>
+            <input type="text" id="cgHost" placeholder="控制台「基础网络（外网）」的 IP，如 117.50.190.54" style="flex:1"></div>
+          <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:60px">端口</span>
+            <input type="number" id="cgPort" value="22" min="1" max="65535" style="width:80px" title="从「ssh登录指令」的 -p 后取；容器实例通常不是 22"></div>
+          <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:60px">用户</span>
+            <input type="text" id="cgUser" value="root" style="flex:1"></div>
+          <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:60px">密码</span>
+            <input type="password" id="cgPass" placeholder="控制台「密码」字段的明文（首次必填一次）" style="flex:1"></div>
+        </div>
+        <div class="row" style="gap:6px;margin-top:8px"><span class="mini" style="flex:none;width:60px">密钥</span>
+          <input type="text" id="cgKey" placeholder="（可选）私钥路径，如 C:\Users\me\.ssh\id_ed25519（有则优先密码）" style="flex:1"></div>
+        <div class="row" style="gap:6px;margin-top:8px"><span class="mini" style="flex:none;width:60px">唤醒命令</span>
+          <input type="text" id="cgWake" placeholder="机器开机后要跑的命令，比如：nohup bash /root/start_dots.sh &（关机状态 SSH 连不上，需先控制台点启动）" style="flex:1"></div>
+        <div class="row" style="gap:6px;margin-top:8px"><span class="mini" style="flex:none;width:60px">关机命令</span>
+          <input type="text" id="cgSleep" value="sudo shutdown -h now" style="flex:1"></div>
+        <div class="row" style="gap:6px;margin-top:8px"><span class="mini" style="flex:none;width:60px">探活 URL</span>
+          <input type="text" id="cgHealth" placeholder="判定服务已上线的 URL，如 http://外网IP:8080/health；没 /health 就填服务根地址" style="flex:1"></div>
+        <div class="row" style="gap:12px;margin-top:8px;flex-wrap:wrap">
+          <label class="row mini" style="gap:6px"><input type="checkbox" id="cgEnabled">启用云 GPU 会话</label>
+          <label class="row mini" style="gap:6px"><input type="checkbox" id="cgAuto" checked>空闲自动关机</label>
+          <span class="mini">空闲阈值(分钟) <input type="number" id="cgIdleMin" value="5" min="1" max="240" style="width:60px" oninput="document.getElementById('cgIdleMinDisp').textContent=this.value"></span>
+          <button class="btn line" style="flex:none" onclick="saveCloudGpu()">💾 保存云 GPU 配置</button>
+        </div>
+        <!-- CompShare 云 API（默认折起；provider=compshare 时展开） -->
+        <div id="cgCsBox" style="display:none;border-top:1px dashed var(--line);margin-top:10px;padding-top:10px">
+          <p class="hint" style="margin:0 0 8px;line-height:1.8">
+            <b style="color:#e08c58">⚠ 未验证：</b>
+            优云智算的 GPU 容器实例 API 规格尚未在软件里对齐，此处默认按 UCloud OpenAPI（<code>api.ucloud.cn</code> · <code>StopUHostInstance</code>）尝试。
+            若报错，会自动回退 SSH shutdown 兜底；把返回的 <code>RetCode/Message</code> 反馈可按真实文档改。
+          </p>
+          <p class="hint" style="margin:0 0 8px;line-height:1.8">
+            <b style="color:var(--gold)">对齐控制台三处即可：</b>
+            <b>Public Key / Private Key</b> 到「API 密钥」页点📋复制；
+            <b>Instance ID</b> 到实例卡「ID: uhost-xxxxxxxx」点📋复制。
+            <a href="https://console.compshare.cn/light-gpu/api-keys" target="_blank" style="color:var(--gold);text-decoration:underline">🔑 打开 API 密钥页</a> ·
+            <a href="https://console.compshare.cn/light-gpu/instance" target="_blank" style="color:var(--gold);text-decoration:underline">🖥 打开实例列表</a>
+          </p>
+          <div class="grid g2e" style="gap:8px">
+            <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:88px">API Endpoint</span>
+              <input type="text" id="csEndpoint" value="https://api.ucloud.cn/" style="flex:1"
+                     title="默认 UCloud 网关；若优云智算文档给了独立 endpoint 请覆盖"></div>
+            <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:88px">Instance ID</span>
+              <input type="text" id="csInstance" placeholder="如 uhost-1tx6jx1ufb1a（图1「ID:」旁点📋）" style="flex:1"></div>
+            <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:88px">Public Key</span>
+              <input type="text" id="csPub" placeholder="控制台「API 密钥」→「公钥」列点📋" style="flex:1"></div>
+            <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:88px">Private Key</span>
+              <input type="password" id="csSec" placeholder="控制台「API 密钥」→「私钥」列点📋（DPAPI 本机加密）" style="flex:1"></div>
+          </div>
+          <!-- 高级：Region/Zone/Project 容器实例通常不需要；控制台文档若要求再填 -->
+          <p style="margin:10px 0 4px">
+            <span id="cgAdvToggle" style="cursor:pointer;color:var(--faint);font-size:12px;user-select:none" onclick="toggleCsAdv()">▸ 高级：Region / Zone / Project（容器实例通常留空即可）</span>
+          </p>
+          <div id="cgCsAdv" style="display:none">
+            <div class="grid g2e" style="gap:8px">
+              <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:88px">Region</span>
+                <input type="text" id="csRegion" placeholder="如 cn-bj2（华北二 A）；控制台文档若要求再填" style="flex:1"></div>
+              <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:88px">Zone</span>
+                <input type="text" id="csZone" placeholder="如 cn-bj2-04；仅 Start/Stop Action 可能需要" style="flex:1"></div>
+              <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:88px">Project Id</span>
+                <input type="text" id="csProject" placeholder="（可选）项目 ID；个人默认项目留空" style="flex:1"></div>
+            </div>
+          </div>
+          <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap">
+            <button class="btn line" style="flex:none" onclick="cloudStartApi()">▶ 云 API 开机（Start）</button>
+            <span class="mini" style="color:var(--faint)">机器已关时 SSH 连不上，只有云 API 能远程拉起来</span>
+          </div>
+        </div>
+        <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap">
+          <span class="badge" id="cgBadge" style="background:#333;color:#ccc">未启用</span>
+          <button class="btn gold" style="flex:none" onclick="cloudWake()">▶ 唤醒服务器</button>
+          <button class="btn" style="flex:none" onclick="cloudSleep()">⏹ 立即关机</button>
+          <button class="btn line" style="flex:none" onclick="cloudPauseAuto(30)">⏸ 暂停自动关 30 分钟</button>
+          <button class="btn line" style="flex:none" onclick="cloudPauseAuto(0)">▶ 取消暂停</button>
+        </div>
+        <!-- 唤醒进度条：wake_state.stage != idle 时展示 -->
+        <div id="cgWakeBox" style="display:none;margin-top:10px;padding:10px 12px;border-radius:8px;background:#1e2432;border:1px solid var(--line2)">
+          <div class="row" style="gap:8px">
+            <span class="mini" style="flex:none">唤醒进度</span>
+            <span class="mini" id="cgWakeStage" style="flex:none;color:var(--gold);font-weight:700">—</span>
+            <span class="mini" id="cgWakeElapsed" style="flex:none;color:var(--faint)">0s</span>
+            <span class="mini" id="cgWakeMsg" style="flex:1;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+          </div>
+        </div>
+        <p class="hint" id="cgHint" style="margin-top:6px;line-height:1.7">—— 未加载 ——</p>
+      </div>
       <p class="hint">缺什么点击即可下载/安装（多源 + SHA256 校验 + 断点续传）；<b style="color:var(--gold)">多个下载可同时进行</b>，互不阻塞，进度在下方与各行实时显示。</p>
       <div id="compList"><p class="empty">读取中…</p></div>
       <div class="console" id="dlog" style="height:150px;margin-top:14px"><span class="dim">—— 下载/安装日志 · 多任务并行 ——</span></div>
@@ -935,7 +1101,7 @@ function _busy(ms){
 let overlays=[], logTarget='mainlog', POSITIONS=[];
 const ASPECT_CANVAS={'9:16 竖屏':[1080,1920],'16:9 横屏':[1920,1080],'1:1 方形':[1080,1080],'4:3':[1440,1080],'3:4':[1080,1440]};
 const SUB_POS_RATIO={'顶部':0.06,'中上':0.30,'中部':0.48,'中下':0.68,'底部':0.885};
-const ENGINE_LABEL={dots_local:'dots.tts（本地 · 48kHz）',dots_remote:'dots.tts（云 GPU · 远程）',fish_local:'fish-speech（本地服务）',mock:'mock（测试）'};
+const ENGINE_LABEL={dots_local:'dots.tts（本地 · 48kHz）',dots_remote:'dots.tts（云 GPU · 远程）',fish_local:'fish-speech（本地服务）',mock:'mock（测试）',edge_tts:'Edge TTS（免费云端 · 预设音色 · 不支持克隆）'};
 const still=matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 /* ── 页签（支持 #p2 hash 直达） ── */
@@ -999,6 +1165,11 @@ async function loadState(){
   const engs=s.engines.filter(k=>k!=='fish_local');  // 隐藏 fish-speech（会顶掉 dots.tts 的 CUDA torch）
   fill('engine',engs.map(k=>[k,ENGINE_LABEL[k]||k]));
   $('engine').value=engs.includes('dots_local')?'dots_local':engs[0];
+  // Edge TTS 预设声线/风格常量（不进音色库；引擎切换控件的显示切换）
+  _fillEdgeChoices(s);
+  // v0.7.71 P0-1：缓存 /api/state 返回的引擎能力矩阵，供 onEngineChange 显示提示
+  window._engineCaps = s.engine_capabilities || {};
+  onEngineChange();
   fill('aligner',s.aligners.map(k=>[k,k==='whisper'?'whisper（推荐）':k]));
   fill('aspect',s.aspects.map(k=>[k,k]));
   fill('edPos',s.positions.map(k=>[k,k]));
@@ -1434,6 +1605,10 @@ function buildPayload(action){
     voice_id:$('voice').value,shots_dir:$('shots').value.trim(),output_dir:out,
     title:_baseName(out)||'成片',
     max_pause:+$('pause').value,speed:+$('speed').value,seed:+$('seed').value,
+    // Edge TTS 参数（其他引擎会忽略；带上不影响 dots/fish/mock）
+    edge_voice:($('edgeVoice')&&$('edgeVoice').value)||'',
+    edge_pitch:+($('edgePitch')&&$('edgePitch').value)||0,
+    edge_style:($('edgeStyle')&&$('edgeStyle').value)||'general',
     burn_subtitles:$('burn').checked,subtitle_size:+$('subsize').value||64,
     subtitle_position:$('subPos').value||'底部',subtitle_font:$('subFont')?.value||'',
     subtitle_color:($('subColor')&&$('subColor').value.trim())||'#FFFFFF',
@@ -1441,6 +1616,71 @@ function buildPayload(action){
     aspect:$('aspect').value,overlays,audio:collectAudio(),progressbar:collectProgressBar(),
     watermark:collectWatermark(),
     reuse_dub:$('reuseDub')?$('reuseDub').checked:false};
+}
+
+// 引擎切换：edge_tts 显示 Edge 声线/音调/风格，隐藏克隆音色；切回其他引擎恢复。
+// v0.7.71 P0-1：同步刷新"当前引擎能力"提示（原生 vs 软件后处理）。
+function onEngineChange(){
+  const isEdge=($('engine')&&$('engine').value==='edge_tts');
+  if($('voiceRow'))$('voiceRow').style.display=isEdge?'none':'';
+  if($('edgeRow'))$('edgeRow').style.display=isEdge?'':'none';
+  if($('edgeParamsRow'))$('edgeParamsRow').style.display=isEdge?'grid':'none';
+  if($('edgeNotice'))$('edgeNotice').style.display=isEdge?'block':'none';
+  if($('edgeTryRow'))$('edgeTryRow').style.display=isEdge?'flex':'none';
+  _updateEngineCapHint();
+}
+
+// 用 /api/state 返回的能力矩阵刷新"当前引擎能力"文案；未加载完时静默。
+function _updateEngineCapHint(){
+  const caps=(window._engineCaps||{})[$('engine')&&$('engine').value]||null;
+  const capEl=$('engineCapText'), seedEl=$('engineSeedHint');
+  if(!caps){
+    if(capEl)capEl.textContent='未知（未加载引擎能力清单）';
+    if(seedEl)seedEl.textContent='未知';
+    return;
+  }
+  const native=[];
+  if(caps.native_speed)native.push('语速');
+  if(caps.supports_seed)native.push('seed');
+  if(caps.supports_num_steps)native.push('步数');
+  if(caps.supports_guidance)native.push('引导强度');
+  if(caps.supports_edge_pitch)native.push('音调');
+  if(caps.supports_edge_style)native.push('风格');
+  if(caps.supports_voice_ref)native.push('参考音频克隆');
+  const post=[];
+  if(!caps.native_speed)post.push('语速（ffmpeg atempo，保持音调）');
+  post.push('停顿上限（silencedetect 压缩长静音）');
+  const detail=caps.detail?('· '+caps.detail):'';
+  if(capEl)capEl.innerHTML=
+    '原生：<b>'+(native.length?native.join('/'):'无')+'</b>'+
+    ' · 软件后处理：<b>'+post.join('/')+'</b> '+esc(detail);
+  if(seedEl)seedEl.textContent=caps.supports_seed
+    ?'本引擎 seed 影响 TTS 声音'
+    :'本引擎不承诺 seed 改变 TTS 声音，但素材选择照常';
+}
+
+// 「用当前 Edge 声线试听」：走 voice_try，engine=edge_tts，携带 edge_voice/pitch/style。
+async function tryEdgeVoice(btn){
+  const orig=btn.textContent; btn.disabled=true; btn.textContent='合成中…';
+  const ok=await postRun({action:'voice_try', engine:'edge_tts',
+    edge_voice:$('edgeVoice').value, edge_pitch:+$('edgePitch').value||0,
+    edge_style:$('edgeStyle').value||'general',
+    speed:+$('speed').value||1.0});
+  btn.disabled=false; btn.textContent=orig;
+  if(ok)pollAll();
+}
+// 用 /api/state 返回的常量填 Edge 下拉；state 加载后调用一次
+function _fillEdgeChoices(state){
+  const voices=state.edge_voices||[], styles=state.edge_styles||[];
+  const defaultStyle=state.edge_default_style||'general';
+  if($('edgeVoice')){
+    fill('edgeVoice', voices.map(v=>[v.id, v.name]));
+    if(voices.length && !$('edgeVoice').value)$('edgeVoice').value=voices[0].id;
+  }
+  if($('edgeStyle')){
+    fill('edgeStyle', styles.map(s=>[s, s]));
+    if(styles.includes(defaultStyle))$('edgeStyle').value=defaultStyle;
+  }
 }
 // 动态水印配置（未启用/空文字 → enabled:false，后端返回 None 不烧）
 function collectWatermark(){
@@ -1758,7 +1998,11 @@ async function rechunkOne(index){
   if(!confirm('只重新配音第 '+index+' 段？（用当前引擎/音色/参数重合成这一段并重拼 master，其余段不动）'))return;
   const payload={action:'rechunk',chunk_index:index,text:$('text').value,engine:$('engine').value,
     voice_id:$('voice').value,output_dir:$('outdir').value.trim(),
-    speed:+$('speed').value,seed:+$('seed').value,max_pause:+$('pause').value};
+    speed:+$('speed').value,seed:+$('seed').value,max_pause:+$('pause').value,
+    // Edge TTS 参数（其他引擎会忽略）——保证「重配此段」在 Edge 模式下也能带上声线/音调/风格
+    edge_voice:($('edgeVoice')&&$('edgeVoice').value)||'',
+    edge_pitch:+($('edgePitch')&&$('edgePitch').value)||0,
+    edge_style:($('edgeStyle')&&$('edgeStyle').value)||'general'};
   if(await postRun(payload))pollAll();
 }
 async function loadClones(){
@@ -1906,6 +2150,186 @@ async function saveRemote(){
   toast('已保存云配音配置','ok');
   loadSettings();loadState();
 }
+/* ── 云 GPU 会话（SSH 唤醒/关机 + CompShare 云 API 停机） ── */
+function _pickProvider(){
+  const r=document.querySelector('input[name="cgProvider"]:checked');
+  return r?r.value:'ssh';
+}
+function onProviderChange(){
+  const box=$('cgCsBox');
+  if(box)box.style.display=(_pickProvider()==='compshare')?'block':'none';
+}
+function toggleCsAdv(){
+  const el=$('cgCsAdv'), t=$('cgAdvToggle');
+  if(!el||!t)return;
+  const open=el.style.display==='none';
+  el.style.display=open?'block':'none';
+  t.textContent=(open?'▾':'▸')+' 高级：Region / Zone / Project（容器实例通常留空即可）';
+}
+async function loadCloudGpu(){
+  try{
+    const s=await (await fetch('/api/cloud/status')).json();
+    if(s.error){$('cgHint').textContent=s.error;return;}
+    // SSH 字段
+    if($('cgHost'))$('cgHost').value=s.host||'';
+    if($('cgPort'))$('cgPort').value=s.port||22;
+    if($('cgUser'))$('cgUser').value=s.user||'root';
+    if($('cgWake'))$('cgWake').value=s.wake_cmd||'';
+    if($('cgSleep'))$('cgSleep').value=s.sleep_cmd||'sudo shutdown -h now';
+    if($('cgHealth'))$('cgHealth').value=s.health_url||'';
+    if($('cgEnabled'))$('cgEnabled').checked=!!s.enabled;
+    if($('cgAuto'))$('cgAuto').checked=!!s.auto_sleep;
+    if($('cgIdleMin')){$('cgIdleMin').value=s.idle_minutes||5;$('cgIdleMinDisp').textContent=$('cgIdleMin').value;}
+    if($('cgPass'))$('cgPass').placeholder=s.has_password?'密码已存 ✓（留空=不改；重填=覆盖；DPAPI 本机加密）':'密码（首次必填一次）';
+    if($('cgCredWarn'))$('cgCredWarn').style.display=(s.credential_mode==='dpapi')?'none':'inline';
+    // Provider 单选
+    const prov=s.provider||'ssh';
+    document.querySelectorAll('input[name="cgProvider"]').forEach(r=>{r.checked=(r.value===prov);});
+    onProviderChange();
+    // CompShare 字段
+    if($('csEndpoint'))$('csEndpoint').value=s.cs_endpoint||'https://api.ucloud.cn/';
+    if($('csRegion'))$('csRegion').value=s.cs_region||'';
+    if($('csZone'))$('csZone').value=s.cs_zone||'';
+    if($('csProject'))$('csProject').value=s.cs_project_id||'';
+    if($('csInstance'))$('csInstance').value=s.cs_instance_id||'';
+    if($('csPub'))$('csPub').value=s.cs_public_key||'';
+    if($('csSec'))$('csSec').placeholder=s.has_cs_secret?'Private Key 已存 ✓（留空=不改；DPAPI 本机加密）':'Private Key（首次必填一次）';
+    // 状态徽标 + 顶栏灯（复用同一算法）
+    const label=_cloudLabel(s);
+    if($('cgBadge')){$('cgBadge').textContent=label.text;$('cgBadge').style.background=label.bg;$('cgBadge').style.color=label.fg;}
+    if($('cloudBadge')){$('cloudBadge').textContent='☁ '+label.text;$('cloudBadge').style.background=label.bg;$('cloudBadge').style.color=label.fg;
+      $('cloudBadge').title=label.tooltip;}
+    // 唤醒进度：stage != idle 时显示
+    const w=s.wake_state||{};
+    const box=$('cgWakeBox');
+    if(box){
+      const active=(w.stage&&w.stage!=='idle');
+      box.style.display=active?'block':'none';
+      if(active){
+        const zh={starting:'🚀 SSH 下发中',probing:'⏳ 探活中',ready:'✅ 就绪',failed:'❌ 失败'};
+        $('cgWakeStage').textContent=zh[w.stage]||w.stage;
+        $('cgWakeElapsed').textContent=Math.round(w.elapsed||0)+'s'+(w.attempts?(' · 探活 '+w.attempts+' 次'):'');
+        $('cgWakeMsg').textContent=w.message||'';
+      }
+    }
+    // 详细提示
+    const bits=[];
+    bits.push('停机方式：'+(prov==='compshare'?('CompShare 云 API '+(s.cs_ready?'✓':'（凭据/Region/Instance 缺）')):'SSH shutdown'));
+    bits.push(`空闲已 ${Math.round(s.idle_seconds||0)}s / 阈值 ${s.idle_minutes}min`);
+    if(s.last_action&&s.last_action.action)bits.push(`上次动作：${s.last_action.action} · ${s.last_action.ok?'成功':'失败'} · ${esc(s.last_action.message||'').slice(0,140)}`);
+    if(s.auto_paused&&s.idle_paused_until){
+      const remain=Math.max(0,s.idle_paused_until-Date.now()/1000);
+      bits.push(`暂停自动关 · 剩余 ${Math.round(remain/60)}min`);
+    }
+    if($('cgHint'))$('cgHint').innerHTML=bits.join(' · ');
+  }catch(e){if($('cgHint'))$('cgHint').textContent='加载状态失败：'+String(e);}
+}
+function _cloudLabel(s){
+  if(!s.enabled)return {text:'未启用',bg:'#333',fg:'#ccc',tooltip:'云 GPU 会话未启用，去「工具箱」开启'};
+  const w=s.wake_state||{};
+  if(w.stage==='starting'||w.stage==='probing')
+    return {text:'🚀 唤醒中',bg:'#4a3c1a',fg:'#fbeecd',tooltip:'正在唤醒服务器：'+(w.message||'')};
+  if(s.alive===true)return {text:'🟢 在线'+(s.auto_paused?' · 已暂停自动关':''),bg:'#1e5c3a',fg:'#dff5e6',tooltip:'服务已上线'};
+  if(s.alive===false)return {text:'⚫ 未响应',bg:'#5c1e1e',fg:'#f5dfe0',tooltip:'探活失败，可能已关机或服务未起'};
+  return {text:'🟡 已配置',bg:'#5c4a1e',fg:'#fbeecd',tooltip:'未配置探活 URL，无法判定在线状态'};
+}
+function jumpToCloud(){
+  // 顶栏灯点击 → 切到工具箱页 + 滚到面板 + 高亮
+  const btn=document.querySelector('#nav button[data-p="p4"]');
+  if(btn)btn.click();
+  const anchor=$('cloudGpuAnchor');
+  if(anchor){
+    setTimeout(()=>{anchor.scrollIntoView({behavior:'smooth',block:'start'});
+      anchor.style.transition='box-shadow .3s';anchor.style.boxShadow='0 0 0 2px var(--gold)';
+      setTimeout(()=>{anchor.style.boxShadow='';},1800);},80);
+  }
+}
+async function saveCloudGpu(){
+  const body={
+    enabled:$('cgEnabled').checked,
+    provider:_pickProvider(),
+    host:$('cgHost').value.trim(),
+    port:+$('cgPort').value||22,
+    user:$('cgUser').value.trim()||'root',
+    key_path:$('cgKey').value.trim(),
+    wake_cmd:$('cgWake').value,
+    sleep_cmd:$('cgSleep').value,
+    health_url:$('cgHealth').value.trim(),
+    idle_minutes:+$('cgIdleMin').value||5,
+    auto_sleep:$('cgAuto').checked,
+    // CompShare 字段
+    cs_endpoint:$('csEndpoint')?$('csEndpoint').value.trim():'',
+    cs_region:$('csRegion')?$('csRegion').value.trim():'',
+    cs_zone:$('csZone')?$('csZone').value.trim():'',
+    cs_project_id:$('csProject')?$('csProject').value.trim():'',
+    cs_instance_id:$('csInstance')?$('csInstance').value.trim():'',
+    cs_public_key:$('csPub')?$('csPub').value.trim():'',
+  };
+  if($('cgPass').value!=='')body.password=$('cgPass').value;      // 明文进入后端立即 DPAPI 加密
+  if($('csSec')&&$('csSec').value!=='')body.cs_private_key=$('csSec').value;
+  const j=await (await fetch('/api/cloud/save',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body)})).json();
+  if(j.error){alert(j.error);return;}
+  $('cgPass').value='';
+  if($('csSec'))$('csSec').value='';
+  toast('已保存云 GPU 配置','ok');
+  loadCloudGpu();
+}
+async function cloudStartApi(){
+  const j=await (await fetch('/api/cloud/start_api',{method:'POST'})).json();
+  if(j.error){alert(j.error);return;}
+  toast((j.ok?'✅ ':'⛔ ')+(j.message||''),j.ok?'ok':'err');
+  loadCloudGpu();
+}
+async function cloudWake(){
+  const j=await (await fetch('/api/cloud/wake',{method:'POST'})).json();
+  if(j.error){alert(j.error);return;}
+  toast((j.ok?'✅ ':'⛔ ')+(j.message||'唤醒指令已下发'),j.ok?'ok':'err');
+  loadCloudGpu();
+}
+async function cloudSleep(){
+  if(!confirm('立即关机云 GPU 服务器？（若有任务未完成会被中断）'))return;
+  const j=await (await fetch('/api/cloud/sleep',{method:'POST'})).json();
+  if(j.error){alert(j.error);return;}
+  toast((j.ok?'✅ ':'⛔ ')+(j.message||'关机指令已下发'),j.ok?'ok':'err');
+  loadCloudGpu();
+}
+async function cloudPauseAuto(minutes){
+  await fetch('/api/cloud/pause_auto',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({minutes:+minutes||0})});
+  toast(minutes>0?('已暂停自动关 '+minutes+' 分钟'):'已恢复自动关','ok');
+  loadCloudGpu();
+}
+// 每 15 秒刷新云 GPU 状态（心跳）——不改 loadState，避免拖累现有节奏
+setInterval(()=>{try{loadCloudGpu();}catch(e){}},15000);
+
+/* ── 免费 Edge TTS：Endpoint 保存 & 测试连接 ── */
+async function loadEdgeSettings(){
+  try{
+    const s=await (await fetch('/api/settings')).json();
+    if(s.error){return;}
+    if($('edgeEp'))$('edgeEp').value=s.edge_tts_endpoint||'';
+    if($('edgeHint'))$('edgeHint').textContent=s.edge_tts_endpoint
+      ?('当前 Worker：'+s.edge_tts_endpoint+'（点「测试连接」实测一次短合成）')
+      :'未配置 Worker 地址。选 Edge TTS 引擎前先在此处填一次。';
+  }catch(e){}
+}
+async function saveEdgeEndpoint(){
+  const ep=($('edgeEp')&&$('edgeEp').value.trim())||'';
+  const j=await (await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({edge_tts_endpoint:ep})})).json();
+  if(j.error){alert(j.error);return;}
+  toast(ep?'已保存 Edge TTS Worker 地址':'已清空 Edge TTS 配置','ok');
+  loadEdgeSettings(); loadState();   // 刷新 state（顶栏/引擎下拉可能因此变化）
+}
+async function testEdgeEndpoint(){
+  if($('edgeHint'))$('edgeHint').textContent='测试中…（会向 Worker 发一次短合成请求）';
+  try{
+    const j=await (await fetch('/api/edge_tts/test',{method:'POST'})).json();
+    if($('edgeHint'))$('edgeHint').textContent=(j.available?'✅ ':'⛔ ')+(j.detail||'（无详细信息）');
+  }catch(e){if($('edgeHint'))$('edgeHint').textContent='测试失败：'+String(e);}
+}
+
 async function testRemote(){
   $('remoteHint').innerHTML='测试中…（首次会等云端响应）';
   try{
@@ -2175,19 +2599,23 @@ function getMasterSeconds(){
 function collectAudio(){
   const bgmFile=$('bgmSel')?.value||'';
   return {
-    master_volume:num($('mVol').value,100)/100,
+    master_volume:num($('mVol').value,120)/100,
+    orig_video_volume:num($('oVol')?.value,100)/100,   // 原视频音效音量：0=关，1=原音
     bgm:bgmFile?{file:bgmFile,volume:num($('bVol').value,35)/100,loop:$('bLoop').checked}:null,
     sfx:sfxCues.map(c=>({file:c.file,at:+c.at||0,volume:(c.volume==null?1:+c.volume)}))
   };
 }
 function onMixChange(){
   $('mVolV').textContent=$('mVol').value+'%';
+  if($('oVolV')&&$('oVol'))$('oVolV').textContent=$('oVol').value+'%';
   $('bVolV').textContent=$('bVol').value+'%';
   $('bgmCtl').style.display=$('bgmSel').value?'flex':'none';
   // 试听中实时改总音量/BGM 音量（无需重新试听）——各路独立增益，BGM 不受音效影响
   if(mixPlaying){
-    if(mixGains.master)mixGains.master.gain.value=num($('mVol').value,100)/100;
+    if(mixGains.master)mixGains.master.gain.value=num($('mVol').value,120)/100;
     if(mixGains.bgm)mixGains.bgm.gain.value=num($('bVol').value,35)/100;
+    // 原视频音效仅在成片渲染时生效；试听是前端 Web Audio 合成 master+BGM+SFX，
+    // 不含真实分镜视频，所以此处**不联动增益**——避免给出"能试听到"的错觉。
   }
 }
 function setSfxVol(i,v){
@@ -2294,7 +2722,7 @@ async function toggleMixPreview(){
     const t0=actx.currentTime+0.06;
     const dur=masterBuf?masterBuf.duration:getMasterSeconds();
     mixNodes=[];mixGains={master:null,bgm:null,sfx:[]};
-    if(masterBuf)mixGains.master=schedule(masterBuf,t0,num($('mVol').value,100)/100,false,0);
+    if(masterBuf)mixGains.master=schedule(masterBuf,t0,num($('mVol').value,120)/100,false,0);
     if(bgmBuf)mixGains.bgm=schedule(bgmBuf,t0,num($('bVol').value,35)/100,$('bLoop').checked,dur);
     sfxCues.forEach((c,i)=>{if(sfxBufs[i])mixGains.sfx[i]=schedule(sfxBufs[i],t0+(+c.at||0),(c.volume==null?1:+c.volume),false,0);});
     mixPlaying=true;$('mixPlay').textContent='⏹ 停止试听';
@@ -2314,6 +2742,10 @@ function collectConfig(){
     matMode:$('matMode')?$('matMode').value:'flat',
     voice:$('voice').value,burn:$('burn').checked,seed:+$('seed').value,
     pause:+$('pause').value,speed:+$('speed').value,
+    // Edge TTS 参数一并存进作品预设：切回该预设自动还原声线/音调/风格
+    edge_voice:($('edgeVoice')&&$('edgeVoice').value)||'',
+    edge_pitch:+($('edgePitch')&&$('edgePitch').value)||0,
+    edge_style:($('edgeStyle')&&$('edgeStyle').value)||'general',
     subPos:$('subPos').value,subsize:+$('subsize').value,subFont:$('subFont').value,
     // ⑤ 作品预设纳入完整字幕样式 + 视频进度条设定
     sub:{size:+$('subsize').value||64,pos:$('subPos').value,font:$('subFont')?.value||'',
@@ -2321,13 +2753,22 @@ function collectConfig(){
     pb:collectProgressBar(),wm:collectWatermark(),
     audio:collectAudio(),overlays:overlays};
 }
-// 还原音频设置（总音量/BGM/音效）——作品预设与待编辑队列选中项共用
+// 还原音频设置（总音量/原视频音效/BGM/音效）——作品预设与待编辑队列选中项共用
 function restoreAudio(a){
   if(!a)return;
-  $('mVol').value=Math.round((a.master_volume??1)*100);
+  // 新基准 120%；老预设有明确 master_volume（含 1.0）时按保存值还原，只有字段缺失才用 1.2
+  $('mVol').value=Math.round((a.master_volume==null?1.2:+a.master_volume)*100);
+  // 旧预设/旧队列项无 orig_video_volume 字段 → 按 100% 兜底（与新默认一致，避免重烧时突然没声）
+  if($('oVol'))$('oVol').value=Math.round(((a.orig_video_volume==null?1:+a.orig_video_volume))*100);
   if(a.bgm){$('bgmSel').value=a.bgm.file||'';$('bVol').value=Math.round((a.bgm.volume??.35)*100);$('bLoop').checked=a.bgm.loop!==false;}
   else{$('bgmSel').value='';}
-  sfxCues=(a.sfx||[]).map(s=>({file:s.file,at:+s.at||0,volume:+s.volume||1}));
+  // 严格 null/undefined 判断 —— 保留合法的 0（音量=0=静音、位置=0 秒），
+  // 不能用 `+v || default` 把 0 吃成默认（用户设了 0 却被恢复成 100%）。
+  sfxCues=(a.sfx||[]).map(s=>({
+    file:s.file,
+    at:(s.at==null?0:+s.at),
+    volume:(s.volume==null?1:+s.volume),
+  }));
   onMixChange();renderSfxPins();renderSfxRows();
 }
 function applyConfigObj(c){
@@ -2337,6 +2778,11 @@ function applyConfigObj(c){
   set('matMode',c.matMode);
   if(c.burn!=null)$('burn').checked=c.burn;
   set('seed',c.seed);set('pause',c.pause);set('speed',c.speed);
+  // 还原 Edge TTS 参数（老预设无这些字段 → 保留当前值不动）
+  if(c.edge_voice!=null)set('edgeVoice',c.edge_voice);
+  if(c.edge_pitch!=null){set('edgePitch',c.edge_pitch);
+    if($('edgePitchV'))$('edgePitchV').textContent=String(c.edge_pitch);}
+  if(c.edge_style!=null)set('edgeStyle',c.edge_style);
   set('subPos',c.subPos);set('subsize',c.subsize);set('subFont',c.subFont);
   if(c.sub)applySubObj(c.sub);     // ⑤ 还原完整字幕样式（颜色/描边）
   if(c.pb)applyPbObj(c.pb);        // ⑤ 还原视频进度条设定
@@ -2346,6 +2792,7 @@ function applyConfigObj(c){
   if(c.audio)restoreAudio(c.audio);
   if(Array.isArray(c.overlays)){overlays=c.overlays;renderOverlays();}
   onMixChange();renderSfxPins();renderSfxRows();syncPv();
+  onEngineChange();   // 若预设切了引擎，同步 Edge 控件的显示
 }
 async function loadConfigs(){
   try{const s=await (await fetch('/api/config')).json();
@@ -2640,7 +3087,7 @@ function cvTplDel(){
 }
 function cvInit(){cvInitGrid9();cvTplList();cvSync();}
 
-renderMyColors();loadTpls();renderOverlays();loadState();loadComponents();loadSettings();loadFonts();loadClones();loadChunks();loadAssets();loadConfigs();cvInit();pollAll();  /* 载入时同步任务状态：刷新不丢日志/时间轴/下载进度 */
+renderMyColors();loadTpls();renderOverlays();loadState();loadComponents();loadSettings();loadFonts();loadClones();loadChunks();loadAssets();loadConfigs();loadCloudGpu();loadEdgeSettings();cvInit();pollAll();  /* 载入时同步任务状态：刷新不丢日志/时间轴/下载进度 */
 </script>
 </body>
 </html>

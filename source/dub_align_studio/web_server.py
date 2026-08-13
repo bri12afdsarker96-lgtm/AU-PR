@@ -36,7 +36,15 @@ from . import studio_pipeline as pipeline
 from . import voice_library
 from . import xlsx_reader
 from .aligners import WhisperAligner
-from .engines import DotsLocalEngine, DotsRemoteEngine, FishLocalEngine, MockEngine, SynthesisOptions
+from .engines import (
+    DotsLocalEngine,
+    DotsRemoteEngine,
+    EdgeTtsEngine,
+    FishLocalEngine,
+    MockEngine,
+    SynthesisOptions,
+)
+from .engines import edge_tts as edge_tts_mod
 from .overlays import POSITION_PRESETS, overlays_from_dicts
 from .subtitles import SubtitleStyle
 
@@ -375,8 +383,51 @@ def _gen_queue_clear_finished() -> int:
         return before - len(GEN_QUEUE)
 
 
+#: 只有**真实调用远程 GPU 合成**的 action 才刷 cloud_gpu 空闲计时——
+#: 本地 timing/render/finalize/capcut/premiere/cleanup 都是 CPU 上跑的，
+#: 界面即使选着 dots_remote 也不代表这些动作用了云 GPU；不能让它们假装"活跃"
+#: 而阻断空闲自动关。voice_try 单独一句试听算真实合成。
+_CLOUD_GPU_SYNTH_ACTIONS = frozenset({"dub", "rechunk", "voice_try", "run_all"})
+
+
+def _uses_cloud_gpu(action: str, payload: dict) -> bool:
+    """本 action 若真调 dots_remote 合成，才返回 True。
+
+    - **本地阶段** action（timing/render/finalize/capcut/premiere/cleanup 等）
+      即使 payload.engine=dots_remote 也**不算**——它们不打云 GPU。
+    - `run_all` 只在进入配音阶段前判断为 True；若 reuse_dub=True 且 master 已存在
+      → 跳过远程合成 → 本函数入口处**无法**判定，此时由调用点显式判断（见
+      _run_job 内 run_all 分支：只在真的要合成前才手动 mark_active）。
+    - 引擎不是 dots_remote（含 edge_tts / mock / 本地）永远返回 False。"""
+    if action not in _CLOUD_GPU_SYNTH_ACTIONS:
+        return False
+    return pipeline.is_cloud_gpu_engine(str(payload.get("engine") or ""))
+
+
+def _mark_cloud_gpu_active_if_needed(action: str, payload: dict) -> None:
+    """按 action+engine 决定是否刷新 cloud_gpu 空闲计时。**通用入口**——
+    专门给 run_all 里"真正开始配音"的时刻显式调用请用 `mark_cloud_gpu_active_now`。"""
+    if not _uses_cloud_gpu(action, payload):
+        return
+    mark_cloud_gpu_active_now()
+
+
+def mark_cloud_gpu_active_now() -> None:
+    """无条件刷新一次云 GPU 活跃时间——供 run_all 内部在**确认真的要走远程合成**
+    的位置（entering dots_remote 阶段 / heartbeat / 配音完成）显式调用。"""
+    try:
+        from . import cloud_gpu
+        cloud_gpu.manager().mark_active()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 —— 沿用旧函数体的 JOB 名
     log = JOB.append
+    # 云 GPU 保活：**不在入口无条件刷新**——那样 run_all+reuse_dub、voice_try 命中缓存、
+    # 参数校验失败、找不到分段等"根本没真调远程"的场景都会被误算成活跃，阻塞空闲自动关。
+    # 只有在 dub/rechunk/voice_try/run_all 里**真正进入 dots_remote 请求**的那一刻，
+    # 才由各分支自行显式调 `mark_cloud_gpu_active_now`（heartbeat + progress + 结束都续期）。
     try:
         text = str(payload.get("text") or "")
         output_dir = Path(str(payload.get("output_dir") or "")) if payload.get("output_dir") else None
@@ -384,17 +435,26 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
         aligner_key = str(payload.get("aligner") or "均分兜底")
         voice = None
         vparams: dict = {}
-        if payload.get("voice_id"):
+        # Edge TTS 只用预设声线，**不查音色库**（避免和克隆音色混淆、也不制造空 VoiceRef）
+        if engine_key != "edge_tts" and payload.get("voice_id"):
             entry = voice_library.get_voice(_vroot(), str(payload["voice_id"]))
             voice = entry.to_ref()
             vparams = entry.params or {}
-        # 合成参数：所选音色设计的 num_steps/guidance 生效于成片；速度/种子/停顿以界面为准（界面有滑杆）
+        # 合成参数：所选音色设计的 num_steps/guidance 生效于成片；速度/种子/停顿以界面为准。
+        # P0-3：**严格区分** None/空串（用默认）与数字 0（合法但对 speed 是错误）——
+        # 旧写法 `payload.get("speed") or vparams.get("speed") or 1.0` 会把 0 吞成 1.0。
         options = SynthesisOptions(
-            num_steps=int(payload.get("num_steps") or vparams.get("num_steps") or 10),
-            guidance_scale=float(payload.get("guidance_scale") or vparams.get("guidance_scale") or 1.2),
-            speed=float(payload.get("speed") or vparams.get("speed") or 1.0),
-            max_pause_seconds=float(payload.get("max_pause") or 0.0),
-            seed=int(payload.get("seed") or vparams.get("seed") or 42),
+            num_steps=int(_as_number(payload.get("num_steps"),
+                                     _as_number(vparams.get("num_steps"), 10))),
+            guidance_scale=float(_as_number(payload.get("guidance_scale"),
+                                            _as_number(vparams.get("guidance_scale"), 1.2))),
+            speed=float(_as_number(payload.get("speed"),
+                                    _as_number(vparams.get("speed"), 1.0))),
+            max_pause_seconds=float(_as_number(payload.get("max_pause"), 0.0)),
+            seed=int(_as_number(payload.get("seed"), _as_number(vparams.get("seed"), 42))),
+            edge_voice=str(payload.get("edge_voice") or ""),
+            edge_pitch=int(_as_number(payload.get("edge_pitch"), 0)),
+            edge_style=str(payload.get("edge_style") or "general"),
         )
         style = None
         if payload.get("burn_subtitles", True):
@@ -416,7 +476,21 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
         canvas = (config.width, config.height)
         from .audio_mix import mix_from_payload
 
-        audio_mix = mix_from_payload(payload.get("audio") or {}, _resolve_asset)
+        # 收集缺失素材的诊断信息 → 日志打黄色警告（不阻塞成片；避免"设置了却没声"的静默假成功）
+        mix_warnings: list[str] = []
+        audio_mix = mix_from_payload(payload.get("audio") or {}, _resolve_asset,
+                                      warnings=mix_warnings)
+        for w in mix_warnings:
+            log(f"⚠ {w}")
+        # P1（汇总条位置）：**仅**在真正产生成片且 result.ok=True 时输出汇总。
+        # 由各 render-产出分支自行调用 `_log_mix_summary`；finally 里绝不输出——
+        # 否则会误报：仅配音/试听/探测不产生成片、或成片渲染失败时报"成片中不包含
+        # 这些声音"，但根本没有"成片"。
+        _mix_warning_count = len(mix_warnings)
+
+        def _log_mix_summary_if_needed() -> None:
+            if _mix_warning_count > 0:
+                log(f"⚠ 本次共有 {_mix_warning_count} 个音频素材被跳过，成片中不包含这些声音。")
 
         # 友好校验：目录留空时给明确提示，避免 Path(None) 抛 TypeError（用户反馈①）
         if action in ("run_all", "dub", "timing", "render", "capcut", "rechunk", "finalize", "premiere", "cleanup") and output_dir is None:
@@ -451,10 +525,14 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                 else:
                     JOB.set_progress("① 配音 · 逐行克隆", 5)
                     log("① 配音 · 逐行克隆…")
+                    _uses_remote_gpu = pipeline.is_cloud_gpu_engine(engine_key)
+                    # P0-4：**不在分支入口 mark**——保活钩子由 synthesize_long 在紧邻
+                    # engine.synthesize_full 的位置调用；after 放 finally，成功/失败都刷。
+                    # dub_progress/heartbeat 仍保留（UI 用），但不再刷云 GPU。
 
                     def _dub_progress(done: int, total: int) -> None:
-                        JOB.check_cancel()   # 队列任务被取消 → 逐行处理间隙中止
-                        pct = 5 + int(done / max(1, total) * 73)  # 配音占 5~78%
+                        JOB.check_cancel()
+                        pct = 5 + int(done / max(1, total) * 73)
                         JOB.set_progress(f"① 配音 · 第 {done}/{total} 行", pct)
 
                     def _dub_beat(stage: str = "") -> None:
@@ -464,8 +542,12 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                                 JOB.stage = stage
                             JOB.last_tick = time.time()
 
+                    _before = mark_cloud_gpu_active_now if _uses_remote_gpu else None
+                    _after = mark_cloud_gpu_active_now if _uses_remote_gpu else None
                     master = pipeline.step_dub(text, engine_key, output_dir, voice, options, log=log,
-                                               progress=_dub_progress, heartbeat=_dub_beat)
+                                               progress=_dub_progress, heartbeat=_dub_beat,
+                                               before_engine_call=_before,
+                                               after_engine_call=_after)
                     log(f"  ✅ master {master.seconds:.2f}s（引擎 {master.engine}）")
 
             JOB.check_cancel()   # 配音后、量时长前的取消检查点
@@ -500,11 +582,15 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                     log(f"  剪映：{capcut.message}")
                 JOB.set_progress("完成", 100)
                 log(("✅ 成片完成：" if result.ok else "❌ 收口断言未通过：") + str(result.output_path))
+                if result.ok:
+                    _log_mix_summary_if_needed()   # 仅成片成功时才输出"共 N 个素材被跳过"
                 with JOB.lock:
                     JOB.timings, JOB.result, JOB.ok = timings, result, result.ok
                 if result.ok:
                     _remember_edit_item(output_dir, canvas, payload)  # ⑧ 进待编辑队列
         elif action == "dub":
+            _uses_remote_gpu = pipeline.is_cloud_gpu_engine(engine_key)
+
             def _dub_progress(done: int, total: int) -> None:
                 JOB.set_progress(f"配音 · 第 {done}/{total} 行", int(done / max(1, total) * 100))
 
@@ -514,18 +600,29 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                         JOB.stage = stage
                     JOB.last_tick = time.time()
 
+            # P0-4：保活钩子紧邻 engine.synthesize_full（after 放 finally）
+            _before = mark_cloud_gpu_active_now if _uses_remote_gpu else None
+            _after = mark_cloud_gpu_active_now if _uses_remote_gpu else None
             master = pipeline.step_dub(text, engine_key, output_dir, voice, options, log=log,
-                                       progress=_dub_progress, heartbeat=_dub_beat)
+                                       progress=_dub_progress, heartbeat=_dub_beat,
+                                       before_engine_call=_before,
+                                       after_engine_call=_after)
             log(f"✅ master：{master.path.name}（{master.seconds:.2f}s，引擎 {master.engine}）")
             with JOB.lock:
                 JOB.ok = True
         elif action == "rechunk":
-            # 只重配某一段（避免整篇重来的死循环）：重合成该段 → 重拼 master
+            # 只重配某一段：重合成该段 → 重拼 master（事务式）
             from .engines.longform import redub_chunk
 
             engine = pipeline.make_engine(engine_key)
-            index = int(payload.get("chunk_index") or 0)
-            redub_chunk(engine, output_dir / pipeline.MASTER_NAME, index, voice, options, log=log)
+            index = int(_as_number(payload.get("chunk_index"), 0))
+            _uses_remote_gpu = pipeline.is_cloud_gpu_engine(engine_key)
+            # P0-4：**不在分支入口 mark**——manifest 缺失/段号错误也别刷。
+            # 钩子由 redub_chunk 在验证通过、真正调 synthesize_full 前后触发。
+            _before = mark_cloud_gpu_active_now if _uses_remote_gpu else None
+            _after = mark_cloud_gpu_active_now if _uses_remote_gpu else None
+            redub_chunk(engine, output_dir / pipeline.MASTER_NAME, index, voice, options, log=log,
+                        before_engine_call=_before, after_engine_call=_after)
             with JOB.lock:
                 JOB.ok = True
         elif action == "timing":
@@ -553,6 +650,8 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                                           progress_bar=progress_bar, watermark=watermark)
             log(f"字幕/文本框：{result.subtitle_note or '未启用'}")
             log(("✅ 成片完成：" if result.ok else "❌ 收口断言未通过：") + str(result.output_path))
+            if result.ok:
+                _log_mix_summary_if_needed()
             with JOB.lock:
                 JOB.result, JOB.ok = result, result.ok
         elif action == "finalize":
@@ -575,15 +674,19 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                                           progress=_fin_progress, progress_bar=progress_bar, watermark=watermark)
             log(("✅ 成片：" if result.ok else "❌ 收口未过：") + str(result.output_path))
             JOB.set_progress("完成", 100)
+            if result.ok:
+                _log_mix_summary_if_needed()
             with JOB.lock:
                 JOB.timings, JOB.result, JOB.ok = timings, result, result.ok
             if result.ok:
                 _remember_edit_item(output_dir, canvas, payload)  # ⑧ 刷新待编辑队列时效
         elif action == "capcut":
             timings = JOB.timings or pipeline.load_timings(output_dir)
-            # JOB.result 为 None（软件重启后）时由 step_capcut 从磁盘读回分镜段
+            # JOB.result 为 None（软件重启后）时由 step_capcut 从磁盘读回分镜段；
+            # v0.7.71 P1-1：A1 走"成片同款混音单轨"，需 output_dir/成片.mp4 已生成
             package = pipeline.step_capcut(timings, JOB.result, output_dir / pipeline.MASTER_NAME,
-                                           output_dir, style or SubtitleStyle(), canvas=canvas)
+                                           output_dir, style or SubtitleStyle(), canvas=canvas,
+                                           film_mp4=output_dir / pipeline.FILM_NAME)
             log(f"✅ {package.message}")
             log(f"   交接包：{package.package_dir}")
             with JOB.lock:
@@ -621,11 +724,12 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             frames = quantize_to_frames([t.duration for t in timings], config.fps,
                                         wav_seconds(master_path))
             xml_path = export_premiere_project(output_dir, segments, master_path, frames,
-                                               config.fps, config.width, config.height)
+                                               config.fps, config.width, config.height,
+                                               film_mp4=output_dir / pipeline.FILM_NAME)
             log(f"✅ Premiere 交换工程已导出：{xml_path}")
             log("   ⚠ 用 Premiere「文件 → 导入」选该 .xml（不是「打开项目」——打开只认 .prproj，会提示格式不正确）。")
-            log("   导入后即得完整时间线（V1 分镜段 + A1 整轨配音）；想要 .prproj 就在 PR 里「另存为」。字幕另导入 成片.srt。")
-            log("   素材已复制进「Premiere工程_素材/」，工程自包含、可整体拷走，清理缓存后仍可导入。")
+            log("   导入后即得完整时间线（V1 分镜段·去音轨 + A1 混音单轨=成片同款）；字幕另导入 成片.srt。")
+            log("   ⓘ A1 = mixdown.wav 是「成片同款混音单轨」，与成片音效完全一致；BGM/SFX 暂不承诺独立可编辑轨道。")
             with JOB.lock:
                 JOB.ok = True
         elif action == "cleanup":
@@ -643,9 +747,14 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                 JOB.ok = True
                 JOB.result = None  # 分镜段已删，作废内存结果 → 后续导出走磁盘回读并给出友好提示
         elif action == "probe":
-            _engines = ((DotsRemoteEngine().probe(),) if studio_settings.cloud_only()
-                        else (MockEngine().probe(), DotsLocalEngine().probe(),
-                              DotsRemoteEngine().probe(), FishLocalEngine().probe()))
+            # 环境自检时对 Edge TTS 走 live_check=True（用户显式点了自检就跑一次短合成，
+            # 明确"能真发出请求且获得音频"）；其他引擎沿用现有 probe。
+            if studio_settings.cloud_only():
+                _engines = (DotsRemoteEngine().probe(), EdgeTtsEngine().probe(live_check=True))
+            else:
+                _engines = (MockEngine().probe(), DotsLocalEngine().probe(),
+                             DotsRemoteEngine().probe(), FishLocalEngine().probe(),
+                             EdgeTtsEngine().probe(live_check=True))
             for status in _engines:
                 log(("✅ " if status.available else "⛔ ") + f"{status.key}：{status.detail}")
             aligner = WhisperAligner().probe()
@@ -663,14 +772,24 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
 
             sample = str(payload.get("text") or "水星配音对齐，整篇克隆，逐行对齐，一句一画面。")
             engine_key = str(payload.get("engine") or "mock")
+            # P0-3：严格保留 0；由 SynthesisOptions/_validate_options 上层拒错
             opts = SynthesisOptions(
-                num_steps=int(float(payload.get("num_steps") or 10)),
-                guidance_scale=float(payload.get("guidance_scale") or 1.2),
-                speed=float(payload.get("speed") or 1.0),
-                max_pause_seconds=float(payload.get("max_pause_seconds") or 0.0),
-                seed=int(float(payload.get("seed") or 42)),
+                num_steps=int(_as_number(payload.get("num_steps"), 10)),
+                guidance_scale=float(_as_number(payload.get("guidance_scale"), 1.2)),
+                speed=float(_as_number(payload.get("speed"), 1.0)),
+                max_pause_seconds=float(_as_number(payload.get("max_pause_seconds"), 0.0)),
+                seed=int(_as_number(payload.get("seed"), 42)),
+                edge_voice=str(payload.get("edge_voice") or ""),
+                edge_pitch=int(_as_number(payload.get("edge_pitch"), 0)),
+                edge_style=str(payload.get("edge_style") or "general"),
             )
-            voice_id = str(payload.get("voice_id") or "默认声线")
+            # Edge 试听按预设声线区分缓存；其他引擎按用户音色 id
+            if engine_key == "edge_tts":
+                voice_id = str(payload.get("edge_voice") or "").strip() or "默认预设"
+                try_voice = None    # Edge 不看 VoiceRef
+            else:
+                voice_id = str(payload.get("voice_id") or "默认声线")
+                try_voice = voice   # 沿用外层已解析的 voice（可能为 None）
             sig = hashlib.md5(  # noqa: S324 —— 仅做缓存键，非安全用途
                 f"{voice_id}|{engine_key}|{opts.to_payload()}|{sample}".encode("utf-8")
             ).hexdigest()[:10]
@@ -678,17 +797,54 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             cache_dir.mkdir(parents=True, exist_ok=True)
             cached = cache_dir / f"{_safe_name(voice_id)}_{engine_key}_{sig}.wav"
             if cached.is_file() and cached.stat().st_size > 44:
+                # 缓存命中**绝不**刷云 GPU——纯磁盘复用不打远程
                 log(f"✅ 命中试听缓存，直接复用（未重复渲染）：{cached.name}")
                 with JOB.lock:
                     JOB.ok = True
                     JOB.result = {"try_audio": str(cached)}
             else:
+                # 缓存未命中：候选 .staging.wav → 后处理 → 原子 replace 到 cached
+                # P0-4：保活钩子**紧邻** engine.synthesize_full；after 放 finally；
+                # 参数校验、缓存查找已在前面完成，钩子不会因这些不真发远程的情况误刷。
                 log(f"用引擎 {engine_key} 合成试听句（{len(sample)} 字）…首次合成后会缓存，之后试听秒开。")
-                master = pipeline.make_engine(engine_key).synthesize_full(sample, voice, cached, opts)
+                _engine = pipeline.make_engine(engine_key)
+                _uses_remote_gpu = pipeline.is_cloud_gpu_engine(engine_key)
+                # P0-3：透过 SynthesisOptions 的合法性校验（sanitize speed/max_pause）
+                from .engines.longform import _apply_postprocess, _validate_options
+                _validate_options(opts)
+
+                cand = cached.with_suffix(cached.suffix + ".staging.wav")
+                cand_meta = cand.with_suffix(".json")
+                for p in (cand, cand_meta):
+                    try:
+                        if p.exists():
+                            p.unlink()
+                    except Exception:  # noqa: BLE001
+                        pass
+                try:
+                    if _uses_remote_gpu:
+                        mark_cloud_gpu_active_now()      # before：紧邻真实调用
+                    try:
+                        _engine.synthesize_full(sample, try_voice, cand, opts)
+                    finally:
+                        if _uses_remote_gpu:
+                            mark_cloud_gpu_active_now()  # after：finally，成功/失败都刷
+                    actual = _apply_postprocess(cand, opts, _engine, log=log)
+                    if not cand.is_file() or cand.stat().st_size < 44:
+                        raise RuntimeError(f"试听候选文件缺失或过小：{cand}")
+                    import os as _os
+                    _os.replace(str(cand), str(cached))
+                finally:
+                    for p in (cand, cand_meta):
+                        try:
+                            if p.exists():
+                                p.unlink()
+                        except Exception:  # noqa: BLE001
+                            pass
                 with JOB.lock:
                     JOB.ok = True
-                    JOB.result = {"try_audio": str(master.path)}
-                log(f"✅ 试听已生成并缓存：{master.path.name}（{master.seconds:.2f}s）")
+                    JOB.result = {"try_audio": str(cached)}
+                log(f"✅ 试听已生成并缓存：{cached.name}（{actual:.2f}s）")
         elif action == "fish_server":
             toolbox.start_fish_server(log)
             with JOB.lock:
@@ -751,9 +907,12 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
     except Exception as exc:
         JOB.append("❌ 失败：" + "".join(traceback.format_exception_only(exc)).strip())
     finally:
+        # **finally 里绝不打"成片中不包含"汇总**——render 失败 / voice_try / probe 等
+        # 根本没成片的 action 会误报。汇总由各成片成功分支自行调用 `_log_mix_summary_if_needed`。
         with JOB.lock:
             JOB.running = False
             JOB.done = True
+        # **finally 里绝不无条件刷云 GPU**：真远程动作各自在成功完成后显式 mark。
 
 
 # ------------------------------------------------------------------ HTTP
@@ -844,6 +1003,8 @@ class _Handler(BaseHTTPRequestHandler):
                         # 云配音（远程 GPU）配置：地址明示；Key 仅回「是否已设置」，不回明文
                         "dots_remote_endpoint": remote_ep,
                         "dots_remote_api_key_set": bool(remote_key),
+                        # Edge TTS（免费云端预设音色）Worker 服务根地址；空=未配置
+                        "edge_tts_endpoint": edge_tts_mod.edge_tts_endpoint(),
                         "paths": {  # 各类下载/资产的实际落地目录（界面明示，杜绝「下到哪了」的疑问）
                             "组件": str(studio_settings.components_root()),
                             "whisper 模型": str(studio_settings.whisper_models_dir()),
@@ -884,12 +1045,17 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({"components": toolbox.component_statuses()})
             return
         if route == "/api/probe":
-            _probe_pairs = (((DotsRemoteEngine().probe(), "dots.tts 云端"),)
+            # /api/probe 只做**轻量**探活：Edge TTS 走配置检查（live_check=False），
+            # 避免"探测组件"按钮点一次就无故拉一次外网请求。真实连通用「测试连接」按钮。
+            edge_probe = EdgeTtsEngine().probe(live_check=False)
+            _probe_pairs = (((DotsRemoteEngine().probe(), "dots.tts 云端"),
+                              (edge_probe, "Edge TTS 免费云端"))
                             if studio_settings.cloud_only() else (
                                 (MockEngine().probe(), "mock 引擎"),
                                 (DotsLocalEngine().probe(), "dots.tts"),
                                 (DotsRemoteEngine().probe(), "dots.tts 云端"),
                                 (FishLocalEngine().probe(), "fish-speech"),
+                                (edge_probe, "Edge TTS 免费云端"),
                             ))
             statuses = [
                 {"key": s.key, "name": n, "available": s.available, "detail": s.detail}
@@ -905,6 +1071,10 @@ class _Handler(BaseHTTPRequestHandler):
                                 "available": ff,
                                 "detail": "渲染就绪。" if ff else "未找到 ffmpeg/ffprobe，无法渲染成片。"})
             self._json({"components": statuses})
+            return
+        if route == "/api/cloud/status":
+            from . import cloud_gpu
+            self._json(cloud_gpu.manager().status())
             return
         self._json({"error": "not found"}, 404)
 
@@ -958,6 +1128,11 @@ class _Handler(BaseHTTPRequestHandler):
                     remote_update["dots_remote_endpoint"] = str(payload.get("dots_remote_endpoint") or "").strip().rstrip("/")
                 if "dots_remote_api_key" in payload:
                     remote_update["dots_remote_api_key"] = str(payload.get("dots_remote_api_key") or "").strip()
+                # Edge TTS Worker 服务根地址（默认空；空字符串=显式清空）
+                if "edge_tts_endpoint" in payload:
+                    raw_ep = str(payload.get("edge_tts_endpoint") or "").strip()
+                    # 复用引擎里的归一化逻辑，去掉误填的 /v1/audio/speech 尾巴
+                    remote_update["edge_tts_endpoint"] = edge_tts_mod._normalize_endpoint_root(raw_ep) if raw_ep else ""
                 if remote_update:
                     # save_settings 会跳过 None；空串是有效值（清空），故直接写
                     merged = studio_settings.load_settings()
@@ -968,9 +1143,42 @@ class _Handler(BaseHTTPRequestHandler):
                     ep, key = studio_settings.dots_remote_config()
                     out["dots_remote_endpoint"] = ep
                     out["dots_remote_api_key_set"] = bool(key)
+                # 回显 Edge TTS 归一化后的 endpoint（前端可据此刷新展示）
+                out["edge_tts_endpoint"] = edge_tts_mod.edge_tts_endpoint()
                 self._json(out)
             except Exception as exc:
                 self._json({"error": f"保存失败：{exc}"}, 400)
+            return
+        if route.startswith("/api/cloud/") and route != "/api/cloud/status":
+            from . import cloud_gpu
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}") if length else {}
+            except Exception as exc:
+                self._json({"error": f"参数解析失败：{exc}"}, 400)
+                return
+            try:
+                if route == "/api/cloud/save":
+                    cloud_gpu.save_cloud_config(payload)
+                    self._json(cloud_gpu.manager().status())
+                    return
+                if route == "/api/cloud/wake":
+                    self._json(cloud_gpu.manager().wake())
+                    return
+                if route == "/api/cloud/sleep":
+                    self._json(cloud_gpu.manager().sleep(reason="manual"))
+                    return
+                if route == "/api/cloud/pause_auto":
+                    minutes = float(payload.get("minutes") or 0.0)
+                    self._json(cloud_gpu.manager().pause_auto(minutes))
+                    return
+                if route == "/api/cloud/start_api":
+                    self._json(cloud_gpu.manager().start_via_api())
+                    return
+            except Exception as exc:
+                self._json({"error": f"云 GPU 操作失败：{exc}"}, 500)
+                return
+            self._json({"error": "not found"}, 404)
             return
         if route == "/api/fonts":
             query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
@@ -981,6 +1189,12 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "saved": saved})
             except Exception as exc:
                 self._json({"error": str(exc)}, 400)
+            return
+        if route == "/api/edge_tts/test":
+            # 「测试连接」按钮的显式入口：这时才允许 Edge TTS 发一次真实合成请求验证
+            # 服务可达；结果直接以 EngineStatus 形式回传（key/available/detail）。
+            status = EdgeTtsEngine().probe(live_check=True)
+            self._json({"key": status.key, "available": status.available, "detail": status.detail})
             return
         if route == "/api/assets":
             query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
@@ -1299,6 +1513,26 @@ def _safe_name(text: str) -> str:
     return _re.sub(r"[^\w一-鿿-]+", "_", str(text)).strip("_") or "voice"
 
 
+def _as_number(raw, default):
+    """P0-3：从 payload 里取数字**并严格保留 0**——None/空串走默认，数字 0/负数
+    /小数原样返回，让 SynthesisOptions 校验去接手明确报错（不再被 `or default` 吞掉）。
+    非数字字符串（例如 "abc"）当作缺省，避免让 float("abc") 直接崩溃 UI。"""
+    if raw is None:
+        return default
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return default
+        try:
+            v = float(s)
+        except ValueError:
+            return default
+        return v
+    if isinstance(raw, (int, float)):
+        return raw
+    return default
+
+
 def _resolve_asset(filename: str) -> Path | None:
     """把 BGM/音效文件名映射到配乐音效目录下的真实路径（只认文件名，防穿越）。"""
     if not filename:
@@ -1404,15 +1638,44 @@ def _state_payload() -> dict:
     voices = [{"voice_id": v.voice_id, "name": v.name, "transcript": v.transcript[:40],
                "engine": v.engine, "params": v.params, "released": v.released}
               for v in voice_library.list_voices(_vroot())]
+    # v0.7.71 P0-1：把每个引擎的 EngineCapabilities 序列化返回，供前端 UI 显示
+    # "当前引擎原生支持什么 / 哪些由软件后处理"提示，避免用户以为参数没生效。
+    engine_capabilities: dict[str, dict] = {}
+    for key in pipeline.ENGINE_KEYS:
+        try:
+            _eng = pipeline.make_engine(key)
+            caps = getattr(_eng, "capabilities", None)
+            if caps is None:
+                continue
+            engine_capabilities[key] = {
+                "native_speed": bool(caps.native_speed),
+                "supports_seed": bool(caps.supports_seed),
+                "supports_num_steps": bool(caps.supports_num_steps),
+                "supports_guidance": bool(caps.supports_guidance),
+                "supports_edge_pitch": bool(caps.supports_edge_pitch),
+                "supports_edge_style": bool(caps.supports_edge_style),
+                "supports_voice_ref": bool(caps.supports_voice_ref),
+                "detail": caps.detail,
+            }
+        except Exception:  # noqa: BLE001
+            pass  # 某引擎构造失败不影响其它引擎能力返回
     return {
         "version": full_version(),
-        "engines": (["dots_remote"] if studio_settings.cloud_only() else pipeline.ENGINE_KEYS),
+        # 云配版曝光：dots_remote + edge_tts；正式版继续曝光全部（含 edge_tts）
+        "engines": (list(pipeline.CLOUD_ENGINE_KEYS) if studio_settings.cloud_only()
+                     else list(pipeline.ENGINE_KEYS)),
         "cloud_only": studio_settings.cloud_only(),
         "aligners": pipeline.ALIGNER_KEYS,
         "aspects": pipeline.ASPECT_KEYS,
         "positions": list(POSITION_PRESETS),
         "voices": voices,
         "voice_root": str(voice_library.voices_root(_vroot())),
+        # Edge TTS 预设声线 / 风格常量（前端下拉源；不进 voice_library，不需要参考音频）
+        "edge_voices": edge_tts_mod.voice_choices(),
+        "edge_styles": edge_tts_mod.style_choices(),
+        "edge_default_style": edge_tts_mod.DEFAULT_STYLE,
+        "edge_endpoint": edge_tts_mod.edge_tts_endpoint(),
+        "engine_capabilities": engine_capabilities,
     }
 
 

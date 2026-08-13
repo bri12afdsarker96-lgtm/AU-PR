@@ -109,7 +109,14 @@ class SrtTests(unittest.TestCase):
 
 
 class CapcutPackageTests(unittest.TestCase):
+    """v0.7.71 P1-1：剪映草稿的 A1 走"成片同款混音单轨"。ffmpeg 提取音频用 mock，
+    测试仍完整验证契约：materials 里是 mixdown.wav、视频段是"去音轨副本"、
+    没成片时抛错。"""
+
     def setUp(self):
+        from unittest import mock
+        from dub_align_studio import export_mixdown
+
         self.workdir = Path(tempfile.mkdtemp(prefix="capcut_pkg_"))
         self.segments = []
         for i in range(1, 3):
@@ -122,21 +129,56 @@ class CapcutPackageTests(unittest.TestCase):
             handle.setsampwidth(2)
             handle.setframerate(8000)
             handle.writeframes(b"\x00\x00" * 8000)
+        # 假的"成片"文件（内容任意；extract_mixdown_wav 被 mock 不会真跑 ffmpeg）
+        self.film = self.workdir / "成片.mp4"
+        self.film.write_bytes(b"fake film mp4")
         self.timings = [LineTiming(1, "第一句", 6.0), LineTiming(2, "第二句", 5.5)]
 
+        # Mock 两个 ffmpeg 依赖函数：extract_mixdown_wav 写一个占位 WAV 头；
+        # make_silent_video 拷贝源视频（等价于"去音"，但测试断言只看文件存在）。
+        def fake_extract(film_mp4, out_wav, **_kw):
+            # 保留真实契约：film 不存在则抛 MixdownError（不 mock 掉这条错误路径）
+            if film_mp4 is None or not Path(film_mp4).is_file():
+                raise export_mixdown.MixdownError(f"成片文件不存在：{film_mp4}")
+            out_wav.parent.mkdir(parents=True, exist_ok=True)
+            with wave.open(str(out_wav), "wb") as w:
+                w.setnchannels(2)
+                w.setsampwidth(2)
+                w.setframerate(48000)
+                w.writeframes(b"\x00\x00" * (48000 * 2))  # 1 秒 stereo
+            return out_wav
+
+        def fake_silent_video(src, dst):
+            import shutil as _sh
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            _sh.copy2(src, dst)
+            return dst
+
+        self._patches = [
+            mock.patch.object(export_mixdown, "extract_mixdown_wav", side_effect=fake_extract),
+            mock.patch.object(export_mixdown, "make_silent_video", side_effect=fake_silent_video),
+        ]
+        for p in self._patches:
+            p.start()
+
     def tearDown(self):
+        for p in getattr(self, "_patches", []):
+            p.stop()
         shutil.rmtree(self.workdir, ignore_errors=True)
 
     def test_package_contains_all_deliverables(self):
         package = export_capcut_package(
             self.timings, self.segments, self.master, self.workdir / "out",
             style=SubtitleStyle(font_size_px=96),
+            film_mp4=self.film,
         )
         self.assertTrue(package.timeline_csv.exists())
         self.assertTrue(package.script_py.exists())
         self.assertTrue(package.srt_path and package.srt_path.exists())
         self.assertTrue((package.material_dir / "001.mp4").exists())
-        self.assertTrue((package.material_dir / "master.wav").exists())
+        # v0.7.71 契约：A1 是 mixdown.wav（成片同款混音）；不再是裸 master.wav
+        self.assertTrue((package.material_dir / "mixdown.wav").exists())
+        self.assertFalse((package.material_dir / "master.wav").exists())
         csv_content = package.timeline_csv.read_text(encoding="utf-8-sig")
         self.assertIn("6.000", csv_content)
         self.assertIn("11.500", csv_content)  # end 累加
@@ -146,21 +188,170 @@ class CapcutPackageTests(unittest.TestCase):
         manifest = json.loads((package.package_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["font_size_px"], 96)
         self.assertAlmostEqual(manifest["total_seconds"], 11.5)
+        # 使用说明明确契约措辞
+        note = (package.package_dir / "使用说明.txt").read_text(encoding="utf-8")
+        self.assertIn("成片同款混音单轨", note)
 
     def test_no_pycapcut_degrades_to_package_only(self):
-        package = export_capcut_package(self.timings, self.segments, self.master, self.workdir / "out2")
+        package = export_capcut_package(self.timings, self.segments, self.master,
+                                          self.workdir / "out2", film_mp4=self.film)
         self.assertIsNone(package.real_draft_dir)  # 本容器无 pyCapCut
         self.assertIn("交接包", package.message)
 
     def test_input_validation(self):
         with self.assertRaises(ValueError):
-            export_capcut_package(self.timings, self.segments[:1], self.master, self.workdir / "x")
-        with self.assertRaises(FileNotFoundError):
-            export_capcut_package(self.timings, self.segments, self.workdir / "无.wav", self.workdir / "x")
+            export_capcut_package(self.timings, self.segments[:1], self.master,
+                                    self.workdir / "x", film_mp4=self.film)
+        # v0.7.71 契约：没有成片必须明确失败，不再退化到裸 master 冒充成功
+        from dub_align_studio.export_mixdown import MixdownError
+        with self.assertRaises(MixdownError):
+            export_capcut_package(self.timings, self.segments, self.master,
+                                    self.workdir / "x", film_mp4=None)
+        with self.assertRaises(MixdownError):
+            export_capcut_package(self.timings, self.segments, self.master,
+                                    self.workdir / "x2",
+                                    film_mp4=self.workdir / "不存在.mp4")
 
     def test_draft_font_size_scaling(self):
         self.assertAlmostEqual(draft_font_size(SubtitleStyle(font_size_px=108)), 15.0)
         self.assertGreater(draft_font_size(SubtitleStyle(font_size_px=96)), draft_font_size(SubtitleStyle(font_size_px=48)))
+
+    def test_generated_script_references_mixdown_wav_not_master_glob(self):
+        """v0.7.71 P0-5：交接包生成的 create_capcut_draft.py 必须**明确**读
+        materials/mixdown.wav（v0.7.71 契约），不能保留旧的
+        `next(MATERIALS.glob("master.*"), None)`——否则拷到剪辑机跑脚本会漏音。"""
+        package = export_capcut_package(self.timings, self.segments, self.master,
+                                          self.workdir / "out_script",
+                                          film_mp4=self.film)
+        script = package.script_py.read_text(encoding="utf-8")
+        # 反面：不再对 `MATERIALS.glob("master.*")` 求下一个（旧漏音写法）
+        self.assertNotIn('MATERIALS.glob("master.*")', script)
+        self.assertNotIn('next(MATERIALS.glob(', script)
+        self.assertNotIn('AudioSegment(str(master),', script)
+        # 正面：明确读 mixdown.wav
+        self.assertIn('"mixdown.wav"', script)
+        self.assertIn("AudioSegment(str(mixdown)", script)
+        # 缺失时明确报错，不静默生成无声草稿
+        self.assertIn("缺少音频轨素材", script)
+
+    def test_generated_script_actually_wires_audio_via_fake_pycapcut(self):
+        """v0.7.71 P0-5：以 fake pycapcut 执行脚本 main()，断言
+        `AudioSegment(<mixdown.wav 绝对路径>, ...)` **真的**被调用。"""
+        import runpy, sys, types
+        package = export_capcut_package(self.timings, self.segments, self.master,
+                                          self.workdir / "out_exec",
+                                          film_mp4=self.film)
+        mixdown = package.material_dir / "mixdown.wav"
+        self.assertTrue(mixdown.is_file(), "materials/mixdown.wav 必须存在")
+
+        # 造 fake pycapcut：记录 AudioSegment 的调用参数
+        audio_calls: list[str] = []
+
+        class _FakeSeg:
+            def __init__(self, *a, **k): self.args = a; self.kwargs = k
+
+        class _FakeAudioSeg(_FakeSeg):
+            def __init__(self, path, tr, *a, **k):
+                super().__init__(path, tr, *a, **k)
+                audio_calls.append(path)
+
+        class _FakeScript:
+            def __init__(self, *a, **k):
+                self.segments = {"分镜": [], "配音": [], "字幕": []}
+            def add_track(self, kind, track_name=""):
+                self.segments.setdefault(track_name, [])
+            def add_segment(self, seg, track): self.segments[track].append(seg)
+            def save(self): pass
+
+        class _FakeDraftFolder:
+            def __init__(self, root): self.root = root
+            def create_draft(self, name, w, h, allow_replace=True): return _FakeScript()
+
+        class _FakeTT:
+            video = "video"; audio = "audio"; text = "text"
+
+        fake_cc = types.ModuleType("pycapcut")
+        fake_cc.DraftFolder = _FakeDraftFolder
+        fake_cc.TrackType = _FakeTT
+        fake_cc.VideoSegment = _FakeSeg
+        fake_cc.AudioSegment = _FakeAudioSeg
+        fake_cc.TextSegment = _FakeSeg
+        fake_cc.TextStyle = _FakeSeg
+        def _trange(start, dur): return (start, dur)
+        fake_cc.trange = _trange
+        sys.modules["pycapcut"] = fake_cc
+        try:
+            # 直接执行脚本的 main()——runpy 以 __main__ 语义运行 py 文件
+            runpy.run_path(str(package.script_py), run_name="__main__")
+        finally:
+            sys.modules.pop("pycapcut", None)
+        self.assertEqual(len(audio_calls), 1, f"AudioSegment 应被调用一次，实际 {audio_calls}")
+        # 传入的是 mixdown.wav 的绝对/相对路径
+        self.assertTrue(audio_calls[0].endswith("mixdown.wav"),
+                         f"AudioSegment 未指向 mixdown.wav：{audio_calls[0]}")
+
+    def test_same_second_reexport_uses_suffix_not_overwrite(self):
+        """v0.7.71 P0-5 附加：同一秒重复导出必须分配 `_2/_3` 后缀，**禁止** rmtree
+        旧包再 commit——那样会静默删掉用户上一次成功的交接包。"""
+        # 第一次导出 → package_dir_1
+        pkg1 = export_capcut_package(self.timings, self.segments, self.master,
+                                       self.workdir / "out_dup",
+                                       film_mp4=self.film)
+        # Mock datetime.now 让第二次拿到相同 stamp
+        from unittest import mock as _m
+        import dub_align_studio.capcut_draft as _cd
+        fake_now = pkg1.package_dir.name.replace("剪映草稿包_", "")
+
+        class _FixedTs:
+            def strftime(self, fmt): return fake_now
+            def isoformat(self, timespec="seconds"): return "2026-01-01T00:00:00"
+
+        class _FixedDt:
+            @classmethod
+            def now(cls): return _FixedTs()
+
+        with _m.patch.object(_cd, "datetime", _FixedDt):
+            pkg2 = export_capcut_package(self.timings, self.segments, self.master,
+                                           self.workdir / "out_dup",
+                                           film_mp4=self.film)
+        self.assertNotEqual(pkg1.package_dir, pkg2.package_dir,
+                             "同秒重复导出必须走不冲突后缀，绝不覆盖旧包")
+        self.assertTrue(pkg2.package_dir.name.endswith("_2"),
+                         f"期望 `_2` 后缀，实际 {pkg2.package_dir.name}")
+        # 旧包完整保留
+        self.assertTrue(pkg1.package_dir.is_dir())
+        self.assertTrue((pkg1.material_dir / "mixdown.wav").is_file())
+
+    def test_transactional_no_half_package_on_segment_failure(self):
+        """v0.7.71 P1-1 事务化：第 N 段无音副本失败时，不留任何『剪映草稿包_*/』半成品目录，
+        staging 目录也彻底清干净——用户看到的应该是"整体失败"而非"只走了一半的草稿包"。"""
+        from unittest import mock as _m
+        from dub_align_studio import export_mixdown
+        # 覆写 make_silent_video：第 2 段失败
+        call_count = {"n": 0}
+
+        def _boom_on_second(src, dst):
+            call_count["n"] += 1
+            if call_count["n"] == 2:
+                raise export_mixdown.MixdownError("第 2 段模拟失败")
+            import shutil as _sh
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            _sh.copy2(src, dst)
+            return dst
+
+        with _m.patch.object(export_mixdown, "make_silent_video", side_effect=_boom_on_second):
+            with self.assertRaises(export_mixdown.MixdownError):
+                export_capcut_package(self.timings, self.segments, self.master,
+                                       self.workdir / "out_fail",
+                                       film_mp4=self.film)
+        # out_fail 目录里不应有任何『剪映草稿包_*』**或** 半成品 staging 目录
+        out_fail = self.workdir / "out_fail"
+        if out_fail.is_dir():
+            leftovers = [p.name for p in out_fail.iterdir()]
+            self.assertFalse(
+                any(name.startswith("剪映草稿包_") for name in leftovers),
+                f"事务化失败：留下了半成品目录 {leftovers}",
+            )
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "需要 ffmpeg/ffprobe")

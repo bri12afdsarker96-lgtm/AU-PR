@@ -89,6 +89,23 @@ class RenderConfig:
     ffprobe: str = "ffprobe"
     mode: str = DEFAULT_MODE
 
+    def __post_init__(self):
+        """把 ffmpeg/ffprobe 冻结成**绝对路径**（能解析到就用；解析不到保留原值，
+        由 _require_binaries 给友好中文错）。调用方即使传裸名或忘了走 make_render_config，
+        也不会因子进程时的 CWD 抖动而报「找不到 ffmpeg」——这是用户在长队列渲染中偶发失败的
+        直接触发。settings 延迟 import 以避免 render_b ↔ settings 循环。"""
+        for attr, tool in (("ffmpeg", "ffmpeg"), ("ffprobe", "ffprobe")):
+            cur = getattr(self, attr, "")
+            if cur and Path(cur).is_absolute() and Path(cur).is_file():
+                continue  # 已是可用绝对路径，不动
+            try:
+                from . import settings as _s
+                resolved = _s.ffmpeg_tool(tool)
+            except Exception:  # noqa: BLE001
+                continue
+            if resolved and Path(resolved).is_absolute() and Path(resolved).is_file():
+                object.__setattr__(self, attr, resolved)
+
 
 @dataclass
 class ShotPlan:
@@ -161,6 +178,37 @@ def has_audio_stream(config: RenderConfig, path: Path) -> bool:
 
 
 # ------------------------------------------------------------------ 单段画面滤镜（纯逻辑，可单测）
+def shot_speed(src_seconds: float, target_seconds: float, mode: str = DEFAULT_MODE) -> float:
+    """预取本段的画面速率比（1.0=无变速；<1.0=放慢；>1.0=加速）。
+    与 shot_video_filter 里 match_video_to_audio 完全等价——用于主循环把 speed 传给
+    _render_silent_segment 决定音频侧策略（不重构 shot_video_filter 的返回签名以保
+    持既有测试与调用方兼容）。"""
+    return match_video_to_audio(src_seconds, target_seconds, mode).video_speed
+
+
+def shot_audio_filter(speed: float, src_seconds: float, target_seconds: float) -> str:
+    """构造单段音频滤镜（纯字符串，可单测）。
+
+    用户 2026-08 决策：**画面可变速，原音永不变速**——避免加速时"音效尖啸"、
+    放慢时"闷成低音"。所以本函数**从不**输出 `atempo` / `asetpts=PTS*speed`。
+
+    两条路径（按 speed 分派 atrim 长度）：
+      - **裁剪路径**（speed==1.0）：音频跟画面一起裁到 target_seconds；
+      - **变速路径**（speed!=1.0）：音频保持原速率，长度 = min(src, target)：
+          · 加速段（src>target）→ 原音在段末自然截断，避免溢出到下段与其原音打架；
+          · 放慢段（src<target）→ 原音用尽，段末由 apad 自动补静音。
+
+    统一 aformat=44100/stereo 保证后续 concat demuxer 拼接安全。"""
+    fmt = "aformat=sample_rates=44100:channel_layouts=stereo"
+    if abs(speed - 1.0) < 1e-3:
+        atrim_len = max(0.05, target_seconds)
+    else:
+        # src_seconds<=0 时（探测失败）退回 target，保底不越界
+        cap = src_seconds if src_seconds > 1e-3 else target_seconds
+        atrim_len = max(0.05, min(target_seconds, cap))
+    return f"{fmt},apad,atrim=0:{atrim_len:.3f},asetpts=PTS-STARTPTS"
+
+
 def shot_video_filter(
     src_seconds: float,
     target_seconds: float,
@@ -237,8 +285,10 @@ def render_b(
         vf, note = shot_video_filter(
             src_seconds, target_seconds, config.width, config.height, config.fps, config.mode
         )
+        speed = shot_speed(src_seconds, target_seconds, config.mode)
         segment = work_dir / f"{position:03d}.mp4"
-        _render_silent_segment(config, video, ",".join(vf), frame_count, segment)
+        _render_silent_segment(config, video, ",".join(vf), frame_count, segment,
+                               speed=speed, src_seconds=src_seconds)
         if progress is not None:
             try:
                 progress(position, len(lines))  # 逐段渲染进度回调
@@ -346,18 +396,63 @@ def render_b(
     )
 
 
+def _has_audio_stream(config: RenderConfig, source: Path) -> bool:
+    """探测视频是否带音轨——ffprobe 输出音频编码名；空/异常均视为无音。"""
+    try:
+        out = _run_out([
+            config.ffprobe, "-v", "error", "-select_streams", "a:0",
+            "-show_entries", "stream=codec_name",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(source),
+        ], f"探测音轨 {source.name}", allow_empty=True)
+    except RuntimeError:
+        return False
+    return bool(out.strip())
+
+
 def _render_silent_segment(
-    config: RenderConfig, source: Path, vf: str, frame_count: int, output: Path
+    config: RenderConfig, source: Path, vf: str, frame_count: int, output: Path,
+    speed: float = 1.0, src_seconds: float = 0.0,
 ) -> None:
-    command = [
-        config.ffmpeg, "-y", "-i", str(source),
-        "-an", "-vf", vf,
-        "-frames:v", str(frame_count),
-        "-c:v", "libx264", "-preset", config.preset, "-crf", str(config.crf),
-        "-pix_fmt", "yuv420p", "-fps_mode", "cfr", "-r", str(config.fps),
-        "-video_track_timescale", str(config.fps * 512),
-        str(output),
-    ]
+    """按帧数渲染一段分镜；**保留原视频音轨**（无音自动补静音），供 _overlay_master
+    按 orig_video_volume 混入成片。旧版一律 `-an` 剥掉原音 → 用户抱怨「原视频音效
+    被剪辑掉、音量控件怎么拖都无效」；此处改为保留 + 统一编码，是那两个问题的根因修复。
+
+    音频侧滤镜由 shot_audio_filter 按 speed 分派：**画面可变速，原音永不变速**。
+    - speed==1.0（裁剪路径）：音频跟画面等长 atrim=0:target；
+    - speed!=1.0（变速路径）：音频保持原速率，atrim=0:min(src,target)——加速段原音
+      在段末自然截断（不外溢下段），放慢段用 apad 补静音到段尾。
+
+    统一 aac/44100/stereo 保证后续 `concat demuxer` 拼接时音轨参数一致（否则会拒拼）。"""
+    has_audio = _has_audio_stream(config, source)
+    target_seconds = max(0.05, frame_count / max(1, config.fps))
+    if has_audio:
+        command = [
+            config.ffmpeg, "-y", "-i", str(source),
+            "-vf", vf,
+            "-frames:v", str(frame_count),
+            "-af", shot_audio_filter(speed, src_seconds, target_seconds),
+            "-c:v", "libx264", "-preset", config.preset, "-crf", str(config.crf),
+            "-pix_fmt", "yuv420p", "-fps_mode", "cfr", "-r", str(config.fps),
+            "-video_track_timescale", str(config.fps * 512),
+            "-c:a", "aac", "-b:a", config.audio_bitrate, "-ar", "44100", "-ac", "2",
+            str(output),
+        ]
+    else:
+        # 无音源：合成一段静音伴随视频，编码同样为 aac/44100/stereo → 拼接时无缝
+        command = [
+            config.ffmpeg, "-y", "-i", str(source),
+            "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+            "-vf", vf,
+            "-frames:v", str(frame_count),
+            "-shortest",
+            "-map", "0:v:0", "-map", "1:a:0",
+            "-c:v", "libx264", "-preset", config.preset, "-crf", str(config.crf),
+            "-pix_fmt", "yuv420p", "-fps_mode", "cfr", "-r", str(config.fps),
+            "-video_track_timescale", str(config.fps * 512),
+            "-c:a", "aac", "-b:a", config.audio_bitrate, "-ar", "44100", "-ac", "2",
+            str(output),
+        ]
     _run(command, f"渲染画面段 {output.name}")
 
 
@@ -437,10 +532,12 @@ def _overlay_master(
         _run(command, "叠加整轨配音" + burn_note + pb_note)
         return
 
-    # 混流路径：master 之后追加 BGM/音效输入，音频走 filter_complex
+    # 混流路径：master 之后追加 BGM/音效输入，音频走 filter_complex；
+    # video_input=0 让 build_audio_filtergraph 有能力把「拼接后视频」的音轨作为一路混入
+    # （orig_video_volume 由 audio_mix 决定是否接入；>0 才写 `[0:a]volume=X`）。
     for extra in build_audio_inputs(mix):
         command += extra
-    audio_graph, aout = build_audio_filtergraph(mix, master_input=1)
+    audio_graph, aout = build_audio_filtergraph(mix, master_input=1, video_input=0)
     if below or has_fill:
         video_graph = _build_video_graph(below, pb_fill, pb_above)
         command += ["-filter_complex", audio_graph + ";" + video_graph,
@@ -470,9 +567,11 @@ _FFMPEG_HINT = (
 
 
 def _require_binaries(config: "RenderConfig") -> None:
-    """渲染前预检 ffmpeg/ffprobe；缺失时给看得懂的中文指引，而非裸 WinError 2。"""
+    """渲染前预检 ffmpeg/ffprobe；缺失时给看得懂的中文指引，而非裸 WinError 2。
+    RenderConfig.__post_init__ 已尽力冻结成绝对路径；这里 which 兜底一次 PATH，
+    仍找不到才判缺失——避免"文件明明存在但 PATH 不含"这种误报。"""
     missing = [name for name, exe in (("ffmpeg", config.ffmpeg), ("ffprobe", config.ffprobe))
-               if shutil.which(exe) is None]
+               if not (Path(exe).is_absolute() and Path(exe).is_file()) and shutil.which(exe) is None]
     if missing:
         raise RuntimeError(_FFMPEG_HINT.format(miss=" 与 ".join(missing)))
 
@@ -483,12 +582,45 @@ def _guard_missing(exc: FileNotFoundError, command: list[str]) -> RuntimeError:
     return RuntimeError(_FFMPEG_HINT.format(miss=Path(exe).name))
 
 
+def _resolve_exe_last_ditch(name_or_path: str) -> str | None:
+    """子进程 FileNotFoundError 兜底：再走一次 settings.ffmpeg_tool 扫已知目录。
+    命令首字段若是裸名或已失效相对路径，尝试拿回一条绝对可执行路径；解析不到返 None。
+    settings 延迟 import 以避免循环。"""
+    tool = Path(name_or_path).name
+    stem = tool.lower()
+    if stem.startswith("ffprobe"):
+        which_name = "ffprobe"
+    elif stem.startswith("ffmpeg"):
+        which_name = "ffmpeg"
+    else:
+        return None
+    try:
+        from . import settings as _s
+        resolved = _s.ffmpeg_tool(which_name)
+    except Exception:  # noqa: BLE001
+        return None
+    if resolved and Path(resolved).is_absolute() and Path(resolved).is_file():
+        return resolved
+    fallback = shutil.which(which_name)
+    return fallback
+
+
 # ------------------------------------------------------------------ 子进程
 def _run(command: list[str], label: str) -> None:
     try:
         completed = run_silent(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
     except FileNotFoundError as exc:
-        raise _guard_missing(exc, command) from exc
+        # 兜底一次：CWD 抖动或 config 里是相对名时，主动搜绝对路径重试；仍失败给友好指引。
+        resolved = _resolve_exe_last_ditch(command[0] if command else "")
+        if resolved and resolved != command[0]:
+            try:
+                completed = run_silent([resolved] + command[1:],
+                                        capture_output=True, text=True,
+                                        encoding="utf-8", errors="replace")
+            except FileNotFoundError as exc2:
+                raise _guard_missing(exc2, command) from exc2
+        else:
+            raise _guard_missing(exc, command) from exc
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "").strip()[-2000:]
         raise RuntimeError(f"{label}失败：{detail or '未知错误'}")
@@ -498,7 +630,16 @@ def _run_out(command: list[str], label: str, allow_empty: bool = False) -> str:
     try:
         completed = run_silent(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
     except FileNotFoundError as exc:
-        raise _guard_missing(exc, command) from exc
+        resolved = _resolve_exe_last_ditch(command[0] if command else "")
+        if resolved and resolved != command[0]:
+            try:
+                completed = run_silent([resolved] + command[1:],
+                                        capture_output=True, text=True,
+                                        encoding="utf-8", errors="replace")
+            except FileNotFoundError as exc2:
+                raise _guard_missing(exc2, command) from exc2
+        else:
+            raise _guard_missing(exc, command) from exc
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "").strip()[-2000:]
         raise RuntimeError(f"{label}失败：{detail or '未知错误'}")

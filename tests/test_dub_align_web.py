@@ -78,8 +78,11 @@ class WebServerTests(unittest.TestCase):
         probe = self._get("/api/probe")
         names = [c["name"] for c in probe["components"]]
         keys = [c["key"] for c in probe["components"]]
-        self.assertEqual(len(names), 6)  # ffmpeg + mock + dots.tts + dots.tts 云端 + fish + whisper
+        # ffmpeg + mock + dots.tts + dots.tts 云端 + fish + edge_tts + whisper（正式版；
+        # edge_tts 于 v0.7.71 加入，随之补一位）
+        self.assertEqual(len(names), 7)
         self.assertIn("dots_remote", keys)  # 云配音远程引擎已注册进探针
+        self.assertIn("edge_tts", keys)     # Edge TTS 免费云端预设引擎
         self.assertTrue(all(c["detail"] for c in probe["components"]))
 
     def test_voice_upload_and_delete_with_chinese_id(self):
