@@ -1087,6 +1087,26 @@ class _Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(body)
                 return
+        # 音频白名单下发：只允许 data_root/批量带货/试听 与 输出目录下的文件
+        if route == "/api/bulk_dub/audio":
+            from .bulk_dub import service as bulk_service
+
+            query = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+            raw = query.get("path") or ""
+            allowed_roots = [
+                (studio_settings.data_root() / "批量带货" / "试听").resolve(),
+            ]
+            # 追加当前批次输出目录
+            try:
+                svc = bulk_service.get_service()
+                if svc._current_batch_id:  # noqa: SLF001
+                    b = svc.store.get_batch(svc._current_batch_id)
+                    if b and b.get("output_dir"):
+                        allowed_roots.append(Path(b["output_dir"]).resolve())
+            except Exception:  # noqa: BLE001
+                pass
+            self._serve_bulk_audio(raw, allowed_roots)
+            return
         if route.startswith("/api/bulk_dub"):
             from .bulk_dub import api as bulk_api
 
@@ -1099,11 +1119,53 @@ class _Handler(BaseHTTPRequestHandler):
             if handled:
                 self.send_response(status)
                 self.send_header("Content-Type", ctype)
+                # R8：CSV 触发下载
+                if route == "/api/bulk_dub/csv":
+                    self.send_header("Content-Disposition",
+                                      "attachment; filename=bulk_dub_result.csv")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
                 return
         self._json({"error": "not found"}, 404)
+
+    def _serve_bulk_audio(self, path_str: str,
+                           allowed_roots: list) -> None:
+        """把批量配音的 wav 试听/成片安全下发到浏览器。
+        白名单：只允许 allowed_roots 中的目录（resolve 后包含检查）。
+        """
+        if not path_str:
+            self._json({"error": "缺少 path"}, 400)
+            return
+        try:
+            candidate = Path(path_str).resolve()
+        except OSError:
+            self._json({"error": "路径非法"}, 400)
+            return
+        if not candidate.is_file():
+            self._json({"error": "文件不存在"}, 404)
+            return
+        ok = False
+        for root in allowed_roots:
+            try:
+                candidate.relative_to(root)
+                ok = True
+                break
+            except ValueError:
+                continue
+        if not ok:
+            self._json({"error": "路径不在允许范围"}, 403)
+            return
+        ext = candidate.suffix.lower()
+        ctype = {"wav": "audio/wav", "mp3": "audio/mpeg",
+                  "mp4": "video/mp4"}.get(ext.lstrip("."), "application/octet-stream")
+        data = candidate.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
@@ -1113,6 +1175,11 @@ class _Handler(BaseHTTPRequestHandler):
 
             query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
             length = int(self.headers.get("Content-Length") or 0)
+            # R8：Content-Length 硬上限——xlsx 上传 20MB，其他 256KB
+            max_body = 20 * 1024 * 1024 if route in ("/api/bulk_dub/preview", "/api/bulk_dub/start") else 256 * 1024
+            if length > max_body:
+                self._json({"error": f"上传体积过大：Content-Length={length} > {max_body}"}, 413)
+                return
             body = self.rfile.read(length) if length > 0 else b""
             ctype = self.headers.get("Content-Type") or ""
             try:

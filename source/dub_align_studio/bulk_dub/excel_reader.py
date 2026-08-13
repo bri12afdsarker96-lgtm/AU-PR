@@ -1,12 +1,10 @@
 """Excel 批量任务导入：从 A 列（视频路径）+ B 列（口播文案）读行。
 
+R8 加固：
+    - ZIP bomb 防护：条目数上限、单条解压大小上限、总解压大小上限；
+    - 预览上限（`preview.rows` 只保留前 N 条；总统计仍是全表）。
+
 沿用项目现有 xlsx_reader 的解析基础（纯标准库，zipfile + xml.etree），不引入新依赖。
-需求：
-    - 第一行为标题，固定跳过；
-    - 从第二行开始逐行读；空行跳过；
-    - A 列为空 / 视频不存在 / 格式不支持 / B 列为空 → 该行标记失败（不阻断其他行）；
-    - 支持中文、空格、Windows 盘符、UNC 路径；
-    - 只解析第一个工作表。
 """
 
 from __future__ import annotations
@@ -26,6 +24,22 @@ VIDEO_EXTS = frozenset({
     ".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v",
     ".flv", ".wmv", ".mpg", ".mpeg", ".ts",
 })
+
+# R8 ZIP bomb 硬上限
+MAX_ZIP_ENTRIES = 100           # 一个 xlsx 通常 < 20 个 xml；100 已很宽松
+MAX_ZIP_TOTAL_UNPACKED = 200 * 1024 * 1024   # 200 MB
+MAX_ZIP_ONE_UNPACKED = 64 * 1024 * 1024      # 64 MB
+MAX_XLSX_UPLOAD_BYTES = 20 * 1024 * 1024     # 20 MB 上传上限；api 层也强制
+
+# 预览返回上限
+DEFAULT_PREVIEW_LIMIT = 500
+
+# 单批任务数上限（防误导入亿级 xlsx）
+MAX_TASKS_PER_BATCH = 100000
+
+
+class ExcelSizeError(ValueError):
+    """xlsx 结构越界（ZIP bomb 防护）。"""
 
 
 @dataclass(frozen=True)
@@ -57,7 +71,7 @@ class PreviewResult:
     skipped_empty: int = 0
     sheet_name: str = ""
 
-    def to_dict(self, preview_limit: int = 500) -> dict[str, Any]:
+    def to_dict(self, preview_limit: int = DEFAULT_PREVIEW_LIMIT) -> dict[str, Any]:
         return {
             "rows": [r.to_dict() for r in self.rows[:preview_limit]],
             "rows_total": len(self.rows),
@@ -66,17 +80,46 @@ class PreviewResult:
             "invalid": self.invalid,
             "skipped_empty": self.skipped_empty,
             "sheet_name": self.sheet_name,
+            "preview_limit": preview_limit,
         }
+
+
+def _open_bundle(data: bytes) -> zipfile.ZipFile:
+    """带 ZIP bomb 防护的打开：检查条目数 + 每条 file_size + 总大小。"""
+    try:
+        bundle = zipfile.ZipFile(BytesIO(data))
+    except zipfile.BadZipFile as exc:
+        raise ValueError("不是有效的 xlsx 文件（无法按 zip 打开）。") from exc
+    infos = bundle.infolist()
+    if len(infos) > MAX_ZIP_ENTRIES:
+        bundle.close()
+        raise ExcelSizeError(
+            f"xlsx 条目过多（{len(infos)} > {MAX_ZIP_ENTRIES}）——可能是 ZIP bomb"
+        )
+    total = 0
+    for info in infos:
+        if info.file_size > MAX_ZIP_ONE_UNPACKED:
+            bundle.close()
+            raise ExcelSizeError(
+                f"xlsx 单条目解压过大：{info.filename} → {info.file_size} 字节"
+            )
+        total += info.file_size
+        if total > MAX_ZIP_TOTAL_UNPACKED:
+            bundle.close()
+            raise ExcelSizeError(
+                f"xlsx 总解压大小过大：{total} > {MAX_ZIP_TOTAL_UNPACKED}"
+            )
+    return bundle
 
 
 def parse_excel(source: bytes | str | Path,
                 *, check_exists: bool = True) -> PreviewResult:
     data = source if isinstance(source, bytes) else Path(source).read_bytes()
-    try:
-        bundle = zipfile.ZipFile(BytesIO(data))
-    except zipfile.BadZipFile as exc:
-        raise ValueError("不是有效的 xlsx 文件（无法按 zip 打开）。") from exc
-
+    if len(data) > MAX_XLSX_UPLOAD_BYTES:
+        raise ExcelSizeError(
+            f"xlsx 文件太大（{len(data)} 字节 > {MAX_XLSX_UPLOAD_BYTES}）"
+        )
+    bundle = _open_bundle(data)
     with bundle:
         shared = _shared_strings(bundle)
         sheet_name = _first_sheet_path(bundle)
@@ -266,6 +309,15 @@ def build_minimal_xlsx(rows: list[tuple[str, str]], *, include_header: bool = Tr
         zf.writestr("xl/_rels/workbook.xml.rels", rels_xml)
         zf.writestr("xl/worksheets/sheet1.xml", sheet_xml)
         zf.writestr("xl/sharedStrings.xml", ss_xml)
+    return buf.getvalue()
+
+
+def build_zip_bomb_payload(entries: int = MAX_ZIP_ENTRIES + 10) -> bytes:
+    """给测试用：构造一个条目数超限的 zip（不真的 bomb，只是超过 MAX_ZIP_ENTRIES）。"""
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for i in range(entries):
+            zf.writestr(f"entry_{i}.xml", "<x/>")
     return buf.getvalue()
 
 

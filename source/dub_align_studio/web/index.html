@@ -238,6 +238,11 @@ footer b{color:var(--muted);font-weight:600}
     <button data-p="p3">音色库</button>
     <button data-p="p5">字体库</button>
     <button data-p="p4">工具箱自检</button>
+    <!-- 独立子系统入口——不是 SPA 切换，直接跳同源新页 -->
+    <button onclick="window.open('/bulk_dub','_blank')"
+            title="Excel 批量带货配音：独立页面 / 独立队列 / 不影响一键成片">
+      📊 Excel 批量带货
+    </button>
   </nav>
 </div></header>
 

@@ -2,6 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Excel 批量带货配音</title>
 <style>
   :root { color-scheme: light dark; }
@@ -26,6 +27,7 @@
   th { background:#f6f6f8; font-weight:600; }
   tr.err td { color:#c33; }
   tr.ok td { color:#080; }
+  tr.warn-row td { background:#fffaf0; }
   .status-pill { display:inline-block; padding:1px 8px; border-radius:12px; font-size:11px; color:#fff; }
   .s-pending { background:#8a8a8f; }
   .s-tts_running { background:#4a7cf7; }
@@ -48,33 +50,49 @@
   .ok-msg   { background:#e0ffe0; color:#106810; padding:6px 10px; border-radius:4px;
               font-size:12px; margin:6px 0; }
   .paginator { display:flex; gap:6px; align-items:center; margin-top:6px; font-size:12px; }
+  .badge-ep { display:inline-block; padding:2px 6px; font-size:11px; border-radius:3px; }
+  .badge-ep.ok { background:#e0ffe0; color:#106810; }
+  .badge-ep.no { background:#ffe0e0; color:#8a1010; }
+  audio { vertical-align:middle; }
+  .estimate-note { font-size:11px; color:#8a5100; }
   @media (prefers-color-scheme: dark) {
-    body { background:#181a1c; color:#e0e0e0; }
+    body { background:#181a1c; color:#e6e6e6; }
     .panel { background:#22252a; border-color:#33363c; }
-    th { background:#2a2d33; }
-    tr.ok td { color:#7fd18a; }
-    tr.err td { color:#ff9090; }
-    input, select { background:#22252a; color:#e0e0e0; border-color:#4a4d55; }
-    .metric-grid div { background:#2a2d33; }
+    th { background:#2a2d33; color:#e6e6e6; }
+    tr.ok td { color:#8fd48f; }
+    tr.err td { color:#ffb0b0; }
+    tr.warn-row td { background:#2b2618; color:#f0d090; }
+    input, select { background:#22252a; color:#e6e6e6; border-color:#4a4d55; }
+    button.secondary { background:#22252a; color:#8ac6ff; border-color:#4a7cf7; }
+    .metric-grid div { background:#2a2d33; color:#e6e6e6; }
     .metric-grid strong { color:#8ac6ff; }
+    label, span, code { color:#dcdcdc; }
+    .warn-msg { background:#3a2e10; color:#f5d68f; }
+    .err-msg  { background:#3a1010; color:#ffb0b0; }
+    .ok-msg   { background:#153015; color:#a0e0a0; }
+    .badge-ep.ok { background:#153015; color:#8fd48f; }
+    .badge-ep.no { background:#3a1010; color:#ffb0b0; }
+    .estimate-note { color:#f5d68f; }
   }
   code { font-size:11px; color:#666; }
 </style>
 </head>
 <body>
-<h1>Excel 批量带货配音</h1>
+<h1>Excel 批量带货配音 <a href="/" style="font-size:12px; margin-left:12px">← 返回主页</a></h1>
 
 <div class="panel">
   <div class="row">
     <input type="file" id="excelFile" accept=".xlsx">
     <button id="btnPreview" class="secondary">预览</button>
     <label>输出目录 <input type="text" id="outputDir" style="width:340px" placeholder="C:\成片\带货"></label>
+    <span id="endpointBadge" class="badge-ep">Edge 端点：加载中…</span>
   </div>
   <div class="row" style="margin-top:8px">
     <label>音色 <select id="voiceId"></select></label>
     <label>语速 <input type="range" id="speedRange" min="0.5" max="2.0" step="0.05" value="1.25"></label>
     <span id="speedVal">1.25</span>
     <button id="btnTryVoice" class="secondary">试听当前音色</button>
+    <span id="tryAudioBox"></span>
     <label><input type="checkbox" id="keepOrig"> 保留原视频声音</label>
   </div>
   <div class="row" style="margin-top:8px">
@@ -102,10 +120,18 @@
 
 <div class="panel">
   <div class="row" style="justify-content:space-between">
-    <div><strong id="batchLabel">当前批次：（未开始）</strong></div>
+    <div>
+      <strong id="batchLabel">当前批次：（未开始）</strong>
+      <label style="margin-left:12px">切换批次
+        <select id="batchSelector" style="min-width:220px"></select>
+      </label>
+    </div>
     <div id="encoderInfo"><code>编码器：-</code></div>
   </div>
   <div class="metric-grid" id="metrics"></div>
+  <div class="estimate-note">
+    ※ "按现在推算 24h" 只是把最近 1 小时实测速度乘以 24 的简单外推；未做真实 24 小时耐久测试。
+  </div>
 </div>
 
 <div class="panel">
@@ -130,7 +156,7 @@
   </div>
   <table>
     <thead><tr>
-      <th>行号</th><th>输入视频</th><th>文案</th><th>状态</th><th>阶段</th>
+      <th>行号</th><th>输入视频</th><th>文案</th><th>状态</th><th>阶段/警告</th>
       <th>输出</th><th>时长</th><th>尝试</th><th>操作</th>
     </tr></thead>
     <tbody id="taskRows"></tbody>
@@ -147,13 +173,13 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
 const state = {
-  currentBatch: "", page: 0, pageSize: 100, sinceTs: 0,
+  currentBatch: "", page: 0, pageSize: 100,
   msg(text, cls) {
     const box = document.createElement("div");
     box.className = cls || "warn-msg";
     box.textContent = text;
     $("messages").prepend(box);
-    setTimeout(() => box.remove(), 6000);
+    setTimeout(() => box.remove(), 8000);
   },
 };
 
@@ -165,25 +191,36 @@ async function api(method, path, body) {
   const ctype = resp.headers.get("Content-Type") || "";
   if (ctype.includes("application/json")) {
     const j = await resp.json();
-    if (!resp.ok) throw new Error(j.error || `HTTP ${resp.status}`);
+    if (!resp.ok) throw new Error(j.error || ("HTTP " + resp.status));
     return j;
   }
   return await resp.blob();
 }
 
 async function loadVoices() {
-  const j = await api("GET", "/api/bulk_dub/voices");
-  const sel = $("voiceId");
-  sel.innerHTML = "";
-  for (const v of j.voices) {
-    const opt = document.createElement("option");
-    opt.value = v.id;
-    opt.textContent = `${v.name} · ${v.id}`;
-    if (v.id === j.default_voice_id) opt.selected = true;
-    sel.appendChild(opt);
-  }
-  $("speedRange").value = j.default_speed;
-  $("speedVal").textContent = j.default_speed.toFixed(2);
+  try {
+    const j = await api("GET", "/api/bulk_dub/voices");
+    const sel = $("voiceId");
+    sel.innerHTML = "";
+    for (const v of j.voices) {
+      const opt = document.createElement("option");
+      opt.value = v.id;
+      opt.textContent = v.name + " · " + v.id;
+      if (v.id === j.default_voice_id) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    $("speedRange").value = j.default_speed;
+    $("speedVal").textContent = j.default_speed.toFixed(2);
+    // 端点标记
+    const badge = $("endpointBadge");
+    if (j.edge_endpoint_configured) {
+      badge.className = "badge-ep ok";
+      badge.textContent = "Edge 端点：已配置 (" + (j.edge_endpoint || "").slice(0, 60) + ")";
+    } else {
+      badge.className = "badge-ep no";
+      badge.innerHTML = 'Edge 端点：<b>未配置</b> · 请到「主页 · 工具箱 · 免费 Edge TTS」填入 Worker 地址';
+    }
+  } catch (e) { state.msg("加载音色失败：" + e.message, "err-msg"); }
 }
 
 $("speedRange").addEventListener("input", () => { $("speedVal").textContent = (+$("speedRange").value).toFixed(2); });
@@ -191,9 +228,13 @@ $("speedRange").addEventListener("input", () => { $("speedVal").textContent = (+
 async function preview() {
   const file = $("excelFile").files[0];
   if (!file) return state.msg("请先选择 xlsx 文件", "err-msg");
-  const j = await api("POST", "/api/bulk_dub/preview", file);
-  state.msg(`预览：共 ${j.total} 条（有效 ${j.valid} / 无效 ${j.invalid}），空行跳过 ${j.skipped_empty}`, "ok-msg");
-  renderPreview(j.rows);
+  try {
+    const j = await api("POST", "/api/bulk_dub/preview", file);
+    state.msg("预览：共 " + j.total + " 条（有效 " + j.valid + " / 无效 " + j.invalid
+              + "），空行跳过 " + j.skipped_empty
+              + "，预览仅显示前 " + j.preview_limit + " 条", "ok-msg");
+    renderPreview(j.rows);
+  } catch (e) { state.msg("预览失败：" + e.message, "err-msg"); }
 }
 
 function renderPreview(rows) {
@@ -202,12 +243,12 @@ function renderPreview(rows) {
   for (const r of rows) {
     const tr = document.createElement("tr");
     tr.className = r.valid ? "" : "err";
-    tr.innerHTML = `
-      <td>${r.row_number}</td>
-      <td title="${escapeHtml(r.video_path)}">${escapeHtml(r.video_path)}</td>
-      <td title="${escapeHtml(r.text)}">${escapeHtml(r.text_preview)}</td>
-      <td>${r.valid ? '✔ 有效' : '✗ 无效'}</td>
-      <td colspan="5">${escapeHtml(r.reason)}</td>`;
+    tr.innerHTML =
+      "<td>" + r.row_number + "</td>" +
+      "<td title=\"" + escapeHtml(r.video_path) + "\">" + escapeHtml(r.video_path) + "</td>" +
+      "<td title=\"" + escapeHtml(r.text) + "\">" + escapeHtml(r.text_preview) + "</td>" +
+      "<td>" + (r.valid ? "✔ 有效" : "✗ 无效") + "</td>" +
+      "<td colspan=\"5\">" + escapeHtml(r.reason) + "</td>";
     tb.appendChild(tr);
   }
 }
@@ -215,6 +256,12 @@ function renderPreview(rows) {
 async function start() {
   const file = $("excelFile").files[0];
   if (!file) return state.msg("请先选择 xlsx 文件", "err-msg");
+  if (!$("outputDir").value.trim()) return state.msg("请先填写输出目录", "err-msg");
+  // 端点校验
+  const j0 = await api("GET", "/api/bulk_dub/voices").catch(() => null);
+  if (j0 && !j0.edge_endpoint_configured) {
+    return state.msg("Edge TTS 端点未配置，无法启动。请到主页 · 工具箱 · Edge TTS 设置后再来。", "err-msg");
+  }
   const q = new URLSearchParams({
     voice_id: $("voiceId").value,
     speed: $("speedRange").value,
@@ -228,8 +275,11 @@ async function start() {
   try {
     const j = await api("POST", "/api/bulk_dub/start?" + q.toString(), file);
     state.currentBatch = j.batch_id;
-    $("batchLabel").textContent = `当前批次：${file.name} · ${j.batch_id} · 新增 ${j.added} 复用 ${j.reused} 无效 ${j.invalid}`;
+    $("batchLabel").textContent = "当前批次：" + file.name + " · " + j.batch_id
+      + " · 新增 " + j.added + " 复用 " + j.reused + " 无效 " + j.invalid
+      + " 总 " + j.total_rows;
     state.msg("批处理已启动", "ok-msg");
+    refreshBatches();
     refreshTasks();
   } catch (e) { state.msg("启动失败：" + e.message, "err-msg"); }
 }
@@ -238,9 +288,38 @@ async function tryVoice() {
   const q = new URLSearchParams({ voice_id: $("voiceId").value, speed: $("speedRange").value });
   try {
     const j = await api("POST", "/api/bulk_dub/try_voice?" + q.toString());
-    state.msg("试听已合成：" + (j.audio_path || ""), "ok-msg");
+    // R9：真正提供播放控件
+    const box = $("tryAudioBox");
+    box.innerHTML = "";
+    const audio = document.createElement("audio");
+    audio.controls = true;
+    audio.src = "/api/bulk_dub/audio?path=" + encodeURIComponent(j.audio_path);
+    box.appendChild(audio);
+    state.msg("试听已合成，点击 ▶ 播放", "ok-msg");
   } catch (e) { state.msg("试听失败：" + e.message, "err-msg"); }
 }
+
+async function refreshBatches() {
+  try {
+    const j = await api("GET", "/api/bulk_dub/batches?limit=50");
+    const sel = $("batchSelector");
+    sel.innerHTML = '<option value="">— 全部 —</option>';
+    for (const b of (j.batches || [])) {
+      const opt = document.createElement("option");
+      opt.value = b.batch_id;
+      const done = b.counts.completed || 0;
+      const total = b.total || 0;
+      opt.textContent = (b.label || "(未命名)") + " · " + b.batch_id
+        + " · " + done + "/" + total;
+      if (b.batch_id === state.currentBatch) opt.selected = true;
+      sel.appendChild(opt);
+    }
+  } catch (e) { /* keep */ }
+}
+$("batchSelector") && $("batchSelector").addEventListener("change", () => {
+  state.currentBatch = $("batchSelector").value || "";
+  state.page = 0; refreshTasks();
+});
 
 async function refreshTasks() {
   const q = new URLSearchParams({
@@ -255,7 +334,7 @@ async function refreshTasks() {
     const j = await api("GET", "/api/bulk_dub/tasks?" + q.toString());
     renderTasks(j.tasks);
     const total = Object.values(j.counts).reduce((s, n) => s + n, 0);
-    $("totalHint").textContent = `共 ${total} 条`;
+    $("totalHint").textContent = "共 " + total + " 条";
     $("pageNow").textContent = state.page + 1;
   } catch (e) { state.msg("刷新失败：" + e.message, "err-msg"); }
   refreshSummary();
@@ -268,24 +347,37 @@ function renderTasks(tasks) {
     const tr = document.createElement("tr");
     if (t.status === "completed") tr.className = "ok";
     if (t.status === "failed" || t.status === "cancelled") tr.className = "err";
-    const pill = `<span class="status-pill s-${t.status}">${t.status}</span>`;
-    const durText = t.final_duration ? `${t.final_duration.toFixed(1)}s` :
-                    (t.tts_duration ? `TTS ${t.tts_duration.toFixed(1)}s` : "-");
-    tr.innerHTML = `
-      <td>${t.excel_row}</td>
-      <td title="${escapeHtml(t.input_video)}">${escapeHtml(t.input_video.split(/[/\\]/).pop() || t.input_video)}</td>
-      <td title="${escapeHtml(t.text)}">${escapeHtml(t.text.slice(0, 30))}${t.text.length > 30 ? '…' : ''}</td>
-      <td>${pill}</td>
-      <td title="${escapeHtml(t.error_detail || t.stage)}">${escapeHtml(t.stage || t.error_type || '-')}</td>
-      <td title="${escapeHtml(t.output_path)}">${escapeHtml((t.output_path || '').split(/[/\\]/).pop() || '-')}</td>
-      <td>${durText}</td>
-      <td>${t.attempts}</td>
-      <td><button class="danger" data-cancel="${t.task_id}" ${t.status==='completed'?'disabled':''}>取消</button></td>`;
+    if ((t.warnings || []).length > 0) tr.className = (tr.className + " warn-row").trim();
+    const pill = '<span class="status-pill s-' + t.status + '">' + t.status + '</span>';
+    const durText = t.final_duration ? (t.final_duration.toFixed(1) + "s") :
+                    (t.tts_duration ? ("TTS " + t.tts_duration.toFixed(1) + "s") : "-");
+    const warnTip = (t.warnings || []).join(" | ");
+    const stageBits = [];
+    if (t.stage) stageBits.push(escapeHtml(t.stage));
+    if (t.error_type) stageBits.push("<b>" + escapeHtml(t.error_type) + "</b>");
+    if (warnTip) stageBits.push('<span title="' + escapeHtml(warnTip) + '">⚠ ' + t.warnings.length + '</span>');
+    tr.innerHTML =
+      "<td>" + t.excel_row + "</td>" +
+      "<td title=\"" + escapeHtml(t.input_video) + "\">" +
+      escapeHtml((t.input_video.split(/[/\\]/).pop()) || t.input_video) + "</td>" +
+      "<td title=\"" + escapeHtml(t.text) + "\">" + escapeHtml(t.text.slice(0, 30)) +
+      (t.text.length > 30 ? "…" : "") + "</td>" +
+      "<td>" + pill + "</td>" +
+      "<td title=\"" + escapeHtml(t.error_detail || t.stage || "") + "\">" +
+      (stageBits.join(" · ") || "-") + "</td>" +
+      "<td title=\"" + escapeHtml(t.output_path) + "\">" +
+      escapeHtml(((t.output_path || "").split(/[/\\]/).pop()) || "-") + "</td>" +
+      "<td>" + durText + "</td>" +
+      "<td>" + t.attempts + "</td>" +
+      "<td><button class=\"danger\" data-cancel=\"" + t.task_id + "\" " +
+      (t.status === 'completed' ? 'disabled' : '') + ">取消</button></td>";
     tb.appendChild(tr);
   }
   tb.querySelectorAll("[data-cancel]").forEach(b => {
     b.onclick = async () => {
-      await api("POST", "/api/bulk_dub/cancel_task?task_id=" + b.dataset.cancel);
+      try {
+        await api("POST", "/api/bulk_dub/cancel_task?task_id=" + b.dataset.cancel);
+      } catch (e) { state.msg("取消失败：" + e.message, "err-msg"); }
       refreshTasks();
     };
   });
@@ -293,39 +385,43 @@ function renderTasks(tasks) {
 
 async function refreshSummary() {
   try {
-    const q = state.currentBatch ? "?batch_id=" + state.currentBatch : "";
+    const q = state.currentBatch ? ("?batch_id=" + state.currentBatch) : "";
     const j = await api("GET", "/api/bulk_dub/summary" + q);
-    const m = j.scheduler?.metrics || {};
-    const enc = j.scheduler?.encoder || {};
-    const brk = j.scheduler?.breaker || {};
-    $("encoderInfo").innerHTML = `<code>编码器：${enc.name}（${enc.family}） · 熔断：${brk.state}</code>`;
+    const m = (j.scheduler && j.scheduler.metrics) || {};
+    const brk = (j.scheduler && j.scheduler.breaker) || {};
+    $("encoderInfo").innerHTML = "<code>并发 TTS " + (j.scheduler.tts_concurrency || 0)
+      + " / 视频 " + (j.scheduler.video_concurrency || 0)
+      + " · 熔断 " + brk.state
+      + " · HW 回退 " + (m.hw_fallback_count || 0) + "</code>";
     const cells = [
-      ["总任务", j.totals?.total],
-      ["等待", j.totals?.waiting],
-      ["TTS 中", j.totals?.tts_running],
-      ["视频中", j.totals?.video_running],
-      ["成功", j.totals?.succeeded],
-      ["失败", j.totals?.failed],
-      ["重试等待", j.totals?.retry_wait],
+      ["总任务", j.totals && j.totals.total],
+      ["等待", j.totals && j.totals.waiting],
+      ["TTS 中", j.totals && j.totals.tts_running],
+      ["视频中", j.totals && j.totals.video_running],
+      ["成功", j.totals && j.totals.succeeded],
+      ["失败", j.totals && j.totals.failed],
+      ["重试等待", j.totals && j.totals.retry_wait],
       ["1 分钟速度", (m.recent_rate_1min || 0).toFixed(1) + "/分钟"],
       ["5 分钟速度", (m.recent_rate_5min || 0).toFixed(1) + "/分钟"],
       ["60 分钟速度", (m.recent_rate_60min || 0).toFixed(1) + "/分钟"],
-      ["平均 TTS", (m.avg_tts_seconds || 0).toFixed(2) + "s"],
-      ["平均视频", (m.avg_video_seconds || 0).toFixed(2) + "s"],
-      ["按现在推算 24h", (m.projected_24h || 0)],
+      ["平均 TTS 耗时", (m.avg_tts_seconds || 0).toFixed(2) + "s"],
+      ["平均视频耗时", (m.avg_video_seconds || 0).toFixed(2) + "s"],
+      ["按现在推算 24h", m.projected_24h_estimate || 0],
       ["429 次数", m.http_429_count],
       ["5xx 次数", m.http_5xx_count],
       ["重试次数", m.retry_count],
-      ["staging 占用", ((j.disk?.staging_bytes || 0) / 1024 / 1024).toFixed(1) + " MB"],
-      ["输出盘剩余", (j.disk?.output_free_gb || 0) + " GB"],
+      ["staging 占用", (((j.disk && j.disk.staging_bytes) || 0) / 1024 / 1024).toFixed(1) + " MB"],
+      ["输出盘剩余", ((j.disk && j.disk.output_free_gb) || 0) + " GB"],
     ];
-    $("metrics").innerHTML = cells.map(([k, v]) =>
-      `<div><span>${k}</span><strong>${v ?? '-'}</strong></div>`).join("");
+    $("metrics").innerHTML = cells.map(kv =>
+      "<div><span>" + kv[0] + "</span><strong>" + (kv[1] != null ? kv[1] : "-") + "</strong></div>"
+    ).join("");
   } catch (e) { /* keep UI */ }
 }
 
 function escapeHtml(s) {
-  return String(s ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  return String(s == null ? "" : s).replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
 $("btnPreview").onclick = preview;
@@ -335,32 +431,49 @@ $("btnRefresh").onclick = () => { state.page = 0; refreshTasks(); };
 $("btnPrev").onclick = () => { if (state.page > 0) { state.page--; refreshTasks(); } };
 $("btnNext").onclick = () => { state.page++; refreshTasks(); };
 $("pageSize").onchange = () => { state.pageSize = +$("pageSize").value || 100; state.page = 0; refreshTasks(); };
-$("btnPause").onclick = async () => { await api("POST", "/api/bulk_dub/pause"); state.msg("已暂停领取新任务"); };
-$("btnResume").onclick = async () => { await api("POST", "/api/bulk_dub/resume"); state.msg("已继续", "ok-msg"); };
+$("btnPause").onclick = async () => {
+  try { await api("POST", "/api/bulk_dub/pause"); state.msg("已暂停领取新任务"); }
+  catch (e) { state.msg("暂停失败：" + e.message, "err-msg"); }
+};
+$("btnResume").onclick = async () => {
+  try { await api("POST", "/api/bulk_dub/resume"); state.msg("已继续", "ok-msg"); }
+  catch (e) { state.msg("继续失败：" + e.message, "err-msg"); }
+};
 $("btnCancelWait").onclick = async () => {
-  if (!state.currentBatch) return state.msg("尚无批次", "err-msg");
-  const j = await api("POST", "/api/bulk_dub/cancel_waiting?batch_id=" + state.currentBatch);
-  state.msg(`取消了 ${j.cancelled} 条等待任务`);
+  if (!state.currentBatch) return state.msg("请先选择或创建批次", "err-msg");
+  try {
+    const j = await api("POST", "/api/bulk_dub/cancel_waiting?batch_id=" + state.currentBatch);
+    state.msg("取消了 " + j.cancelled + " 条等待任务");
+  } catch (e) { state.msg("取消失败：" + e.message, "err-msg"); }
   refreshTasks();
 };
 $("btnRetryFail").onclick = async () => {
-  if (!state.currentBatch) return;
-  const j = await api("POST", "/api/bulk_dub/retry_failed?batch_id=" + state.currentBatch);
-  state.msg(`重排 ${j.retried} 条`, "ok-msg");
+  if (!state.currentBatch) return state.msg("请先选择批次", "err-msg");
+  try {
+    const j = await api("POST", "/api/bulk_dub/retry_failed?batch_id=" + state.currentBatch);
+    state.msg("重排 " + j.retried + " 条", "ok-msg");
+  } catch (e) { state.msg("重排失败：" + e.message, "err-msg"); }
   refreshTasks();
 };
 $("btnRetryRetryable").onclick = async () => {
-  if (!state.currentBatch) return;
-  const j = await api("POST", "/api/bulk_dub/retry_failed?only_retryable=1&batch_id=" + state.currentBatch);
-  state.msg(`重排 ${j.retried} 条（仅可重试错误）`, "ok-msg");
+  if (!state.currentBatch) return state.msg("请先选择批次", "err-msg");
+  try {
+    const j = await api("POST", "/api/bulk_dub/retry_failed?only_retryable=1&batch_id=" + state.currentBatch);
+    state.msg("重排 " + j.retried + " 条（仅可重试错误）", "ok-msg");
+  } catch (e) { state.msg("重排失败：" + e.message, "err-msg"); }
   refreshTasks();
 };
 $("btnCSV").onclick = () => {
-  const q = state.currentBatch ? "?batch_id=" + state.currentBatch : "";
-  window.open("/api/bulk_dub/csv" + q, "_blank");
+  const q = state.currentBatch ? ("?batch_id=" + state.currentBatch) : "";
+  window.location.href = "/api/bulk_dub/csv" + q;
 };
 
-loadVoices().then(() => { refreshTasks(); setInterval(refreshTasks, 3000); });
+// 全局未捕获 Promise → 提示
+window.addEventListener("unhandledrejection", (ev) => {
+  state.msg("未处理错误：" + (ev.reason && ev.reason.message || ev.reason), "err-msg");
+});
+
+loadVoices().then(() => { refreshBatches(); refreshTasks(); setInterval(refreshTasks, 3000); setInterval(refreshBatches, 15000); });
 </script>
 </body>
 </html>

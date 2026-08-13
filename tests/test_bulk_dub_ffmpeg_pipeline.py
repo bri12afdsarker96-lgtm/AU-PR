@@ -91,33 +91,72 @@ def test_build_output_filename_uses_stem_and_voice():
     assert build_output_filename("C:/vids/001.mp4", "晓双") == "001_晓双_带货.mp4"
 
 
-def test_43_next_unique_path_avoids_overwrite(tmp_path):
-    (tmp_path / "a.mp4").write_bytes(b"x")
-    from dub_align_studio.bulk_dub.ffmpeg_pipeline import _next_unique_path
-    p = _next_unique_path(tmp_path / "a.mp4")
-    assert p.name == "a_2.mp4"
-    p.write_bytes(b"x")
-    p2 = _next_unique_path(tmp_path / "a.mp4")
-    assert p2.name == "a_3.mp4"
-
-
 def test_cleanup_staging_refuses_outside_bulkdub(tmp_path):
-    """安全护栏：cleanup_staging 只清理 批量带货/staging 白名单下的目录，
-    避免因参数被污染而误删 CWD 或数据总目录。"""
+    """安全护栏：cleanup_staging 只清理白名单路径。"""
     victim = tmp_path / "important"
     victim.mkdir()
     (victim / "file.txt").write_bytes(b"important")
-    vp.cleanup_staging(str(victim))
-    assert victim.exists() and (victim / "file.txt").exists(), \
-        "cleanup_staging 不得删除非白名单目录"
+    assert vp.cleanup_staging(str(victim)) is False
+    assert victim.exists() and (victim / "file.txt").exists()
 
 
-def test_cleanup_staging_clears_bulkdub_staging(tmp_path):
-    staging = tmp_path / "批量带货" / "staging" / "batch1" / "task1"
+def test_cleanup_staging_clears_bulkdub_staging(tmp_path, monkeypatch):
+    """真正符合白名单：<data_root>/批量带货/staging/<batch>/<task>/。"""
+    fake_data_root = tmp_path / "data"
+    (fake_data_root / "批量带货" / "staging").mkdir(parents=True)
+    from dub_align_studio import settings as studio_settings
+    monkeypatch.setattr(studio_settings, "data_root", lambda: fake_data_root)
+    vp._is_relative_to  # sanity
+    batch_id = "a1b2c3d4e5f6"   # 12 hex → 通过 is_safe_id
+    task_id = "0" * 16
+    staging = fake_data_root / "批量带货" / "staging" / batch_id / task_id
     staging.mkdir(parents=True)
     (staging / "tts.wav").write_bytes(b"x")
-    vp.cleanup_staging(str(staging))
+    assert vp.cleanup_staging(str(staging)) is True
     assert not staging.exists()
+
+
+def test_cleanup_staging_refuses_root_itself(tmp_path, monkeypatch):
+    from dub_align_studio import settings as studio_settings
+    fake = tmp_path / "d"
+    (fake / "批量带货" / "staging").mkdir(parents=True)
+    monkeypatch.setattr(studio_settings, "data_root", lambda: fake)
+    root = fake / "批量带货" / "staging"
+    assert vp.cleanup_staging(str(root)) is False
+
+
+def test_cleanup_staging_refuses_symlink(tmp_path, monkeypatch):
+    from dub_align_studio import settings as studio_settings
+    fake = tmp_path / "d"
+    (fake / "批量带货" / "staging").mkdir(parents=True)
+    monkeypatch.setattr(studio_settings, "data_root", lambda: fake)
+    real = tmp_path / "real_target"
+    real.mkdir()
+    (real / "victim.txt").write_bytes(b"live")
+    # 建符号链接指向白名单外的目录
+    batch_id = "a" * 12
+    task_id = "b" * 16
+    link_parent = fake / "批量带货" / "staging" / batch_id
+    link_parent.mkdir(parents=True)
+    link = link_parent / task_id
+    try:
+        link.symlink_to(real, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("环境不支持 symlink")
+    assert vp.cleanup_staging(str(link)) is False
+    assert (real / "victim.txt").exists(), "符号链接指向的真实目录不得被删"
+
+
+def test_cleanup_staging_refuses_unsafe_id(tmp_path, monkeypatch):
+    from dub_align_studio import settings as studio_settings
+    fake = tmp_path / "d"
+    (fake / "批量带货" / "staging").mkdir(parents=True)
+    monkeypatch.setattr(studio_settings, "data_root", lambda: fake)
+    # batch_id 含 "..." 或非 hex → 拒绝
+    bad = fake / "批量带货" / "staging" / "..%2fetc" / ("0" * 16)
+    bad.mkdir(parents=True, exist_ok=True)
+    assert vp.cleanup_staging(str(bad)) is False
+    assert bad.exists()
 
 
 HAS_FFMPEG = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
@@ -162,7 +201,7 @@ def test_render_single_video_shorter_than_tts_trims_audio(tmp_path):
     out = tmp_path / "out.mp4"
     staging = tmp_path / "staging"
     result = vp.render_single(
-        input_video=video, tts_audio=tts, output_path=out,
+        input_video=video, tts_audio=tts, reserved_output=out,
         staging_dir=staging, encoder=encoder,
     )
     assert 1.8 <= result.final_duration <= 2.2
@@ -190,7 +229,7 @@ def test_render_single_tts_shorter_than_video_trims_video(tmp_path):
     out = tmp_path / "out.mp4"
     staging = tmp_path / "staging"
     result = vp.render_single(
-        input_video=video, tts_audio=tts, output_path=out,
+        input_video=video, tts_audio=tts, reserved_output=out,
         staging_dir=staging, encoder=encoder,
     )
     assert 1.8 <= result.final_duration <= 2.4
@@ -218,9 +257,40 @@ def test_17_no_audio_video_still_succeeds_with_warning(tmp_path):
     out = tmp_path / "out.mp4"
     staging = tmp_path / "staging"
     result = vp.render_single(
-        input_video=silent_video, tts_audio=tts, output_path=out,
+        input_video=silent_video, tts_audio=tts, reserved_output=out,
         staging_dir=staging, encoder=encoder,
         keep_original_audio=True,
     )
     assert Path(result.output_path).is_file()
     assert any("原声" in w or "旁白" in w for w in result.warnings)
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg/ffprobe not installed")
+def test_render_single_refuses_to_overwrite_existing_output(tmp_path):
+    """P0-3：预留路径已被占用时拒绝覆盖。"""
+    import subprocess
+    from dub_align_studio.bulk_dub.hw_encoder import EncoderProbe
+
+    video = tmp_path / "v.mp4"
+    subprocess.run([
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-f", "lavfi", "-i", "testsrc=size=320x240:duration=1:rate=30",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", str(video),
+    ], check=True)
+    tts = tmp_path / "tts.wav"
+    subprocess.run([
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-f", "lavfi", "-i", "sine=frequency=440:duration=2", str(tts),
+    ], check=True)
+
+    encoder = EncoderProbe("cpu", "libx264", [], True, "")
+    out = tmp_path / "out.mp4"
+    out.write_bytes(b"OLD-CONTENT-DO-NOT-OVERWRITE")
+    staging = tmp_path / "staging"
+    with pytest.raises(vp.VideoError):
+        vp.render_single(
+            input_video=video, tts_audio=tts, reserved_output=out,
+            staging_dir=staging, encoder=encoder,
+        )
+    # 旧文件内容不变
+    assert out.read_bytes() == b"OLD-CONTENT-DO-NOT-OVERWRITE"

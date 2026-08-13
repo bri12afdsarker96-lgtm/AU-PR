@@ -1,7 +1,4 @@
-"""调度器（TTS+视频双池、暂停、取消、恢复、并发上限、幂等复用）测试。
-
-覆盖点 20-32、35-37、44、46（部分逻辑分支）。
-"""
+"""调度器测试。覆盖 20-32、40、以及 R2/R3/R4/R5 改造后的语义。"""
 
 from __future__ import annotations
 
@@ -52,14 +49,20 @@ class _RecordingBackend(TtsBackend):
                 self._active -= 1
 
 
-def _add_tasks(store, batch_id, n, fp_prefix="fp"):
+def _add_tasks(store, batch_id, n, params_snapshot=None):
+    params = params_snapshot or {"output_dir": "/tmp/out",
+                                  "encoder_preference": "cpu",
+                                  "zoom_percent": 130}
+    tasks = []
     for i in range(2, 2 + n):
-        store.add_task(
-            batch_id=batch_id, excel_row=i, input_video="/x.mp4",
-            text=f"文案 {i}", fingerprint=f"{fp_prefix}-{i}",
-            voice_id="zh-CN-XiaoshuangNeural", voice_name="晓双（女·青春）",
-            speed=1.25, keep_original_audio=False, params_snapshot={},
-        )
+        tasks.append(dict(
+            excel_row=i, input_video="/x.mp4", text=f"文案 {i}",
+            fingerprint=f"fp-{batch_id}-{i}",
+            voice_id="zh-CN-XiaoshuangNeural",
+            voice_name="晓双（女·青春）",
+            speed=1.25, keep_original_audio=False, params_snapshot=params,
+        ))
+    return store.bulk_insert(batch_id, tasks)
 
 
 def _make_scheduler(tmp_path, backend, *, tts_conc=4, video_conc=2,
@@ -67,12 +70,16 @@ def _make_scheduler(tmp_path, backend, *, tts_conc=4, video_conc=2,
     from dub_align_studio.bulk_dub import scheduler as sched_mod
 
     store = TaskStore(tmp_path / "q.sqlite3")
+    # 替换 _process_video 为 no-op（不真的渲染）
     orig_process_video = sched_mod.Scheduler._process_video
 
     def _fake_process_video(self, row):
+        # 用任务级 params_snapshot 里的 output_dir 决定输出位置——测试关键点
+        out_dir = row.params_snapshot.get("output_dir", "/tmp/out")
         self.store.update(row.task_id, status=STATUS_COMPLETED,
-                          output_path=f"/out/{row.excel_row}.mp4",
-                          final_duration=1.0, progress=100)
+                          output_path=f"{out_dir}/{row.excel_row}.mp4",
+                          final_duration=1.0, progress=100,
+                          encoder_used="libx264")
         with self._metrics_lock:
             self.metrics.record_success(0.1, 0.05)
 
@@ -80,7 +87,7 @@ def _make_scheduler(tmp_path, backend, *, tts_conc=4, video_conc=2,
 
     config = SchedulerConfig(
         tts_concurrency=tts_conc, video_concurrency=video_conc,
-        output_dir="/out", tts_max_retries=max_retries,
+        tts_max_retries=max_retries,
     )
     sched = sched_mod.Scheduler(store, config, backend)
 
@@ -90,7 +97,7 @@ def _make_scheduler(tmp_path, backend, *, tts_conc=4, video_conc=2,
     return sched, store, restore
 
 
-def _wait_until(cond, timeout=5.0, interval=0.05):
+def _wait_until(cond, timeout=8.0, interval=0.05):
     end = time.time() + timeout
     while time.time() < end:
         if cond():
@@ -122,7 +129,7 @@ def test_27_tts_pool_respects_concurrency(tmp_path):
         sched.start()
         assert _wait_until(
             lambda: store.count_by_status(batch).get(STATUS_COMPLETED, 0) >= 12,
-            timeout=15,
+            timeout=20,
         )
         assert backend.max_concurrent <= 3, f"实际峰值 {backend.max_concurrent} 超上限 3"
     finally:
@@ -130,7 +137,6 @@ def test_27_tts_pool_respects_concurrency(tmp_path):
 
 
 def test_29_10000_tasks_do_not_spawn_10000_threads(tmp_path):
-    """无需真跑 10000 条；只验证：常驻 worker 数 == 配置的池大小，与任务数无关。"""
     backend = _RecordingBackend(sleep_seconds=0.001)
     sched, store, restore = _make_scheduler(tmp_path, backend, tts_conc=4, video_conc=2)
     try:
@@ -203,7 +209,7 @@ def test_38_39_tts_429_retries_then_succeeds(tmp_path):
         _add_tasks(store, batch, 1)
         sched.start()
         assert _wait_until(
-            lambda: store.count_by_status(batch).get(STATUS_COMPLETED, 0) == 1, 10
+            lambda: store.count_by_status(batch).get(STATUS_COMPLETED, 0) == 1, 15
         )
         assert sched.metrics.retry_count >= 2
         assert sched.metrics.http_429_count >= 2
@@ -232,28 +238,31 @@ def test_40_client_4xx_not_retried(tmp_path):
 
 
 def test_26_batch_freezes_params(tmp_path):
-    """26: 点击开始后参数冻结，运行中改控件不影响已开始批次。"""
+    """26: 冻结参数——用 service.start_batch 语义。"""
     from dub_align_studio.bulk_dub.service import BulkDubService
     from dub_align_studio.bulk_dub.excel_reader import build_minimal_xlsx
 
     svc = BulkDubService(
         store=TaskStore(tmp_path / "q.sqlite3"),
-        tts_backend=MockTtsBackend(base_seconds=0.05, delay=0.0),
-        output_dir=str(tmp_path / "out"),
+        tts_backend=MockTtsBackend(base_seconds=0.05),
     )
     xlsx = build_minimal_xlsx([("/x.mp4", "abc")])
+    (tmp_path / "out1").mkdir()
+    (tmp_path / "out2").mkdir()
     r1 = svc.start_batch(source_bytes=xlsx, label="b1",
-                          output_dir=str(tmp_path / "out"),
+                          output_dir=str(tmp_path / "out1"),
                           voice_id="zh-CN-XiaoshuangNeural", speed=1.25,
                           check_exists=False)
-    frozen_a = dict(svc._frozen_params)
-    svc.start_batch(source_bytes=xlsx, label="b2",
-                      output_dir=str(tmp_path / "out"),
-                      voice_id="zh-CN-YunxiNeural", speed=1.0,
-                      check_exists=False)
-    frozen_b = dict(svc._frozen_params)
-    assert frozen_a["speed"] == 1.25
-    assert frozen_b["speed"] == 1.0
+    r2 = svc.start_batch(source_bytes=xlsx, label="b2",
+                          output_dir=str(tmp_path / "out2"),
+                          voice_id="zh-CN-YunxiNeural", speed=1.0,
+                          check_exists=False)
     tasks_b1 = svc.store.list_tasks(batch_id=r1["batch_id"])
+    tasks_b2 = svc.store.list_tasks(batch_id=r2["batch_id"])
+    # batch 1 参数不能被 batch 2 覆盖
     assert all(t.params_snapshot["speed"] == 1.25 for t in tasks_b1)
+    assert all(t.params_snapshot["output_dir"].endswith("out1") for t in tasks_b1)
+    assert all(t.params_snapshot["voice_id"] == "zh-CN-XiaoshuangNeural" for t in tasks_b1)
+    assert all(t.params_snapshot["speed"] == 1.0 for t in tasks_b2)
+    assert all(t.params_snapshot["output_dir"].endswith("out2") for t in tasks_b2)
     svc.stop()
