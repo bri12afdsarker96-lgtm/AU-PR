@@ -29,8 +29,14 @@ def compute_fingerprint(*, video_path: str, text: str, voice_id: str, speed: flo
                         pitch: int = 0, style: str = "general",
                         keep_original_audio: bool = False,
                         mirror: bool = True, zoom_percent: int = 130,
-                        encoder: str = "libx264", preset: str = "medium",
+                        encoder_preference: str = "auto",
+                        preset: str = "medium",
                         crf: int = 20) -> str:
+    """R11-7：`encoder_preference` 而不是硬编码 `encoder="libx264"`——
+    不同硬件偏好会走不同真实编码器（nvenc/qsv/amf/libx264），产物字节流不同，必须分开复用。
+
+    schema 升到 v2：所有 v1 指纹失效——避免用旧硬编码 encoder 复用错。
+    """
     key = {
         "video": _canonical_video_key(video_path),
         "text": (text or "").strip(),
@@ -41,10 +47,10 @@ def compute_fingerprint(*, video_path: str, text: str, voice_id: str, speed: flo
         "keep_original_audio": bool(keep_original_audio),
         "mirror": bool(mirror),
         "zoom_percent": int(zoom_percent),
-        "encoder": encoder,
+        "encoder_preference": encoder_preference,
         "preset": preset,
         "crf": int(crf),
-        "schema": "bulk_dub@v1",
+        "schema": "bulk_dub@v2",
     }
     payload = json.dumps(key, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha1(payload).hexdigest()

@@ -33,21 +33,37 @@ _DEFAULT_TIMEOUT_S = 90.0
 
 
 class EdgeTtsBackend(TtsBackend):
-    """单次请求 Edge TTS 适配层——不做内部重试，交给 scheduler。"""
+    """单次请求 Edge TTS 适配层——不做内部重试，交给 scheduler。
+
+    R11-6 Endpoint 热更新：
+        - `endpoint=None`（默认）→ **每次 synthesize** 都从 settings 读一遍
+          `edge_tts_endpoint()`；工具箱保存新地址后立即生效，无需重启软件。
+        - `endpoint="..."`（显式传入）→ 固定用该地址（测试用）。
+    """
 
     def __init__(self, endpoint: str | None = None,
                  timeout: float = _DEFAULT_TIMEOUT_S,
                  default_voice: str = "zh-CN-XiaoshuangNeural") -> None:
-        self.endpoint_root = (
-            _normalize_endpoint_root(endpoint) if endpoint is not None
-            else edge_tts_endpoint()
+        self._explicit_endpoint = (
+            _normalize_endpoint_root(endpoint) if endpoint is not None else None
         )
         self.timeout = timeout
         self.default_voice = default_voice
 
+    @property
+    def endpoint_root(self) -> str:
+        """兼容：老代码 / 测试仍读 backend.endpoint_root。"""
+        if self._explicit_endpoint is not None:
+            return self._explicit_endpoint
+        return edge_tts_endpoint()
+
+    def _current_endpoint(self) -> str:
+        return self.endpoint_root
+
     def synthesize(self, *, text: str, voice_id: str, speed: float,
                    pitch: int, style: str, output_wav: Path) -> float:
-        if not self.endpoint_root:
+        endpoint_root = self._current_endpoint()
+        if not endpoint_root:
             # 未配置：客户端错（4xx 语义）——scheduler 不重试
             raise TtsHttpError(400, "Edge TTS 未配置服务地址。到工具箱填 Worker 根地址后再试。")
         if not text.strip():
@@ -68,7 +84,7 @@ class EdgeTtsBackend(TtsBackend):
         # 单次请求（不重试）
         try:
             req = urllib.request.Request(
-                _endpoint_url(self.endpoint_root), data=body,
+                _endpoint_url(endpoint_root), data=body,
                 headers=headers, method="POST",
             )
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:

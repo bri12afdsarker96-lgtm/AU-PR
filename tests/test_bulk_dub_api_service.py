@@ -89,7 +89,8 @@ def test_50_start_via_api_needs_valid_output_dir(tmp_path):
     (tmp_path / "out").mkdir()
     handled, status, body, _ = bulk_api.dispatch_post(
         "/api/bulk_dub/start",
-        {"output_dir": str(tmp_path / "out"), "check_exists": "0"},
+        {"output_dir": str(tmp_path / "out"), "check_exists": "0",
+         "require_endpoint": "0"},
         xlsx, "application/octet-stream", service=svc,
     )
     assert handled and status == 200
@@ -155,7 +156,7 @@ def test_35_reuse_completed_by_fingerprint(tmp_path):
     r = svc.start_batch(source_bytes=xlsx, label="dedupe",
                           output_dir=str(tmp_path / "out"),
                           voice_id="zh-CN-XiaoshuangNeural", speed=1.25,
-                          check_exists=True)
+                          check_exists=True, require_endpoint=False)
     assert r["reused"] == 1
     assert r["added"] == 0
     svc.stop()
@@ -169,7 +170,7 @@ def test_23_24_25_api_carries_voice_and_speed(tmp_path):
         "/api/bulk_dub/start",
         {"output_dir": str(tmp_path / "out"),
          "voice_id": "zh-CN-YunxiNeural", "speed": "0.9",
-         "check_exists": "0"},
+         "check_exists": "0", "require_endpoint": "0"},
         xlsx, "application/octet-stream", service=svc,
     )
     j = json.loads(body)

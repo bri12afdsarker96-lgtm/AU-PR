@@ -417,11 +417,18 @@ class TaskStore:
 
     def claim_next(self, allowed_statuses: Iterable[str], target_status: str,
                    *, batch_id: str | None = None,
-                   respect_next_attempt: bool = True) -> TaskRow | None:
-        """原子领取一条任务；retry_wait 只领已到期（next_attempt_at <= now）的。"""
+                   respect_next_attempt: bool = True,
+                   exclude_batch_ids: Iterable[str] | None = None) -> TaskRow | None:
+        """原子领取一条任务；retry_wait 只领已到期（next_attempt_at <= now）的。
+
+        R11-2：`exclude_batch_ids` 用来把"批次级暂停"直接下推到 SQL WHERE 里——
+        避免"领了再放回"的死循环（否则同一 pending 暂停任务被反复 SELECT，
+        排队更后面批次的任务永远饿死）。
+        """
         statuses = tuple(allowed_statuses)
         if not statuses:
             return None
+        excludes = tuple(exclude_batch_ids or ())
         now = time.time()
         for _ in range(5):
             with self._connect() as conn:
@@ -435,6 +442,9 @@ class TaskStore:
                     if batch_id:
                         q += " AND batch_id=?"
                         args.append(batch_id)
+                    if excludes:
+                        q += " AND batch_id NOT IN (" + ",".join("?" * len(excludes)) + ")"
+                        args.extend(excludes)
                     if respect_next_attempt:
                         q += " AND (next_attempt_at IS NULL OR next_attempt_at<=?)"
                         args.append(now)
@@ -460,6 +470,32 @@ class TaskStore:
                     conn.execute("ROLLBACK")
                     raise
         return None
+
+    def find_completed_by_fingerprints(self, fingerprints: Iterable[str]) -> dict[str, "TaskRow"]:
+        """R11-7 一次批量查所有可复用记录，避免 N+1 查询。
+
+        返回 {fingerprint: TaskRow(最新一条 completed)}。空输入返回 {}。
+        SQLite 表达式列表默认最多约 999 个占位符——超过就分片。
+        """
+        fps = [f for f in fingerprints if f]
+        if not fps:
+            return {}
+        out: dict[str, TaskRow] = {}
+        CHUNK = 800
+        with self._connect() as conn:
+            for i in range(0, len(fps), CHUNK):
+                chunk = fps[i:i + CHUNK]
+                q = (
+                    "SELECT * FROM tasks WHERE status=? AND fingerprint IN ("
+                    + ",".join("?" * len(chunk)) + ")"
+                    " ORDER BY fingerprint, finished_at DESC"
+                )
+                rows = conn.execute(q, (STATUS_COMPLETED, *chunk)).fetchall()
+                for r in rows:
+                    fp = r["fingerprint"]
+                    if fp not in out:   # 已按 finished_at DESC 排序，第一条即最新
+                        out[fp] = _row_to_task(r)
+        return out
 
     # ---------------------------------------------------------------- 输出路径原子预留
 
@@ -582,7 +618,8 @@ class TaskStore:
 
     def changed_since(self, since: float, batch_id: str | None = None,
                       limit: int = 500) -> list[TaskRow]:
-        """R8 稳定游标：按 updated_at > since 严格递增；同秒多条按 task_id 排序打破 tie。"""
+        """兼容旧接口——只按 updated_at > since 简单游标。**不适合万级同秒场景**。
+        新代码请用 changed_since_cursor()。"""
         conditions = ["updated_at>?"]
         args: list[Any] = [float(since)]
         if batch_id:
@@ -596,22 +633,87 @@ class TaskStore:
             rows = conn.execute(sql, args).fetchall()
         return [_row_to_task(r) for r in rows]
 
+    def changed_since_cursor(self, cursor: str | None,
+                              batch_id: str | None = None,
+                              limit: int = 500) -> tuple[list["TaskRow"], str, bool]:
+        """R11-5 真正稳定的复合游标：`(updated_at, task_id)`。
+
+        - cursor 为空/None → 从最早开始
+        - cursor 形如 "<updated_at>|<task_id>" —— 严格大于该 (u, id) 对
+        - 返回 (rows, next_cursor, has_more)；rows 不重不漏，即使 10000 条同 updated_at
+        """
+        cursor_u: float = 0.0
+        cursor_id: str = ""
+        if cursor:
+            try:
+                left, right = cursor.split("|", 1)
+                cursor_u = float(left)
+                cursor_id = right
+            except ValueError:
+                cursor_u = 0.0
+                cursor_id = ""
+        # 复合游标 SQL：updated_at > u OR (updated_at = u AND task_id > id)
+        conditions = ["(updated_at > ? OR (updated_at = ? AND task_id > ?))"]
+        args: list[Any] = [cursor_u, cursor_u, cursor_id]
+        if batch_id:
+            conditions.append("batch_id=?"); args.append(batch_id)
+        # 多取一条判断 has_more
+        take = int(limit) + 1
+        sql = (
+            "SELECT * FROM tasks WHERE " + " AND ".join(conditions) +
+            " ORDER BY updated_at ASC, task_id ASC LIMIT ?"
+        )
+        args.append(take)
+        with self._connect() as conn:
+            rows_raw = conn.execute(sql, args).fetchall()
+        has_more = len(rows_raw) > int(limit)
+        rows_raw = rows_raw[:int(limit)]
+        rows = [_row_to_task(r) for r in rows_raw]
+        if rows:
+            last = rows[-1]
+            next_cursor = f"{last.updated_at:.9f}|{last.task_id}"
+        else:
+            next_cursor = cursor or ""
+        return rows, next_cursor, has_more
+
     # ---------------------------------------------------------------- 恢复
 
     def reap_and_recover_running(self, batch_id: str | None = None,
-                                  tts_wav_ok: "callable" = None) -> dict[str, int]:
-        """R3 启动恢复：把上次异常退出的运行中任务分类恢复。
+                                  tts_wav_ok: "callable" = None,
+                                  reserved_output_verifier: "callable" = None,
+                                  staging_cleanup: "callable" = None) -> dict[str, int]:
+        """R3+R11-3 启动恢复：分类修复上次异常退出的运行中任务。
 
-        - validating / tts_running / 任何找不到有效 tts.wav 的 video_running → pending
-          （清空 staging_dir、reserved_output_path、progress、错误字段；attempts 保留供限流参考）
-        - video_running 且 tts.wav 完整（tts_wav_ok(task_row) 返回 True）→ tts_done
-        - retry_wait 保留（next_attempt_at 已持久化，重启后仍遵守）
+        - validating / tts_running → pending（安全清理 staging、清预留位）
+        - video_running：**分三种**处理
+          1. 预留的正式文件已存在且 reserved_output_verifier(row, path) 返回 (True, meta)
+             → 补记 completed（这就是"文件已提交、DB 未提交"的断电恢复）
+          2. 预留失败但 tts.wav 完整 → 回 tts_done 重跑视频
+          3. 都不行 → 回 pending 从头
+        - retry_wait 保留（next_attempt_at 已持久化）
+        - **兼容旧版**：`interrupted` 状态也一并重新分类（旧 reap_interrupted 留下的孤儿）
+        - `staging_cleanup(staging_dir)` 允许调用方注入白名单清理
 
-        返回：{tts_recovered_pending, video_recovered_tts_done, video_recovered_pending}
+        返回：{ tts_recovered_pending, video_recovered_completed,
+                video_recovered_tts_done, video_recovered_pending,
+                interrupted_recovered }
         """
-        stats = {"tts_recovered_pending": 0, "video_recovered_tts_done": 0,
-                 "video_recovered_pending": 0}
+        stats = {
+            "tts_recovered_pending": 0,
+            "video_recovered_completed": 0,
+            "video_recovered_tts_done": 0,
+            "video_recovered_pending": 0,
+            "interrupted_recovered": 0,
+        }
         now = time.time()
+
+        def _clean(row: TaskRow) -> None:
+            if staging_cleanup and row.staging_dir:
+                try:
+                    staging_cleanup(row.staging_dir)
+                except Exception:  # noqa: BLE001
+                    pass
+
         with self._connect() as conn:
             # validating / tts_running → pending
             q = "SELECT * FROM tasks WHERE status IN (?, ?)"
@@ -620,16 +722,18 @@ class TaskStore:
                 q += " AND batch_id=?"; args.append(batch_id)
             rows = conn.execute(q, args).fetchall()
             for r in rows:
+                row_obj = _row_to_task(r)
+                _clean(row_obj)
                 conn.execute(
                     "UPDATE tasks SET status=?, stage='等待恢复',"
-                    " reserved_output_path='', progress=0,"
+                    " reserved_output_path='', staging_dir='', progress=0,"
                     " error_type='', error_detail='',"
                     " updated_at=? WHERE task_id=?",
                     (STATUS_PENDING, now, r["task_id"]),
                 )
                 stats["tts_recovered_pending"] += 1
 
-            # video_running：分两种
+            # video_running：分三种
             q = "SELECT * FROM tasks WHERE status=?"
             args = [STATUS_VIDEO_RUNNING]
             if batch_id:
@@ -637,6 +741,37 @@ class TaskStore:
             rows = conn.execute(q, args).fetchall()
             for r in rows:
                 row_obj = _row_to_task(r)
+                reserved = row_obj.reserved_output_path
+                # 情形 1：正式文件已落，DB 未提交
+                if reserved and Path(reserved).is_file() and reserved_output_verifier:
+                    try:
+                        ok, meta = reserved_output_verifier(row_obj, Path(reserved))
+                    except Exception:  # noqa: BLE001
+                        ok, meta = False, {}
+                    if ok:
+                        # 单事务式补记 completed
+                        conn.execute(
+                            "UPDATE tasks SET status=?, output_path=?,"
+                            " reserved_output_path='',"
+                            " final_duration=?, tts_duration=?, concat_duration=?,"
+                            " video_duration=?, encoder_used=?, hw_fallback_used=?,"
+                            " progress=100, stage='完成（恢复）',"
+                            " error_type='', error_detail='',"
+                            " finished_at=?, updated_at=?"
+                            " WHERE task_id=?",
+                            (STATUS_COMPLETED, reserved,
+                             float(meta.get("final_duration") or row_obj.final_duration or 0),
+                             float(meta.get("tts_duration") or row_obj.tts_duration or 0),
+                             float(meta.get("concat_duration") or row_obj.concat_duration or 0),
+                             float(meta.get("video_duration") or row_obj.video_duration or 0),
+                             str(meta.get("encoder_used") or row_obj.encoder_used or ""),
+                             int(meta.get("hw_fallback_used") or row_obj.hw_fallback_used or 0),
+                             now, now, r["task_id"]),
+                        )
+                        _clean(row_obj)
+                        stats["video_recovered_completed"] += 1
+                        continue
+                # 情形 2：正式文件缺失或校验不过 —— 但 tts.wav 完整 → tts_done
                 if tts_wav_ok and tts_wav_ok(row_obj):
                     conn.execute(
                         "UPDATE tasks SET status=?, stage='等待视频池（恢复）',"
@@ -646,16 +781,79 @@ class TaskStore:
                         (STATUS_TTS_DONE, now, r["task_id"]),
                     )
                     stats["video_recovered_tts_done"] += 1
-                else:
-                    conn.execute(
-                        "UPDATE tasks SET status=?, stage='等待恢复',"
-                        " reserved_output_path='', progress=0,"
-                        " error_type='', error_detail='',"
-                        " updated_at=? WHERE task_id=?",
-                        (STATUS_PENDING, now, r["task_id"]),
-                    )
-                    stats["video_recovered_pending"] += 1
+                    continue
+                # 情形 3：都不行 → pending
+                _clean(row_obj)
+                conn.execute(
+                    "UPDATE tasks SET status=?, stage='等待恢复',"
+                    " reserved_output_path='', staging_dir='', progress=0,"
+                    " error_type='', error_detail='',"
+                    " updated_at=? WHERE task_id=?",
+                    (STATUS_PENDING, now, r["task_id"]),
+                )
+                stats["video_recovered_pending"] += 1
+
+            # 兼容旧版 interrupted 孤儿：一律回 pending（安全，走正常重跑）
+            q = "SELECT * FROM tasks WHERE status=?"
+            args = [STATUS_INTERRUPTED]
+            if batch_id:
+                q += " AND batch_id=?"; args.append(batch_id)
+            rows = conn.execute(q, args).fetchall()
+            for r in rows:
+                row_obj = _row_to_task(r)
+                _clean(row_obj)
+                conn.execute(
+                    "UPDATE tasks SET status=?, stage='等待恢复',"
+                    " reserved_output_path='', staging_dir='', progress=0,"
+                    " error_type='', error_detail='',"
+                    " updated_at=? WHERE task_id=?",
+                    (STATUS_PENDING, now, r["task_id"]),
+                )
+                stats["interrupted_recovered"] += 1
         return stats
+
+    def complete_task_transactional(self, task_id: str, *,
+                                     output_path: str,
+                                     final_duration: float,
+                                     tts_duration: float,
+                                     concat_duration: float,
+                                     video_duration: float,
+                                     encoder_used: str,
+                                     hw_fallback_used: bool,
+                                     warnings_to_add: list[str] | None = None) -> None:
+        """R11-3 视频完成走单个事务：写 output_path + 清 reservation + 记 warnings +
+        编码器/时长/completed 状态。避免"文件已落 / DB 未落"跨步失败面。"""
+        now = time.time()
+        warnings_to_add = warnings_to_add or []
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                # 读现有 warnings 做去重合并
+                cur_row = conn.execute(
+                    "SELECT warnings FROM tasks WHERE task_id=?", (task_id,)
+                ).fetchone()
+                existing = json.loads((cur_row["warnings"] if cur_row else "[]") or "[]")
+                if not isinstance(existing, list):
+                    existing = []
+                for w in warnings_to_add:
+                    if w and w not in existing:
+                        existing.append(w)
+                conn.execute(
+                    "UPDATE tasks SET status=?, output_path=?, reserved_output_path='',"
+                    " final_duration=?, tts_duration=?, concat_duration=?,"
+                    " video_duration=?, encoder_used=?, hw_fallback_used=?,"
+                    " progress=100, stage='完成', error_type='', error_detail='',"
+                    " warnings=?, finished_at=?, updated_at=? WHERE task_id=?",
+                    (STATUS_COMPLETED, output_path,
+                     float(final_duration), float(tts_duration),
+                     float(concat_duration), float(video_duration),
+                     encoder_used, 1 if hw_fallback_used else 0,
+                     json.dumps(existing, ensure_ascii=False), now, now, task_id),
+                )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
 
     def reap_interrupted(self, batch_id: str | None = None) -> int:
         """旧接口保留（兼容测试）：把 running 全标 interrupted。

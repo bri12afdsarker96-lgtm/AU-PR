@@ -1,10 +1,9 @@
-"""HTTP API 路由：所有路径以 /api/bulk_dub/ 前缀，避免与"一键成片"路由冲突。
+"""HTTP API 路由：所有路径以 /api/bulk_dub/ 前缀。
 
-R8 加固：
-    - 上传路径明确限制 Content-Length 上限；超限返回 413；
-    - 服务端参数校验错误统一 400；
-    - `/changes` 返回下一个游标 (next_since)；
-    - CSV 触发下载头（Content-Disposition: attachment）。
+R11 修复：
+    R11-5 /changes 用复合游标 (updated_at, task_id)；返回 next_cursor + has_more
+    R11-8 /csv 通过 web_server 层流式；这里只提供 iter_csv_chunks 引用
+    R11-11 参数校验严格：batch_id / task_id 存在性；multipart 明确失败 400
 """
 
 from __future__ import annotations
@@ -14,23 +13,30 @@ import time
 from typing import Any
 
 from ..engines.edge_tts import EDGE_STYLES, EDGE_VOICES, edge_tts_endpoint
-from .csv_export import to_bytes as csv_to_bytes
 from .excel_reader import (
-    MAX_XLSX_UPLOAD_BYTES, MAX_TASKS_PER_BATCH, ExcelSizeError,
+    MAX_XLSX_UPLOAD_BYTES, ExcelSizeError,
 )
 from .service import (
     DEFAULT_SPEED, DEFAULT_VOICE_ID, BulkDubService, ValidationError, get_service,
 )
+from .store import is_safe_id
 
 
 API_PREFIX = "/api/bulk_dub"
-# 非 xlsx 上传路径的绝对 Content-Length 上限（如 pause/cancel 的 JSON 或空 body）
 MAX_JSON_BODY_BYTES = 256 * 1024
 
 
 def _json_response(payload: Any, status: int = 200) -> tuple[int, bytes, str]:
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     return status, body, "application/json; charset=utf-8"
+
+
+def _safe_batch_id(v: str) -> bool:
+    return bool(v and is_safe_id(v))
+
+
+def _safe_task_id(v: str) -> bool:
+    return bool(v and is_safe_id(v))
 
 
 def dispatch_get(path: str, query: dict[str, str],
@@ -52,6 +58,8 @@ def dispatch_get(path: str, query: dict[str, str],
 
     if route == "/summary":
         batch_id = query.get("batch_id") or None
+        if batch_id and not _safe_batch_id(batch_id):
+            return True, *_json_response({"error": "非法 batch_id"}, 400)
         return True, *_json_response(svc.summary(batch_id))
 
     if route == "/batches":
@@ -63,6 +71,8 @@ def dispatch_get(path: str, query: dict[str, str],
 
     if route == "/tasks":
         batch_id = query.get("batch_id") or None
+        if batch_id and not _safe_batch_id(batch_id):
+            return True, *_json_response({"error": "非法 batch_id"}, 400)
         status = query.get("status") or None
         excel_row = None
         if query.get("excel_row"):
@@ -86,32 +96,36 @@ def dispatch_get(path: str, query: dict[str, str],
         })
 
     if route == "/changes":
-        try:
-            since = float(query.get("since") or 0)
-        except ValueError:
-            return True, *_json_response({"error": "非法 since"}, 400)
+        # R11-5 复合游标；兼容旧 since=浮点 参数（转成 cursor="since|"）
+        cursor = query.get("cursor")
+        if cursor is None and query.get("since"):
+            try:
+                since = float(query.get("since") or 0)
+                cursor = f"{since:.9f}|"
+            except ValueError:
+                return True, *_json_response({"error": "非法 since"}, 400)
         batch_id = query.get("batch_id") or None
-        rows = svc.changed_since(since, batch_id)
-        # 稳定游标 = 本批次最大 updated_at；无变化时 next_since=since
-        next_since = max((r.get("updated_at", 0) for r in rows), default=since)
-        return True, *_json_response({
-            "changes": rows, "now": time.time(), "next_since": next_since,
-        })
+        if batch_id and not _safe_batch_id(batch_id):
+            return True, *_json_response({"error": "非法 batch_id"}, 400)
+        try:
+            limit = max(1, min(500, int(query.get("limit") or 500)))
+        except ValueError:
+            return True, *_json_response({"error": "非法 limit"}, 400)
+        payload = svc.changed_since_cursor(cursor, batch_id, limit)
+        payload["now"] = time.time()
+        return True, *_json_response(payload)
+
+    if route == "/encoder_probe":
+        snap = svc.summary()
+        return True, *_json_response(snap.get("scheduler", {}).get("encoder", {}))
 
     if route == "/csv":
+        # CSV 由 web_server 直接流式发送——这里只做参数校验
         batch_id = query.get("batch_id") or None
-        rows_iter = svc.store.iter_all(batch_id=batch_id)
-        body = csv_to_bytes(rows_iter)
-        fname = f"bulk_dub_{batch_id or 'all'}.csv"
-        # 返回文件下载头（外层 web_server 会照抄 Content-Type 但也需要 Content-Disposition
-        # ——这里把它塞进 Content-Type 字段的话不合适；改由外层根据 path 自行加）
-        return True, 200, body, "text/csv; charset=utf-8"
-
-    if route == "/audio":
-        # 试听/成片音频回读——严格白名单在 web_server 层做（含 data_root/批量带货/试听）
-        # 这里只把请求参数原样返回给 web_server 用
-        path_arg = query.get("path") or ""
-        return True, 200, path_arg.encode("utf-8"), "application/x-bulk-dub-audio"
+        if batch_id and not _safe_batch_id(batch_id):
+            return True, *_json_response({"error": "非法 batch_id"}, 400)
+        # 返回一个 sentinel 让 web_server 知道要走流式路径
+        return True, 200, b"__STREAM_CSV__", "text/csv; charset=utf-8"
 
     return True, *_json_response({"error": "not found"}, 404)
 
@@ -124,7 +138,6 @@ def dispatch_post(path: str, query: dict[str, str], body: bytes,
     svc = service or get_service()
     route = path[len(API_PREFIX):]
 
-    # 尺寸护栏：xlsx 上传 20MB；其他 JSON body 256KB
     is_xlsx_upload = route in ("/preview", "/start")
     max_bytes = MAX_XLSX_UPLOAD_BYTES if is_xlsx_upload else MAX_JSON_BODY_BYTES
     if body and len(body) > max_bytes:
@@ -133,7 +146,10 @@ def dispatch_post(path: str, query: dict[str, str], body: bytes,
         )
 
     if route == "/preview":
-        xlsx = _extract_xlsx_body(body, content_type)
+        try:
+            xlsx = _extract_xlsx_body(body, content_type)
+        except ValueError as exc:
+            return True, *_json_response({"error": str(exc)}, 400)
         check_exists = str(query.get("check_exists", "1")) not in ("0", "false", "False")
         try:
             payload = svc.preview_excel(xlsx, check_exists=check_exists)
@@ -144,7 +160,10 @@ def dispatch_post(path: str, query: dict[str, str], body: bytes,
         return True, *_json_response(payload)
 
     if route == "/start":
-        xlsx = _extract_xlsx_body(body, content_type)
+        try:
+            xlsx = _extract_xlsx_body(body, content_type)
+        except ValueError as exc:
+            return True, *_json_response({"error": str(exc)}, 400)
         try:
             speed = float(query.get("speed") or DEFAULT_SPEED)
             pitch = int(query.get("pitch") or 0)
@@ -167,6 +186,7 @@ def dispatch_post(path: str, query: dict[str, str], body: bytes,
                 video_concurrency=video_c,
                 encoder_preference=query.get("encoder_preference") or "auto",
                 check_exists=str(query.get("check_exists", "1")) not in ("0", "false", "False"),
+                require_endpoint=str(query.get("require_endpoint", "1")) not in ("0", "false", "False"),
             )
         except ExcelSizeError as exc:
             return True, *_json_response({"error": str(exc)}, 413)
@@ -175,6 +195,18 @@ def dispatch_post(path: str, query: dict[str, str], body: bytes,
         except ValueError as exc:
             return True, *_json_response({"error": str(exc)}, 400)
         return True, *_json_response(result)
+
+    if route == "/resize_pools":
+        try:
+            tts = int(query["tts"]) if query.get("tts") else None
+            video = int(query["video"]) if query.get("video") else None
+        except ValueError:
+            return True, *_json_response({"error": "非法数字"}, 400)
+        try:
+            r = svc.resize_pools(tts=tts, video=video)
+        except ValidationError as exc:
+            return True, *_json_response({"error": str(exc)}, 400)
+        return True, *_json_response(r)
 
     if route == "/pause":
         svc.pause()
@@ -185,41 +217,52 @@ def dispatch_post(path: str, query: dict[str, str], body: bytes,
 
     if route == "/pause_batch":
         batch_id = query.get("batch_id") or ""
+        if not _safe_batch_id(batch_id):
+            return True, *_json_response({"error": "非法 batch_id"}, 400)
         try:
             svc.pause_batch(batch_id)
         except ValidationError as exc:
-            return True, *_json_response({"error": str(exc)}, 400)
+            return True, *_json_response({"error": str(exc)}, 404)
         return True, *_json_response({"paused_batch": batch_id})
     if route == "/resume_batch":
         batch_id = query.get("batch_id") or ""
+        if not _safe_batch_id(batch_id):
+            return True, *_json_response({"error": "非法 batch_id"}, 400)
         try:
             svc.resume_batch(batch_id)
         except ValidationError as exc:
-            return True, *_json_response({"error": str(exc)}, 400)
+            return True, *_json_response({"error": str(exc)}, 404)
         return True, *_json_response({"resumed_batch": batch_id})
 
     if route == "/cancel_task":
-        task_id = query.get("task_id") or _read_json(body).get("task_id")
-        if not task_id:
-            return True, *_json_response({"error": "缺少 task_id"}, 400)
-        ok = svc.cancel_task(task_id)
+        task_id = query.get("task_id") or _read_json(body).get("task_id") or ""
+        if not _safe_task_id(task_id):
+            return True, *_json_response({"error": "非法 task_id"}, 400)
+        try:
+            ok = svc.cancel_task(task_id)
+        except ValidationError as exc:
+            return True, *_json_response({"error": str(exc)}, 404)
         return True, *_json_response({"cancelled": ok})
 
     if route == "/cancel_waiting":
         batch_id = query.get("batch_id") or _read_json(body).get("batch_id") or ""
+        if not _safe_batch_id(batch_id):
+            return True, *_json_response({"error": "非法 batch_id"}, 400)
         try:
-            n = svc.cancel_waiting(batch_id) if batch_id else 0
+            n = svc.cancel_waiting(batch_id)
         except ValidationError as exc:
-            return True, *_json_response({"error": str(exc)}, 400)
+            return True, *_json_response({"error": str(exc)}, 404)
         return True, *_json_response({"cancelled": n})
 
     if route == "/retry_failed":
         batch_id = query.get("batch_id") or _read_json(body).get("batch_id") or ""
+        if not _safe_batch_id(batch_id):
+            return True, *_json_response({"error": "非法 batch_id"}, 400)
         only = str(query.get("only_retryable", "0")) in ("1", "true", "True")
         try:
-            n = svc.retry_failed(batch_id, only) if batch_id else 0
+            n = svc.retry_failed(batch_id, only)
         except ValidationError as exc:
-            return True, *_json_response({"error": str(exc)}, 400)
+            return True, *_json_response({"error": str(exc)}, 404)
         return True, *_json_response({"retried": n})
 
     if route == "/try_voice":
@@ -241,14 +284,14 @@ def dispatch_post(path: str, query: dict[str, str], body: bytes,
 
 def _extract_xlsx_body(body: bytes, content_type: str) -> bytes:
     if body and content_type and content_type.startswith("multipart/form-data"):
-        try:
-            return _parse_multipart_file(body, content_type)
-        except Exception:
-            return body
+        result = _parse_multipart_file(body, content_type)
+        if result is None:
+            raise ValueError("multipart 中未找到 file/xlsx 字段")
+        return result
     return body
 
 
-def _parse_multipart_file(body: bytes, content_type: str) -> bytes:
+def _parse_multipart_file(body: bytes, content_type: str) -> bytes | None:
     boundary = None
     for part in content_type.split(";"):
         part = part.strip()
@@ -256,7 +299,7 @@ def _parse_multipart_file(body: bytes, content_type: str) -> bytes:
             boundary = part.split("=", 1)[1].strip().strip('"')
             break
     if not boundary:
-        return body
+        return None
     marker = ("--" + boundary).encode()
     parts = body.split(marker)
     for chunk in parts:
@@ -271,7 +314,7 @@ def _parse_multipart_file(body: bytes, content_type: str) -> bytes:
             data = data[:-2]
         if 'name="file"' in headers or 'name="xlsx"' in headers:
             return data
-    return body
+    return None
 
 
 def _read_json(body: bytes) -> dict:

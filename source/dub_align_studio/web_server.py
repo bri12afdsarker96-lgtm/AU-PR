@@ -1111,6 +1111,10 @@ class _Handler(BaseHTTPRequestHandler):
             from .bulk_dub import api as bulk_api
 
             query = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+            # R11-8：CSV 走真流式（不整份进内存）
+            if route == "/api/bulk_dub/csv":
+                self._serve_bulk_csv_streaming(query)
+                return
             try:
                 handled, status, body, ctype = bulk_api.dispatch_get(route, query)
             except Exception as exc:  # noqa: BLE001
@@ -1119,20 +1123,46 @@ class _Handler(BaseHTTPRequestHandler):
             if handled:
                 self.send_response(status)
                 self.send_header("Content-Type", ctype)
-                # R8：CSV 触发下载
-                if route == "/api/bulk_dub/csv":
-                    self.send_header("Content-Disposition",
-                                      "attachment; filename=bulk_dub_result.csv")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
                 return
         self._json({"error": "not found"}, 404)
 
+    def _serve_bulk_csv_streaming(self, query: dict) -> None:
+        """R11-8：万级 CSV **真流式**——用 chunked transfer encoding，
+        每次 iter_csv_chunks 产出一批就发一批，永不把全表加载进内存。"""
+        from .bulk_dub import csv_export as _ce
+        from .bulk_dub.service import get_service
+        from .bulk_dub.store import is_safe_id as _is_safe
+
+        batch_id = query.get("batch_id") or None
+        if batch_id and not _is_safe(batch_id):
+            self._json({"error": "非法 batch_id"}, 400)
+            return
+        svc = get_service()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/csv; charset=utf-8")
+        self.send_header("Content-Disposition",
+                          "attachment; filename=bulk_dub_result.csv")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            for chunk in _ce.iter_csv_chunks(svc.store.iter_all(batch_id=batch_id)):
+                self.wfile.write(f"{len(chunk):X}\r\n".encode("ascii"))
+                self.wfile.write(chunk)
+                self.wfile.write(b"\r\n")
+            self.wfile.write(b"0\r\n\r\n")
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
     def _serve_bulk_audio(self, path_str: str,
                            allowed_roots: list) -> None:
         """把批量配音的 wav 试听/成片安全下发到浏览器。
-        白名单：只允许 allowed_roots 中的目录（resolve 后包含检查）。
+
+        R11-8：**试听（WAV/MP3）**分块流式；成片 MP4 支持 HTTP Range（断点/拖动）
+        并按 64KB 分块发；绝不 read_bytes 整份加载。
         """
         if not path_str:
             self._json({"error": "缺少 path"}, 400)
@@ -1156,16 +1186,59 @@ class _Handler(BaseHTTPRequestHandler):
         if not ok:
             self._json({"error": "路径不在允许范围"}, 403)
             return
-        ext = candidate.suffix.lower()
+        ext = candidate.suffix.lower().lstrip(".")
+        # 试听只允许 WAV/MP3；MP4 走 Range 播放
+        allowed_exts = {"wav", "mp3", "mp4", "m4a"}
+        if ext not in allowed_exts:
+            self._json({"error": f"不支持的媒体后缀：{ext}"}, 400)
+            return
         ctype = {"wav": "audio/wav", "mp3": "audio/mpeg",
-                  "mp4": "video/mp4"}.get(ext.lstrip("."), "application/octet-stream")
-        data = candidate.read_bytes()
-        self.send_response(200)
+                  "m4a": "audio/mp4", "mp4": "video/mp4"}.get(ext, "application/octet-stream")
+        file_size = candidate.stat().st_size
+        # 解析 Range
+        range_hdr = self.headers.get("Range") or ""
+        start, end = 0, file_size - 1
+        status = 200
+        if range_hdr.startswith("bytes="):
+            try:
+                spec = range_hdr[6:].split(",", 1)[0].strip()
+                a, b = spec.split("-", 1)
+                if a:
+                    start = int(a)
+                if b:
+                    end = int(b)
+                if start > end or start >= file_size:
+                    self.send_response(416)
+                    self.send_header("Content-Range", f"bytes */{file_size}")
+                    self.end_headers()
+                    return
+                end = min(end, file_size - 1)
+                status = 206
+            except (ValueError, IndexError):
+                start, end = 0, file_size - 1
+                status = 200
+        length = end - start + 1
+        self.send_response(status)
         self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(length))
+        if status == 206:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(data)
+        # 64KB 分块流式发送
+        remaining = length
+        try:
+            with open(candidate, "rb") as fh:
+                fh.seek(start)
+                while remaining > 0:
+                    chunk = fh.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
@@ -1174,8 +1247,20 @@ class _Handler(BaseHTTPRequestHandler):
             from .bulk_dub import api as bulk_api
 
             query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
-            length = int(self.headers.get("Content-Length") or 0)
-            # R8：Content-Length 硬上限——xlsx 上传 20MB，其他 256KB
+            # R11-11：Content-Length 校验
+            raw_len = self.headers.get("Content-Length")
+            if raw_len is None:
+                # 缺失 → 411 Length Required（不接受 chunked upload）
+                self._json({"error": "缺少 Content-Length"}, 411)
+                return
+            try:
+                length = int(raw_len)
+            except ValueError:
+                self._json({"error": f"非法 Content-Length：{raw_len}"}, 400)
+                return
+            if length < 0:
+                self._json({"error": f"Content-Length 不能为负：{length}"}, 400)
+                return
             max_body = 20 * 1024 * 1024 if route in ("/api/bulk_dub/preview", "/api/bulk_dub/start") else 256 * 1024
             if length > max_body:
                 self._json({"error": f"上传体积过大：Content-Length={length} > {max_body}"}, 413)
@@ -1823,4 +1908,14 @@ def main(port: int = DEFAULT_PORT, open_browser: bool = True) -> int:
         pass
     finally:
         server.server_close()
+        # R11-3：应用退出时只在 bulk service 已被使用过时安全停止它——
+        # 不为了停止而 get_service() 触发创建
+        try:
+            from .bulk_dub import service as _bulk_service
+
+            existing = _bulk_service.peek_service()
+            if existing is not None:
+                existing.stop()
+        except Exception:  # noqa: BLE001
+            pass
     return 0

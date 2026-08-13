@@ -393,32 +393,14 @@ def render_single(*, input_video: str | Path, tts_audio: str | Path,
             f"（超出 {DURATION_TOLERANCE_SECONDS}s 容忍）"
         )
 
-    # R4：拒绝覆盖已有文件（无论谁写的都不动）
+    # R4/R11-4：**绝不覆盖**——POSIX rename 会覆盖竞态目标；不用 rename/copy2。
     if reserved_output.exists():
         _safe_unlink(tmp_out)
         raise VideoError(
             f"预留输出路径已被占用：{reserved_output}（并发冲突或第三方写入）"
         )
     reserved_output.parent.mkdir(parents=True, exist_ok=True)
-    # 用 os.link 优先（不覆盖）；跨盘不支持时降级 rename（同盘原子）；
-    # 最终若目标路径在 rename 后仍存在冲突，则失败清理。
-    try:
-        os.link(tmp_out, reserved_output)   # 硬链接（同盘）不覆盖，POSIX 原子
-        tmp_out.unlink()
-    except (OSError, NotImplementedError):
-        # Windows 或跨盘：兜底用 os.rename（同盘原子；跨盘走 shutil）
-        try:
-            # 二次检查——最小化 TOCTOU 窗口
-            if reserved_output.exists():
-                _safe_unlink(tmp_out)
-                raise VideoError(
-                    f"预留输出路径已被占用（rename 前二次检查）：{reserved_output}"
-                )
-            os.rename(tmp_out, reserved_output)
-        except OSError:
-            # 跨盘 rename 会 EXDEV，改用 copy2 + unlink
-            shutil.copy2(tmp_out, reserved_output)
-            _safe_unlink(tmp_out)
+    _commit_no_overwrite(tmp_out, reserved_output)
     return RenderResult(
         output_path=str(reserved_output),
         final_duration=actual_seconds,
@@ -436,6 +418,54 @@ def _safe_unlink(path: Path) -> None:
             path.unlink()
     except OSError:
         pass
+
+
+def _commit_no_overwrite(source: Path, target: Path) -> None:
+    """把 source 提交为 target——**永不覆盖**已存在的 target，任何步骤失败清理由本函数
+    创建的 part，绝不动 target 已有字节。
+
+    策略（R11-4）：
+        1. 首选 os.link（同盘，POSIX 语义：EEXIST 就是 EEXIST，不覆盖）；
+        2. os.link 不支持（跨盘/Windows/文件系统不支持硬链接）→ 走"目标目录内 .part
+           + O_CREAT|O_EXCL 独占创建 + copy 内容 + O_EXCL 建目标 + rename part→target
+           被替换"。这里用**os.rename(part, target)** 也不安全（POSIX 可覆盖）；因此
+           改用 **os.link(part, target) + unlink part** 二次尝试；仍不支持则最后手段：
+           用 O_EXCL 打开 target 直接 write 全部字节（可能慢，但语义正确）。
+        3. 任何步骤失败：如 target 出现新字节，也不能视为提交；抛错让上层清理。
+    """
+    # 首选：硬链接（同盘）；EEXIST → target 已被别人占用（拒绝）；ENOENT 之类正常抛
+    try:
+        os.link(source, target)
+        source.unlink()
+        return
+    except FileExistsError:
+        # 有人抢了 target；不动 target
+        raise VideoError(f"提交时发现目标已存在：{target}")
+    except (OSError, NotImplementedError):
+        pass  # 走跨盘/无 hardlink 路径
+
+    # 跨盘或不支持 hardlink：手动 O_EXCL 打开 target 写入 → 语义正确的不覆盖
+    fd = None
+    try:
+        fd = os.open(str(target), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    except FileExistsError:
+        raise VideoError(f"提交时发现目标已存在（EXCL 创建失败）：{target}")
+    try:
+        with os.fdopen(fd, "wb") as w, open(source, "rb") as r:
+            fd = None
+            shutil.copyfileobj(r, w, length=1024 * 1024)
+    except Exception:
+        # 写入过程中失败 → 清理 target（是我们刚创的），也清理 source
+        _safe_unlink(target)
+        _safe_unlink(source)
+        raise
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+    _safe_unlink(source)
 
 
 def bulk_staging_root() -> Path:

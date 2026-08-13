@@ -1,16 +1,17 @@
 """BulkDubService：把 store + scheduler + edge backend 组装成单例服务。
 
-R2 修复：
-    - 不再在 start_batch() 里重启 scheduler；scheduler 在第一次调用时启动，之后**永远单例**；
-      多批次共用同一 scheduler，任务级参数严格来自每条任务自己的 params_snapshot；
-    - 提供 pause_batch/resume_batch（批次级暂停）+ pause/resume（全局暂停）；
-    - 服务端参数校验（枚举、范围）；上传/预览大小 API 层再校验一遍；
-    - Excel 导入用单事务批量插入（R8）；预览返回上限。
+R11 改造：
+    - fingerprint 计算包含 encoder_preference/preset/crf（不再硬编码 libx264）
+    - 一次批量查询所有 fingerprint 的可复用结果（避免 N+1）
+    - 批次内相同 fingerprint 去重（共享同一 output 记录）
+    - Endpoint 未配置 → 直接拒绝启动（不建大量必失败任务）
+    - resize_pools 转发 scheduler
 """
 
 from __future__ import annotations
 
 import copy
+import os
 import shutil
 import threading
 from dataclasses import asdict
@@ -74,11 +75,26 @@ class BulkDubService:
                 self._scheduler.start()
             return self._scheduler
 
-    def stop(self) -> None:
+    def has_scheduler(self) -> bool:
         with self._scheduler_lock:
-            if self._scheduler is not None:
-                self._scheduler.stop(3.0)
+            return self._scheduler is not None
+
+    def stop(self) -> bool:
+        with self._scheduler_lock:
+            if self._scheduler is None:
+                return True
+            ok = self._scheduler.stop(3.0)
+            if ok:
                 self._scheduler = None
+            return ok
+
+    def resize_pools(self, *, tts: int | None = None,
+                     video: int | None = None) -> dict:
+        if tts is not None and not (1 <= int(tts) <= 16):
+            raise ValidationError(f"TTS 并发超范围 [1,16]：{tts}")
+        if video is not None and not (1 <= int(video) <= 8):
+            raise ValidationError(f"视频并发超范围 [1,8]：{video}")
+        return self._ensure_scheduler().resize_pools(tts=tts, video=video)
 
     # -------------------- 导入 / 预览 --------------------
 
@@ -120,7 +136,6 @@ class BulkDubService:
             p.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             raise ValidationError(f"无法创建输出目录：{exc}") from exc
-        # 可写探测
         probe = p / ".bulk_dub_write_probe"
         try:
             probe.write_bytes(b"x")
@@ -128,6 +143,15 @@ class BulkDubService:
         except OSError as exc:
             raise ValidationError(f"输出目录不可写：{exc}") from exc
         return p
+
+    @staticmethod
+    def _require_endpoint_configured() -> None:
+        """R11-6：未配置 Endpoint 时**拒绝启动**——不建大量必失败任务。"""
+        if not (edge_tts_endpoint() or "").strip():
+            raise ValidationError(
+                "Edge TTS 端点未配置。请到主页 · 工具箱 · 「免费 Edge TTS」填入 "
+                "Cloudflare Worker 地址后再试。"
+            )
 
     # -------------------- 开始批处理 --------------------
 
@@ -143,8 +167,8 @@ class BulkDubService:
                     tts_concurrency: int = DEFAULT_TTS_CONCURRENCY,
                     video_concurrency: int = 0,
                     encoder_preference: str = "auto",
-                    check_exists: bool = True) -> dict:
-        # 校验参数
+                    check_exists: bool = True,
+                    require_endpoint: bool = True) -> dict:
         self.validate_params(
             voice_id=voice_id, speed=speed, pitch=pitch, style=style,
             zoom_percent=zoom_percent,
@@ -152,6 +176,8 @@ class BulkDubService:
             video_concurrency=video_concurrency,
             encoder_preference=encoder_preference,
         )
+        if require_endpoint:
+            self._require_endpoint_configured()
         out_path = self._validate_output_dir(output_dir)
         preview = excel_reader.parse_excel(source_bytes, check_exists=check_exists)
         if preview.total > excel_reader.MAX_TASKS_PER_BATCH:
@@ -161,7 +187,6 @@ class BulkDubService:
             )
         voice_name = _voice_name_by_id(voice_id) or voice_id
 
-        # 冻结到 params_snapshot：**每条任务都带一份**，运行中改控件不会影响已入库任务
         params_snapshot = dict(
             voice_id=voice_id, voice_name=voice_name, speed=float(speed),
             pitch=int(pitch), style=style,
@@ -175,11 +200,30 @@ class BulkDubService:
         self._current_batch_id = batch_id
         self._current_frozen_params = copy.deepcopy(params_snapshot)
 
-        # 分组：无效行 / 幂等复用 / 新增
+        # R11-7 阶段 1：先算所有有效行的 fingerprint，再**一次性**批量查复用
+        rows_with_fp: list[tuple[Any, str]] = []
+        for r in preview.rows:
+            if not r.valid:
+                continue
+            fp = compute_fingerprint(
+                video_path=r.video_path, text=r.text, voice_id=voice_id,
+                speed=speed, pitch=pitch, style=style,
+                keep_original_audio=keep_original_audio,
+                mirror=True, zoom_percent=zoom_percent,
+                encoder_preference=encoder_preference,
+                preset=params_snapshot["preset"], crf=params_snapshot["crf"],
+            )
+            rows_with_fp.append((r, fp))
+        fp_hits = self.store.find_completed_by_fingerprints(
+            {fp for _, fp in rows_with_fp}
+        )
+
+        # R11-7 阶段 2：批内相同 fingerprint 去重（第一条走渲染或复用，其余共享）
+        seen_in_batch: dict[str, TaskRow | None] = {}
         invalid_tasks: list[dict] = []
         reuse_tasks: list[dict] = []
+        reuse_meta: list[dict] = []
         add_tasks: list[dict] = []
-        reuse_meta: list[dict] = []   # 复用命中的 existing 记录（后续 update 用）
 
         for r in preview.rows:
             if not r.valid:
@@ -200,8 +244,11 @@ class BulkDubService:
                 speed=speed, pitch=pitch, style=style,
                 keep_original_audio=keep_original_audio,
                 mirror=True, zoom_percent=zoom_percent,
+                encoder_preference=encoder_preference,
+                preset=params_snapshot["preset"], crf=params_snapshot["crf"],
             )
-            existing = self.store.get_by_fingerprint(fp, status=STATUS_COMPLETED)
+            existing = fp_hits.get(fp)
+            in_batch_share = seen_in_batch.get(fp)
             if existing and existing.output_path and Path(existing.output_path).is_file():
                 reuse_tasks.append(dict(
                     excel_row=r.row_number, input_video=r.video_path, text=r.text,
@@ -218,6 +265,25 @@ class BulkDubService:
                     final_duration=existing.final_duration,
                 ))
                 continue
+            if in_batch_share and in_batch_share.output_path and \
+                    Path(in_batch_share.output_path).is_file():
+                # 批内相同 fp 已有产物 → 直接共享
+                reuse_tasks.append(dict(
+                    excel_row=r.row_number, input_video=r.video_path, text=r.text,
+                    fingerprint=fp,
+                    voice_id=voice_id, voice_name=voice_name, speed=float(speed),
+                    keep_original_audio=bool(keep_original_audio),
+                    params_snapshot=params_snapshot,
+                ))
+                reuse_meta.append(dict(
+                    output_path=in_batch_share.output_path,
+                    video_duration=in_batch_share.video_duration,
+                    tts_duration=in_batch_share.tts_duration,
+                    concat_duration=in_batch_share.concat_duration,
+                    final_duration=in_batch_share.final_duration,
+                ))
+                continue
+            # 首次遇到这个 fp（且外部无 completed）→ 新建任务
             add_tasks.append(dict(
                 excel_row=r.row_number, input_video=r.video_path, text=r.text,
                 fingerprint=fp,
@@ -225,13 +291,14 @@ class BulkDubService:
                 keep_original_audio=bool(keep_original_audio),
                 params_snapshot=params_snapshot,
             ))
+            # 标记：以后同 fp 的行走"批内共享"
+            seen_in_batch[fp] = None
 
-        # R8：单事务批量插入
+        # 批量落库（单事务）
         if invalid_tasks:
             self.store.bulk_insert(batch_id, invalid_tasks)
         reuse_ids = self.store.bulk_insert(batch_id, reuse_tasks) if reuse_tasks else []
         self.store.bulk_insert(batch_id, add_tasks) if add_tasks else []
-        # 复用任务：批量插入后，逐条 update 成 completed（少量任务，短连接开销可接受）
         for tid, meta in zip(reuse_ids, reuse_meta):
             self.store.update(tid, status=STATUS_COMPLETED,
                                output_path=meta["output_path"],
@@ -241,9 +308,8 @@ class BulkDubService:
                                final_duration=meta["final_duration"],
                                progress=100, stage="完成（复用已有成片）")
 
-        # R2 关键修复：**不 restart scheduler**——单例 scheduler 处理所有批次
+        # 单例 scheduler：只 notify，不 restart
         sched = self._ensure_scheduler()
-        # 领新任务
         sched.notify()
 
         return {
@@ -251,7 +317,6 @@ class BulkDubService:
             "added": len(add_tasks),
             "reused": len(reuse_ids),
             "invalid": len(invalid_tasks),
-            # R8：total_rows 就是 preview.total（已含 valid + invalid），不再重复加 reused
             "total_rows": preview.total,
         }
 
@@ -264,26 +329,28 @@ class BulkDubService:
         self._ensure_scheduler().resume()
 
     def pause_batch(self, batch_id: str) -> None:
-        if not is_safe_id(batch_id):
-            raise ValidationError(f"非法 batch_id：{batch_id}")
+        if not self.store.get_batch(batch_id):
+            raise ValidationError(f"batch_id 不存在：{batch_id}")
         self._ensure_scheduler().pause_batch(batch_id)
 
     def resume_batch(self, batch_id: str) -> None:
-        if not is_safe_id(batch_id):
-            raise ValidationError(f"非法 batch_id：{batch_id}")
+        if not self.store.get_batch(batch_id):
+            raise ValidationError(f"batch_id 不存在：{batch_id}")
         self._ensure_scheduler().resume_batch(batch_id)
 
     def cancel_task(self, task_id: str) -> bool:
+        if self.store.get(task_id) is None:
+            raise ValidationError(f"task_id 不存在：{task_id}")
         return self._ensure_scheduler().cancel_task(task_id)
 
     def cancel_waiting(self, batch_id: str) -> int:
-        if not is_safe_id(batch_id):
-            raise ValidationError(f"非法 batch_id：{batch_id}")
+        if not self.store.get_batch(batch_id):
+            raise ValidationError(f"batch_id 不存在：{batch_id}")
         return self._ensure_scheduler().cancel_all_waiting(batch_id)
 
     def retry_failed(self, batch_id: str, only_retryable: bool = False) -> int:
-        if not is_safe_id(batch_id):
-            raise ValidationError(f"非法 batch_id：{batch_id}")
+        if not self.store.get_batch(batch_id):
+            raise ValidationError(f"batch_id 不存在：{batch_id}")
         return self._ensure_scheduler().retry_failed(batch_id, only_retryable)
 
     # -------------------- 查询 / 导出 --------------------
@@ -292,9 +359,17 @@ class BulkDubService:
         rows = self.store.list_tasks(**kwargs)
         return [_task_to_dict(r) for r in rows]
 
-    def changed_since(self, since: float, batch_id: str | None = None) -> list[dict]:
-        rows = self.store.changed_since(since, batch_id=batch_id)
-        return [_task_to_dict(r) for r in rows]
+    def changed_since_cursor(self, cursor: str | None,
+                              batch_id: str | None = None,
+                              limit: int = 500) -> dict:
+        rows, next_cursor, has_more = self.store.changed_since_cursor(
+            cursor, batch_id=batch_id, limit=limit,
+        )
+        return {
+            "changes": [_task_to_dict(r) for r in rows],
+            "next_cursor": next_cursor,
+            "has_more": has_more,
+        }
 
     def list_batches(self, limit: int = 50) -> list[dict]:
         return self.store.list_batches(limit)
@@ -304,13 +379,14 @@ class BulkDubService:
         sched_snap = self._ensure_scheduler().snapshot()
         staging_root = studio_settings.data_root() / "批量带货" / "staging"
         staging_bytes = _dir_size(staging_root)
-        out_dir_str = ""
-        if batch_id:
-            b = self.store.get_batch(batch_id)
-            out_dir_str = b["output_dir"] if b else ""
-        elif self._current_batch_id:
-            b = self.store.get_batch(self._current_batch_id)
-            out_dir_str = b["output_dir"] if b else ""
+        # frozen_params 优先取"所选批次"（R11-9）
+        frozen_params: dict = {}
+        target_batch = batch_id or self._current_batch_id
+        if target_batch:
+            b = self.store.get_batch(target_batch)
+            if b:
+                frozen_params = b.get("params") or {}
+        out_dir_str = str(frozen_params.get("output_dir", "") or "")
         out_dir = Path(out_dir_str or ".")
         try:
             disk = shutil.disk_usage(out_dir if out_dir.exists() else out_dir.parent)
@@ -335,11 +411,12 @@ class BulkDubService:
             "disk": {
                 "staging_bytes": staging_bytes,
                 "output_free_gb": output_free_gb,
-                "output_dir": str(out_dir_str),
+                "output_dir": out_dir_str,
             },
             "edge_endpoint": edge_tts_endpoint(),
+            "edge_endpoint_configured": bool(edge_tts_endpoint()),
             "batch_id": batch_id or self._current_batch_id or "",
-            "frozen_params": copy.deepcopy(self._current_frozen_params),
+            "frozen_params": frozen_params,
         }
 
     def export_csv(self, batch_id: str | None,
@@ -399,6 +476,12 @@ def get_service() -> BulkDubService:
     with _SERVICE_LOCK:
         if _SERVICE is None:
             _SERVICE = BulkDubService()
+        return _SERVICE
+
+
+def peek_service() -> BulkDubService | None:
+    """不触发创建的旁路查看——供 web_server 退出时决定要不要 stop()。"""
+    with _SERVICE_LOCK:
         return _SERVICE
 
 
