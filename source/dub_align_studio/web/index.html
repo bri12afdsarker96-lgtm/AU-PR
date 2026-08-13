@@ -334,9 +334,31 @@ footer b{color:var(--muted);font-weight:600}
         </div>
         <textarea id="text" placeholder="第一句台词……&#10;第二句台词……&#10;第三句台词……&#10;也可点上方按钮从 xlsx（默认 B 列）或 TXT 导入"></textarea></div>
       <div class="grid g2e sp">
-        <div><span class="f">配音引擎</span><select id="engine"></select></div>
-        <div><span class="f">音色</span>
+        <div><span class="f">配音引擎</span><select id="engine" onchange="onEngineChange()"></select></div>
+        <!-- 普通引擎（dots/fish/mock）：音色下拉，读取克隆音色库 -->
+        <div id="voiceRow"><span class="f">音色</span>
           <div class="row"><select id="voice"></select><button class="btn" onclick="loadState()" title="刷新">↻</button></div></div>
+        <!-- Edge TTS：预设声线；不读音色库，也不需要参考音频 -->
+        <div id="edgeRow" style="display:none">
+          <span class="f">Edge 声线 <span class="mini" style="color:var(--faint)">（预设合成音色 · 不是声音克隆）</span></span>
+          <select id="edgeVoice"></select>
+        </div>
+      </div>
+      <!-- Edge TTS 专属参数：仅在选 edge_tts 时显示 -->
+      <div class="grid g2e sp" id="edgeParamsRow" style="display:none">
+        <div><span class="f">Edge 音调 <span class="val" id="edgePitchV">0</span></span>
+          <input type="range" id="edgePitch" min="-50" max="50" step="1" value="0"
+                 oninput="document.getElementById('edgePitchV').textContent=this.value"></div>
+        <div><span class="f">Edge 风格</span>
+          <select id="edgeStyle"></select></div>
+      </div>
+      <p class="mini" id="edgeNotice" style="display:none;color:#e08c58;margin:-4px 0 8px;line-height:1.7">
+        ⚠ Edge TTS 使用预设合成音色，<b>不读取参考音频</b>；这是第三方非官方 Edge 接口，
+        稳定性及内容使用授权不由本软件承诺。若未配置服务地址，去「工具箱 · 免费 Edge TTS」填写。
+      </p>
+      <div class="row" id="edgeTryRow" style="display:none;margin:-2px 0 8px">
+        <button class="btn line" id="edgeTryBtn" onclick="tryEdgeVoice(this)">🎧 用当前 Edge 声线试听</button>
+        <span class="mini" style="color:var(--faint)">合成一句短话验证声线/音调/风格</span>
       </div>
       <div class="grid g2e sp">
         <div><span class="f">计时尺子</span><select id="aligner"></select></div>
@@ -876,6 +898,26 @@ footer b{color:var(--muted);font-weight:600}
         </div>
         <p class="hint" id="remoteHint" style="line-height:1.8;margin-top:2px">填好后到「配音引擎」下拉里选 <b style="color:var(--gold)">dots.tts（云 GPU · 远程）</b> 即可用云显卡克隆。部署见 <code>server/</code> 目录的部署文档。</p></div>
 
+      <!-- ═══ 免费 Edge TTS（Cloudflare Worker · OpenAI 兼容接口 · 预设合成音色 · 非克隆） ═══ -->
+      <div class="sp" id="edgeTtsAnchor"><span class="f">🌐 免费 Edge TTS（Cloudflare Worker · 预设合成音色，不是克隆）</span>
+        <p class="hint" style="margin:2px 0 10px;line-height:1.8">
+          调用 <a href="https://github.com/wangwangit/tts" target="_blank" style="color:var(--gold)">wangwangit/tts（MIT）</a> 部署到 Cloudflare 的 Worker，背后是 <b>Microsoft Edge Read Aloud</b>。
+          <b style="color:#e08c58">建议部署到你自己的 Cloudflare 免费账户</b>；作者公共地址仅适合临时试用，
+          不保证稳定；免费额度归属你的账户。稳定性及生成内容授权不由本软件承诺。
+        </p>
+        <div class="row" style="gap:6px">
+          <input type="text" id="edgeEp" placeholder="Worker 服务根地址，如 https://xxx.workers.dev（软件自动拼 /v1/audio/speech）" style="flex:1">
+          <button class="btn line" style="flex:none" onclick="saveEdgeEndpoint()">💾 保存</button>
+          <button class="btn" style="flex:none" onclick="testEdgeEndpoint()">🔌 测试连接</button>
+        </div>
+        <p class="hint" style="margin-top:8px;line-height:1.8">
+          自建步骤（5 分钟）：
+          <a href="https://github.com/wangwangit/tts#-一键部署到-cloudflare-workers" target="_blank" style="color:var(--gold);text-decoration:underline">📖 GitHub 一键部署说明</a> ·
+          注册 <a href="https://dash.cloudflare.com/sign-up" target="_blank" style="color:var(--gold);text-decoration:underline">Cloudflare 免费账户</a> → 点仓库的 Deploy → 拿到 xxx.workers.dev 填入上方 → 引擎选 <b style="color:var(--gold)">Edge TTS（免费云端 · 预设音色 · 不支持克隆）</b>。
+        </p>
+        <p class="hint" id="edgeHint" style="line-height:1.8;margin-top:2px;color:var(--faint)">—— 未加载 ——</p>
+      </div>
+
       <!-- ═══ 云 GPU 会话（优云智算 / 通用 SSH）：一键唤醒 · 一键关机 · 空闲自动关（DPAPI 本机加密） ═══ -->
       <div class="sp" id="cloudGpuAnchor"><span class="f">🖥 云 GPU 会话（SSH 唤醒 / 关机 · 可选 CompShare 云 API 停机不计费）</span>
         <p class="hint" style="margin:2px 0 10px">
@@ -1052,7 +1094,7 @@ function _busy(ms){
 let overlays=[], logTarget='mainlog', POSITIONS=[];
 const ASPECT_CANVAS={'9:16 竖屏':[1080,1920],'16:9 横屏':[1920,1080],'1:1 方形':[1080,1080],'4:3':[1440,1080],'3:4':[1080,1440]};
 const SUB_POS_RATIO={'顶部':0.06,'中上':0.30,'中部':0.48,'中下':0.68,'底部':0.885};
-const ENGINE_LABEL={dots_local:'dots.tts（本地 · 48kHz）',dots_remote:'dots.tts（云 GPU · 远程）',fish_local:'fish-speech（本地服务）',mock:'mock（测试）'};
+const ENGINE_LABEL={dots_local:'dots.tts（本地 · 48kHz）',dots_remote:'dots.tts（云 GPU · 远程）',fish_local:'fish-speech（本地服务）',mock:'mock（测试）',edge_tts:'Edge TTS（免费云端 · 预设音色 · 不支持克隆）'};
 const still=matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 /* ── 页签（支持 #p2 hash 直达） ── */
@@ -1116,6 +1158,9 @@ async function loadState(){
   const engs=s.engines.filter(k=>k!=='fish_local');  // 隐藏 fish-speech（会顶掉 dots.tts 的 CUDA torch）
   fill('engine',engs.map(k=>[k,ENGINE_LABEL[k]||k]));
   $('engine').value=engs.includes('dots_local')?'dots_local':engs[0];
+  // Edge TTS 预设声线/风格常量（不进音色库；引擎切换控件的显示切换）
+  _fillEdgeChoices(s);
+  onEngineChange();
   fill('aligner',s.aligners.map(k=>[k,k==='whisper'?'whisper（推荐）':k]));
   fill('aspect',s.aspects.map(k=>[k,k]));
   fill('edPos',s.positions.map(k=>[k,k]));
@@ -1551,6 +1596,10 @@ function buildPayload(action){
     voice_id:$('voice').value,shots_dir:$('shots').value.trim(),output_dir:out,
     title:_baseName(out)||'成片',
     max_pause:+$('pause').value,speed:+$('speed').value,seed:+$('seed').value,
+    // Edge TTS 参数（其他引擎会忽略；带上不影响 dots/fish/mock）
+    edge_voice:($('edgeVoice')&&$('edgeVoice').value)||'',
+    edge_pitch:+($('edgePitch')&&$('edgePitch').value)||0,
+    edge_style:($('edgeStyle')&&$('edgeStyle').value)||'general',
     burn_subtitles:$('burn').checked,subtitle_size:+$('subsize').value||64,
     subtitle_position:$('subPos').value||'底部',subtitle_font:$('subFont')?.value||'',
     subtitle_color:($('subColor')&&$('subColor').value.trim())||'#FFFFFF',
@@ -1558,6 +1607,40 @@ function buildPayload(action){
     aspect:$('aspect').value,overlays,audio:collectAudio(),progressbar:collectProgressBar(),
     watermark:collectWatermark(),
     reuse_dub:$('reuseDub')?$('reuseDub').checked:false};
+}
+
+// 引擎切换：edge_tts 显示 Edge 声线/音调/风格，隐藏克隆音色；切回其他引擎恢复
+function onEngineChange(){
+  const isEdge=($('engine')&&$('engine').value==='edge_tts');
+  if($('voiceRow'))$('voiceRow').style.display=isEdge?'none':'';
+  if($('edgeRow'))$('edgeRow').style.display=isEdge?'':'none';
+  if($('edgeParamsRow'))$('edgeParamsRow').style.display=isEdge?'grid':'none';
+  if($('edgeNotice'))$('edgeNotice').style.display=isEdge?'block':'none';
+  if($('edgeTryRow'))$('edgeTryRow').style.display=isEdge?'flex':'none';
+}
+
+// 「用当前 Edge 声线试听」：走 voice_try，engine=edge_tts，携带 edge_voice/pitch/style。
+async function tryEdgeVoice(btn){
+  const orig=btn.textContent; btn.disabled=true; btn.textContent='合成中…';
+  const ok=await postRun({action:'voice_try', engine:'edge_tts',
+    edge_voice:$('edgeVoice').value, edge_pitch:+$('edgePitch').value||0,
+    edge_style:$('edgeStyle').value||'general',
+    speed:+$('speed').value||1.0});
+  btn.disabled=false; btn.textContent=orig;
+  if(ok)pollAll();
+}
+// 用 /api/state 返回的常量填 Edge 下拉；state 加载后调用一次
+function _fillEdgeChoices(state){
+  const voices=state.edge_voices||[], styles=state.edge_styles||[];
+  const defaultStyle=state.edge_default_style||'general';
+  if($('edgeVoice')){
+    fill('edgeVoice', voices.map(v=>[v.id, v.name]));
+    if(voices.length && !$('edgeVoice').value)$('edgeVoice').value=voices[0].id;
+  }
+  if($('edgeStyle')){
+    fill('edgeStyle', styles.map(s=>[s, s]));
+    if(styles.includes(defaultStyle))$('edgeStyle').value=defaultStyle;
+  }
 }
 // 动态水印配置（未启用/空文字 → enabled:false，后端返回 None 不烧）
 function collectWatermark(){
@@ -1875,7 +1958,11 @@ async function rechunkOne(index){
   if(!confirm('只重新配音第 '+index+' 段？（用当前引擎/音色/参数重合成这一段并重拼 master，其余段不动）'))return;
   const payload={action:'rechunk',chunk_index:index,text:$('text').value,engine:$('engine').value,
     voice_id:$('voice').value,output_dir:$('outdir').value.trim(),
-    speed:+$('speed').value,seed:+$('seed').value,max_pause:+$('pause').value};
+    speed:+$('speed').value,seed:+$('seed').value,max_pause:+$('pause').value,
+    // Edge TTS 参数（其他引擎会忽略）——保证「重配此段」在 Edge 模式下也能带上声线/音调/风格
+    edge_voice:($('edgeVoice')&&$('edgeVoice').value)||'',
+    edge_pitch:+($('edgePitch')&&$('edgePitch').value)||0,
+    edge_style:($('edgeStyle')&&$('edgeStyle').value)||'general'};
   if(await postRun(payload))pollAll();
 }
 async function loadClones(){
@@ -2175,6 +2262,33 @@ async function cloudPauseAuto(minutes){
 }
 // 每 15 秒刷新云 GPU 状态（心跳）——不改 loadState，避免拖累现有节奏
 setInterval(()=>{try{loadCloudGpu();}catch(e){}},15000);
+
+/* ── 免费 Edge TTS：Endpoint 保存 & 测试连接 ── */
+async function loadEdgeSettings(){
+  try{
+    const s=await (await fetch('/api/settings')).json();
+    if(s.error){return;}
+    if($('edgeEp'))$('edgeEp').value=s.edge_tts_endpoint||'';
+    if($('edgeHint'))$('edgeHint').textContent=s.edge_tts_endpoint
+      ?('当前 Worker：'+s.edge_tts_endpoint+'（点「测试连接」实测一次短合成）')
+      :'未配置 Worker 地址。选 Edge TTS 引擎前先在此处填一次。';
+  }catch(e){}
+}
+async function saveEdgeEndpoint(){
+  const ep=($('edgeEp')&&$('edgeEp').value.trim())||'';
+  const j=await (await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({edge_tts_endpoint:ep})})).json();
+  if(j.error){alert(j.error);return;}
+  toast(ep?'已保存 Edge TTS Worker 地址':'已清空 Edge TTS 配置','ok');
+  loadEdgeSettings(); loadState();   // 刷新 state（顶栏/引擎下拉可能因此变化）
+}
+async function testEdgeEndpoint(){
+  if($('edgeHint'))$('edgeHint').textContent='测试中…（会向 Worker 发一次短合成请求）';
+  try{
+    const j=await (await fetch('/api/edge_tts/test',{method:'POST'})).json();
+    if($('edgeHint'))$('edgeHint').textContent=(j.available?'✅ ':'⛔ ')+(j.detail||'（无详细信息）');
+  }catch(e){if($('edgeHint'))$('edgeHint').textContent='测试失败：'+String(e);}
+}
 
 async function testRemote(){
   $('remoteHint').innerHTML='测试中…（首次会等云端响应）';
@@ -2588,6 +2702,10 @@ function collectConfig(){
     matMode:$('matMode')?$('matMode').value:'flat',
     voice:$('voice').value,burn:$('burn').checked,seed:+$('seed').value,
     pause:+$('pause').value,speed:+$('speed').value,
+    // Edge TTS 参数一并存进作品预设：切回该预设自动还原声线/音调/风格
+    edge_voice:($('edgeVoice')&&$('edgeVoice').value)||'',
+    edge_pitch:+($('edgePitch')&&$('edgePitch').value)||0,
+    edge_style:($('edgeStyle')&&$('edgeStyle').value)||'general',
     subPos:$('subPos').value,subsize:+$('subsize').value,subFont:$('subFont').value,
     // ⑤ 作品预设纳入完整字幕样式 + 视频进度条设定
     sub:{size:+$('subsize').value||64,pos:$('subPos').value,font:$('subFont')?.value||'',
@@ -2614,6 +2732,11 @@ function applyConfigObj(c){
   set('matMode',c.matMode);
   if(c.burn!=null)$('burn').checked=c.burn;
   set('seed',c.seed);set('pause',c.pause);set('speed',c.speed);
+  // 还原 Edge TTS 参数（老预设无这些字段 → 保留当前值不动）
+  if(c.edge_voice!=null)set('edgeVoice',c.edge_voice);
+  if(c.edge_pitch!=null){set('edgePitch',c.edge_pitch);
+    if($('edgePitchV'))$('edgePitchV').textContent=String(c.edge_pitch);}
+  if(c.edge_style!=null)set('edgeStyle',c.edge_style);
   set('subPos',c.subPos);set('subsize',c.subsize);set('subFont',c.subFont);
   if(c.sub)applySubObj(c.sub);     // ⑤ 还原完整字幕样式（颜色/描边）
   if(c.pb)applyPbObj(c.pb);        // ⑤ 还原视频进度条设定
@@ -2623,6 +2746,7 @@ function applyConfigObj(c){
   if(c.audio)restoreAudio(c.audio);
   if(Array.isArray(c.overlays)){overlays=c.overlays;renderOverlays();}
   onMixChange();renderSfxPins();renderSfxRows();syncPv();
+  onEngineChange();   // 若预设切了引擎，同步 Edge 控件的显示
 }
 async function loadConfigs(){
   try{const s=await (await fetch('/api/config')).json();
@@ -2917,7 +3041,7 @@ function cvTplDel(){
 }
 function cvInit(){cvInitGrid9();cvTplList();cvSync();}
 
-renderMyColors();loadTpls();renderOverlays();loadState();loadComponents();loadSettings();loadFonts();loadClones();loadChunks();loadAssets();loadConfigs();loadCloudGpu();cvInit();pollAll();  /* 载入时同步任务状态：刷新不丢日志/时间轴/下载进度 */
+renderMyColors();loadTpls();renderOverlays();loadState();loadComponents();loadSettings();loadFonts();loadClones();loadChunks();loadAssets();loadConfigs();loadCloudGpu();loadEdgeSettings();cvInit();pollAll();  /* 载入时同步任务状态：刷新不丢日志/时间轴/下载进度 */
 </script>
 </body>
 </html>

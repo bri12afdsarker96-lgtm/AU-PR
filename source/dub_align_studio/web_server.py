@@ -36,7 +36,15 @@ from . import studio_pipeline as pipeline
 from . import voice_library
 from . import xlsx_reader
 from .aligners import WhisperAligner
-from .engines import DotsLocalEngine, DotsRemoteEngine, FishLocalEngine, MockEngine, SynthesisOptions
+from .engines import (
+    DotsLocalEngine,
+    DotsRemoteEngine,
+    EdgeTtsEngine,
+    FishLocalEngine,
+    MockEngine,
+    SynthesisOptions,
+)
+from .engines import edge_tts as edge_tts_mod
 from .overlays import POSITION_PRESETS, overlays_from_dicts
 from .subtitles import SubtitleStyle
 
@@ -375,14 +383,30 @@ def _gen_queue_clear_finished() -> int:
         return before - len(GEN_QUEUE)
 
 
-def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 —— 沿用旧函数体的 JOB 名
-    log = JOB.append
-    # 云 GPU 空闲看门狗：每次任务起手/收尾都刷活跃时间，避免任务跑到一半被误关
+def _uses_cloud_gpu(action: str, payload: dict) -> bool:
+    """判断本次任务是否会真的调用 dots_remote 云 GPU——只有这类任务才需要刷新
+    cloud_gpu 看门狗；Edge TTS / mock / 本地 dots/fish 都不影响云 GPU 空闲判定。"""
+    if action not in ("run_all", "dub", "rechunk", "timing", "render", "finalize",
+                       "capcut", "premiere", "cleanup", "voice_try"):
+        return False
+    return pipeline.is_cloud_gpu_engine(str(payload.get("engine") or ""))
+
+
+def _mark_cloud_gpu_active_if_needed(action: str, payload: dict) -> None:
+    if not _uses_cloud_gpu(action, payload):
+        return
     try:
         from . import cloud_gpu
         cloud_gpu.manager().mark_active()
     except Exception:  # noqa: BLE001
         pass
+
+
+def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 —— 沿用旧函数体的 JOB 名
+    log = JOB.append
+    # 云 GPU 空闲看门狗：**只有 dots_remote 引擎**的任务才刷活跃时间；
+    # edge_tts / mock / 本地引擎不属于 cloud_gpu 责任范围，别误报"GPU 正在工作"。
+    _mark_cloud_gpu_active_if_needed(action, payload)
     try:
         text = str(payload.get("text") or "")
         output_dir = Path(str(payload.get("output_dir") or "")) if payload.get("output_dir") else None
@@ -390,7 +414,8 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
         aligner_key = str(payload.get("aligner") or "均分兜底")
         voice = None
         vparams: dict = {}
-        if payload.get("voice_id"):
+        # Edge TTS 只用预设声线，**不查音色库**（避免和克隆音色混淆、也不制造空 VoiceRef）
+        if engine_key != "edge_tts" and payload.get("voice_id"):
             entry = voice_library.get_voice(_vroot(), str(payload["voice_id"]))
             voice = entry.to_ref()
             vparams = entry.params or {}
@@ -401,6 +426,9 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             speed=float(payload.get("speed") or vparams.get("speed") or 1.0),
             max_pause_seconds=float(payload.get("max_pause") or 0.0),
             seed=int(payload.get("seed") or vparams.get("seed") or 42),
+            edge_voice=str(payload.get("edge_voice") or ""),
+            edge_pitch=int(payload.get("edge_pitch") or 0),
+            edge_style=str(payload.get("edge_style") or "general"),
         )
         style = None
         if payload.get("burn_subtitles", True):
@@ -649,9 +677,14 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                 JOB.ok = True
                 JOB.result = None  # 分镜段已删，作废内存结果 → 后续导出走磁盘回读并给出友好提示
         elif action == "probe":
-            _engines = ((DotsRemoteEngine().probe(),) if studio_settings.cloud_only()
-                        else (MockEngine().probe(), DotsLocalEngine().probe(),
-                              DotsRemoteEngine().probe(), FishLocalEngine().probe()))
+            # 环境自检时对 Edge TTS 走 live_check=True（用户显式点了自检就跑一次短合成，
+            # 明确"能真发出请求且获得音频"）；其他引擎沿用现有 probe。
+            if studio_settings.cloud_only():
+                _engines = (DotsRemoteEngine().probe(), EdgeTtsEngine().probe(live_check=True))
+            else:
+                _engines = (MockEngine().probe(), DotsLocalEngine().probe(),
+                             DotsRemoteEngine().probe(), FishLocalEngine().probe(),
+                             EdgeTtsEngine().probe(live_check=True))
             for status in _engines:
                 log(("✅ " if status.available else "⛔ ") + f"{status.key}：{status.detail}")
             aligner = WhisperAligner().probe()
@@ -675,8 +708,17 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                 speed=float(payload.get("speed") or 1.0),
                 max_pause_seconds=float(payload.get("max_pause_seconds") or 0.0),
                 seed=int(float(payload.get("seed") or 42)),
+                edge_voice=str(payload.get("edge_voice") or ""),
+                edge_pitch=int(payload.get("edge_pitch") or 0),
+                edge_style=str(payload.get("edge_style") or "general"),
             )
-            voice_id = str(payload.get("voice_id") or "默认声线")
+            # Edge 试听按预设声线区分缓存；其他引擎按用户音色 id
+            if engine_key == "edge_tts":
+                voice_id = str(payload.get("edge_voice") or "").strip() or "默认预设"
+                try_voice = None    # Edge 不看 VoiceRef
+            else:
+                voice_id = str(payload.get("voice_id") or "默认声线")
+                try_voice = voice   # 沿用外层已解析的 voice（可能为 None）
             sig = hashlib.md5(  # noqa: S324 —— 仅做缓存键，非安全用途
                 f"{voice_id}|{engine_key}|{opts.to_payload()}|{sample}".encode("utf-8")
             ).hexdigest()[:10]
@@ -690,7 +732,7 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                     JOB.result = {"try_audio": str(cached)}
             else:
                 log(f"用引擎 {engine_key} 合成试听句（{len(sample)} 字）…首次合成后会缓存，之后试听秒开。")
-                master = pipeline.make_engine(engine_key).synthesize_full(sample, voice, cached, opts)
+                master = pipeline.make_engine(engine_key).synthesize_full(sample, try_voice, cached, opts)
                 with JOB.lock:
                     JOB.ok = True
                     JOB.result = {"try_audio": str(master.path)}
@@ -760,12 +802,8 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
         with JOB.lock:
             JOB.running = False
             JOB.done = True
-        # 任务收尾再打一次活跃点：从"刚结束"起算 5 分钟才空闲，避免任务刚完就被误关
-        try:
-            from . import cloud_gpu
-            cloud_gpu.manager().mark_active()
-        except Exception:  # noqa: BLE001
-            pass
+        # 任务收尾再打一次活跃点：从"刚结束"起算 5 分钟才空闲；同样只对 dots_remote 生效
+        _mark_cloud_gpu_active_if_needed(action, payload)
 
 
 # ------------------------------------------------------------------ HTTP
@@ -856,6 +894,8 @@ class _Handler(BaseHTTPRequestHandler):
                         # 云配音（远程 GPU）配置：地址明示；Key 仅回「是否已设置」，不回明文
                         "dots_remote_endpoint": remote_ep,
                         "dots_remote_api_key_set": bool(remote_key),
+                        # Edge TTS（免费云端预设音色）Worker 服务根地址；空=未配置
+                        "edge_tts_endpoint": edge_tts_mod.edge_tts_endpoint(),
                         "paths": {  # 各类下载/资产的实际落地目录（界面明示，杜绝「下到哪了」的疑问）
                             "组件": str(studio_settings.components_root()),
                             "whisper 模型": str(studio_settings.whisper_models_dir()),
@@ -896,12 +936,17 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({"components": toolbox.component_statuses()})
             return
         if route == "/api/probe":
-            _probe_pairs = (((DotsRemoteEngine().probe(), "dots.tts 云端"),)
+            # /api/probe 只做**轻量**探活：Edge TTS 走配置检查（live_check=False），
+            # 避免"探测组件"按钮点一次就无故拉一次外网请求。真实连通用「测试连接」按钮。
+            edge_probe = EdgeTtsEngine().probe(live_check=False)
+            _probe_pairs = (((DotsRemoteEngine().probe(), "dots.tts 云端"),
+                              (edge_probe, "Edge TTS 免费云端"))
                             if studio_settings.cloud_only() else (
                                 (MockEngine().probe(), "mock 引擎"),
                                 (DotsLocalEngine().probe(), "dots.tts"),
                                 (DotsRemoteEngine().probe(), "dots.tts 云端"),
                                 (FishLocalEngine().probe(), "fish-speech"),
+                                (edge_probe, "Edge TTS 免费云端"),
                             ))
             statuses = [
                 {"key": s.key, "name": n, "available": s.available, "detail": s.detail}
@@ -974,6 +1019,11 @@ class _Handler(BaseHTTPRequestHandler):
                     remote_update["dots_remote_endpoint"] = str(payload.get("dots_remote_endpoint") or "").strip().rstrip("/")
                 if "dots_remote_api_key" in payload:
                     remote_update["dots_remote_api_key"] = str(payload.get("dots_remote_api_key") or "").strip()
+                # Edge TTS Worker 服务根地址（默认空；空字符串=显式清空）
+                if "edge_tts_endpoint" in payload:
+                    raw_ep = str(payload.get("edge_tts_endpoint") or "").strip()
+                    # 复用引擎里的归一化逻辑，去掉误填的 /v1/audio/speech 尾巴
+                    remote_update["edge_tts_endpoint"] = edge_tts_mod._normalize_endpoint_root(raw_ep) if raw_ep else ""
                 if remote_update:
                     # save_settings 会跳过 None；空串是有效值（清空），故直接写
                     merged = studio_settings.load_settings()
@@ -984,6 +1034,8 @@ class _Handler(BaseHTTPRequestHandler):
                     ep, key = studio_settings.dots_remote_config()
                     out["dots_remote_endpoint"] = ep
                     out["dots_remote_api_key_set"] = bool(key)
+                # 回显 Edge TTS 归一化后的 endpoint（前端可据此刷新展示）
+                out["edge_tts_endpoint"] = edge_tts_mod.edge_tts_endpoint()
                 self._json(out)
             except Exception as exc:
                 self._json({"error": f"保存失败：{exc}"}, 400)
@@ -1028,6 +1080,12 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "saved": saved})
             except Exception as exc:
                 self._json({"error": str(exc)}, 400)
+            return
+        if route == "/api/edge_tts/test":
+            # 「测试连接」按钮的显式入口：这时才允许 Edge TTS 发一次真实合成请求验证
+            # 服务可达；结果直接以 EngineStatus 形式回传（key/available/detail）。
+            status = EdgeTtsEngine().probe(live_check=True)
+            self._json({"key": status.key, "available": status.available, "detail": status.detail})
             return
         if route == "/api/assets":
             query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
@@ -1453,13 +1511,20 @@ def _state_payload() -> dict:
               for v in voice_library.list_voices(_vroot())]
     return {
         "version": full_version(),
-        "engines": (["dots_remote"] if studio_settings.cloud_only() else pipeline.ENGINE_KEYS),
+        # 云配版曝光：dots_remote + edge_tts；正式版继续曝光全部（含 edge_tts）
+        "engines": (list(pipeline.CLOUD_ENGINE_KEYS) if studio_settings.cloud_only()
+                     else list(pipeline.ENGINE_KEYS)),
         "cloud_only": studio_settings.cloud_only(),
         "aligners": pipeline.ALIGNER_KEYS,
         "aspects": pipeline.ASPECT_KEYS,
         "positions": list(POSITION_PRESETS),
         "voices": voices,
         "voice_root": str(voice_library.voices_root(_vroot())),
+        # Edge TTS 预设声线 / 风格常量（前端下拉源；不进 voice_library，不需要参考音频）
+        "edge_voices": edge_tts_mod.voice_choices(),
+        "edge_styles": edge_tts_mod.style_choices(),
+        "edge_default_style": edge_tts_mod.DEFAULT_STYLE,
+        "edge_endpoint": edge_tts_mod.edge_tts_endpoint(),
     }
 
 

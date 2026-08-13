@@ -25,6 +25,7 @@ from .engines import (
     DotsLocalEngine,
     DotsRemoteEngine,
     DubEngine,
+    EdgeTtsEngine,
     FishLocalEngine,
     MasterAudio,
     MockEngine,
@@ -50,7 +51,9 @@ MASTER_NAME = "master.wav"
 FILM_NAME = "成片.mp4"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
 
-ENGINE_KEYS = ["mock", "dots_local", "dots_remote", "fish_local"]
+ENGINE_KEYS = ["mock", "dots_local", "dots_remote", "fish_local", "edge_tts"]
+# 云配版可选引擎：dots.tts 云端 GPU 走克隆 + Edge TTS 免费预设兜底
+CLOUD_ENGINE_KEYS = ["dots_remote", "edge_tts"]
 ALIGNER_KEYS = ["whisper", "均分兜底"]
 
 # 五种常见画面比例（名称取自内核 edit_compose.ASPECT_RATIOS，画布由 aspect_canvas 计算）
@@ -120,7 +123,17 @@ def make_engine(key: str) -> DubEngine:
         return DotsRemoteEngine()
     if key == "fish_local":
         return FishLocalEngine()
+    if key == "edge_tts":
+        return EdgeTtsEngine()
     raise KeyError(f"未知引擎：{key}（可选：{'、'.join(ENGINE_KEYS)}）")
+
+
+def is_cloud_gpu_engine(key: str) -> bool:
+    """判断某引擎是否会真的用到 cloud_gpu 管理器（目前只有 dots_remote 会）。
+
+    edge_tts 走第三方 Cloudflare Worker，与优云智算/dots_remote 无关——它触发的任务
+    不应唤醒/续期 cloud_gpu 看门狗，避免污染顶栏 GPU 状态。"""
+    return key == "dots_remote"
 
 
 def list_shot_videos(directory: Path) -> list[Path]:

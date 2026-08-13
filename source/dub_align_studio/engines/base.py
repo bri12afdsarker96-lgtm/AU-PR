@@ -44,6 +44,13 @@ class SynthesisOptions:
     max_pause_seconds: float = 0.0
     seed: int = 42
     normalize_text: bool = False
+    # Edge TTS 独占参数（其他引擎收到时忽略，保持向后兼容）：
+    # · edge_voice：预设声线 id，如 "zh-CN-XiaoxiaoNeural"；
+    # · edge_pitch：音调 -50~+50；
+    # · edge_style：语气风格（general / cheerful / newscast …），默认 general。
+    edge_voice: str = ""
+    edge_pitch: int = 0
+    edge_style: str = "general"
 
     def to_payload(self) -> dict:
         return asdict(self)
