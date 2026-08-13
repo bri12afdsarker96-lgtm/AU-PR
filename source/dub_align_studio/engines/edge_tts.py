@@ -41,6 +41,7 @@ from integrated_workbench.proc import run_silent
 
 from .. import settings as studio_settings
 from .base import (
+    EngineCapabilities,
     EngineStatus,
     EngineUnavailable,
     MasterAudio,
@@ -134,6 +135,20 @@ class EdgeTtsEngine:
     """
 
     key = "edge_tts"
+
+    #: 能力矩阵：**speed 由 Worker 原生消费**（native_speed=True）→ 后处理层必须
+    #: 跳过 atempo，防双倍变速；pitch/style/voice 也是 Edge 独享；无 seed 概念、
+    #: 无参考音频。max_pause 由通用后处理生效。
+    capabilities: "EngineCapabilities" = EngineCapabilities(
+        native_speed=True,
+        supports_seed=False,
+        supports_num_steps=False,
+        supports_guidance=False,
+        supports_edge_pitch=True,
+        supports_edge_style=True,
+        supports_voice_ref=False,
+        detail="Edge TTS：speed/pitch/style/voice 原生；max_pause 由软件后处理",
+    )
 
     def __init__(
         self,

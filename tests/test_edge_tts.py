@@ -416,20 +416,68 @@ class EngineExposureTests(unittest.TestCase):
 
 
 class CloudGpuIsolationTests(unittest.TestCase):
-    """选 edge_tts 时**不**触发 cloud_gpu 看门狗（也不查 voice_library）。"""
+    """选 edge_tts 时**不**触发 cloud_gpu 看门狗（也不查 voice_library）。
+    v0.7.71 P0-3：本地 CPU 阶段（timing/render/finalize/capcut/premiere/cleanup）
+    即使 payload.engine=dots_remote 也**不**刷；只有 dub/rechunk/voice_try/run_all
+    的**远程合成**阶段才刷（run_all 内部由 mark_cloud_gpu_active_now 显式打点）。"""
 
     def test_uses_cloud_gpu_only_for_dots_remote(self):
+        # 直接远程合成 action + dots_remote → True
+        self.assertTrue(web_server._uses_cloud_gpu("dub", {"engine": "dots_remote"}))
+        self.assertTrue(web_server._uses_cloud_gpu("rechunk", {"engine": "dots_remote"}))
+        self.assertTrue(web_server._uses_cloud_gpu("voice_try", {"engine": "dots_remote"}))
         self.assertTrue(web_server._uses_cloud_gpu("run_all", {"engine": "dots_remote"}))
-        self.assertFalse(web_server._uses_cloud_gpu("run_all", {"engine": "edge_tts"}))
-        self.assertFalse(web_server._uses_cloud_gpu("run_all", {"engine": "mock"}))
-        self.assertFalse(web_server._uses_cloud_gpu("run_all", {"engine": "dots_local"}))
-        self.assertFalse(web_server._uses_cloud_gpu("envcheck", {"engine": "dots_remote"}))
+        # 非 dots_remote 引擎无论什么 action → False
+        for eng in ("edge_tts", "mock", "dots_local", "fish_local"):
+            self.assertFalse(web_server._uses_cloud_gpu("run_all", {"engine": eng}), eng)
+            self.assertFalse(web_server._uses_cloud_gpu("dub", {"engine": eng}), eng)
+        # v0.7.71 关键契约：本地 CPU 阶段即使 engine=dots_remote 也不刷
+        for action in ("timing", "render", "finalize", "capcut", "premiere", "cleanup",
+                        "envcheck", "voice_release", "component"):
+            self.assertFalse(
+                web_server._uses_cloud_gpu(action, {"engine": "dots_remote"}),
+                f"{action} + dots_remote 不能刷 cloud_gpu 空闲计时（本地 CPU 阶段）",
+            )
 
-    def test_mark_active_only_called_for_dots_remote(self):
+    def test_mark_active_dispatch_matrix(self):
+        """完整的 action×engine 矩阵：只有 (dub/rechunk/voice_try/run_all)×dots_remote
+        才调 manager.mark_active。"""
+        cases_should_call = [
+            ("dub", "dots_remote"),
+            ("rechunk", "dots_remote"),
+            ("voice_try", "dots_remote"),
+            ("run_all", "dots_remote"),
+        ]
+        cases_should_not_call = [
+            # 本地 CPU 阶段 × dots_remote：绝不刷
+            ("timing", "dots_remote"),
+            ("render", "dots_remote"),
+            ("finalize", "dots_remote"),
+            ("capcut", "dots_remote"),
+            ("premiere", "dots_remote"),
+            ("cleanup", "dots_remote"),
+            # 任意 action × 非 dots_remote：绝不刷
+            ("dub", "edge_tts"),
+            ("run_all", "edge_tts"),
+            ("run_all", "mock"),
+            ("run_all", "dots_local"),
+            ("run_all", "fish_local"),
+            ("voice_try", "edge_tts"),
+        ]
+        for action, engine in cases_should_call:
+            with mock.patch("dub_align_studio.cloud_gpu.manager") as m:
+                web_server._mark_cloud_gpu_active_if_needed(action, {"engine": engine})
+                m.assert_called_once()
+        for action, engine in cases_should_not_call:
+            with mock.patch("dub_align_studio.cloud_gpu.manager") as m:
+                web_server._mark_cloud_gpu_active_if_needed(action, {"engine": engine})
+                m.assert_not_called()
+
+    def test_mark_cloud_gpu_active_now_is_unconditional(self):
+        """mark_cloud_gpu_active_now 无条件刷——供 run_all 内部在真的进入 dots_remote
+        配音阶段时显式调用。"""
         with mock.patch("dub_align_studio.cloud_gpu.manager") as m:
-            web_server._mark_cloud_gpu_active_if_needed("run_all", {"engine": "edge_tts"})
-            m.assert_not_called()
-            web_server._mark_cloud_gpu_active_if_needed("run_all", {"engine": "dots_remote"})
+            web_server.mark_cloud_gpu_active_now()
             m.assert_called_once()
 
 

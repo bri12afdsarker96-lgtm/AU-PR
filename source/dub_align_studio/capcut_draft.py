@@ -80,33 +80,49 @@ def export_capcut_package(
     draft_root: str | Path | None = None,
     create_real_draft: bool = True,
     canvas: tuple[int, int] = (1080, 1920),
+    film_mp4: Path | None = None,
 ) -> CapcutPackage:
-    """导出剪映草稿交接包；pyCapCut 就绪时顺带创建真实草稿。"""
+    """导出剪映草稿交接包；pyCapCut 就绪时顺带创建真实草稿。
+
+    v0.7.71 P1-1：**必须传入** film_mp4（成片.mp4）——A1 轨改用"成片同款混音单轨"
+    （从成片提取 PCM16/48k/stereo），保证剪映时间线听感 == 成片；分镜段复制为
+    "去音轨版本"，V1 静音、只出 A1。film_mp4=None 或不存在会抛错，禁止静默用裸 master
+    冒充成功。BGM/SFX 暂不承诺独立可编辑轨道；如需拆轨用另一版本导出。
+    master_wav 参数保留只是为了向后兼容签名（内部不再使用）。"""
     if len(timings) != len(segment_files):
         raise ValueError(f"计时行数({len(timings)})与分镜段数({len(segment_files)})不一致。")
     if not timings:
         raise ValueError("没有可导出的行。")
-    master_wav = Path(master_wav)
-    if not master_wav.exists():
-        raise FileNotFoundError(f"master 音频不存在：{master_wav}")
     style = style or SubtitleStyle()
+
+    from .export_mixdown import (
+        MIXDOWN_NAME,
+        MixdownError,
+        extract_mixdown_wav,
+        make_silent_video,
+    )
+
+    if film_mp4 is None:
+        raise MixdownError("剪映导出契约：必须先生成成片（成片.mp4），再导出剪映草稿"
+                           "——A1 用成片同款混音单轨，避免和 BGM/音效不同步。")
+    film_mp4 = Path(film_mp4)
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     package_dir = Path(output_dir) / f"剪映草稿包_{stamp}"
     material_dir = package_dir / "materials"
     material_dir.mkdir(parents=True, exist_ok=True)
 
-    # 素材副本：逐行分镜段 + 整轨 master（交接包自足，可整体拷去剪辑机）
+    # 素材副本：逐行分镜段（**去音轨**版本，避免与 A1 混音重复出声）+ 混音单轨 WAV。
     copied_segments: list[Path] = []
     for index, segment in enumerate(segment_files, start=1):
         segment = Path(segment)
         if not segment.exists():
             raise FileNotFoundError(f"分镜段不存在：{segment}")
         target = material_dir / f"{index:03d}{segment.suffix}"
-        shutil.copy2(segment, target)
+        make_silent_video(segment, target)
         copied_segments.append(target)
-    master_copy = material_dir / f"master{master_wav.suffix}"
-    shutil.copy2(master_wav, master_copy)
+    master_copy = material_dir / MIXDOWN_NAME
+    extract_mixdown_wav(film_mp4, master_copy)
 
     # 时间线 CSV（行窗口由时长累加；与计时表同口径）
     timeline_csv = package_dir / TIMELINE_CSV_NAME
@@ -155,7 +171,8 @@ def export_capcut_package(
             [
                 "这是配音对齐工作室导出的剪映草稿交接包。",
                 "剪映时间线.csv：逐行分镜时间线（与配音计时表同口径）。",
-                "materials/：逐行分镜段 + 整轨配音 master（音频整条不切）。",
+                "materials/：逐行分镜段（去音轨）+ 混音单轨 mixdown.wav（配音+BGM+SFX+原视频音效，与成片一致）。",
+                "【v0.7.71 契约】A1 = mixdown.wav 是「成片同款混音单轨」，V1 视频段静音，避免声音重叠；BGM/SFX 暂不承诺独立可编辑轨道。",
                 "字幕.srt：整片字幕，可在剪映内直接导入（新建文本→导入字幕）。",
                 "create_capcut_draft.py：装好 pyCapCut 后运行即可生成真草稿；",
                 f"  脚本顶部 FONT_SIZE={draft_font_size(style)} 对应约 {style.font_size_px}px 字号，可直接改。",

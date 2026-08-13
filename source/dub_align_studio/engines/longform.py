@@ -22,8 +22,33 @@ from pathlib import Path
 
 from integrated_workbench.semantic_match import parse_script
 
-from .base import MasterAudio, SynthesisOptions, wav_seconds, write_master_metadata
+from .base import EngineCapabilities, MasterAudio, SynthesisOptions, wav_seconds, write_master_metadata
 from .voice_ref import VoiceRef
+
+
+def _engine_capabilities(engine) -> EngineCapabilities:
+    """从引擎读出能力矩阵；未声明的老引擎按"什么都不原生支持"兜底（保守）。"""
+    caps = getattr(engine, "capabilities", None)
+    if isinstance(caps, EngineCapabilities):
+        return caps
+    return EngineCapabilities()
+
+
+def _apply_postprocess(part: Path, options: SynthesisOptions | None, engine, log=None) -> float:
+    """按引擎能力对段做 speed/max_pause 后处理；返回后处理后**实际**秒数（供 manifest）。
+
+    后处理失败 → 抛出（上层清 chunks 目录并给友好错），不吞异常也不静默降级
+    （避免"UI 显示成功、成片时长没变"的旧假成功）。"""
+    from .audio_postprocess import postprocess_wav
+
+    opts = options or SynthesisOptions()
+    caps = _engine_capabilities(engine)
+    return postprocess_wav(
+        Path(part),
+        speed=float(opts.speed or 1.0),
+        max_pause_seconds=float(opts.max_pause_seconds or 0.0),
+        native_speed=bool(caps.native_speed),
+    )
 
 
 _SENT_SPLIT = re.compile(r"(?<=[。！？!?；;，,、])")
@@ -110,6 +135,21 @@ def synthesize_long(engine, text: str, voice: VoiceRef | None, output: Path,
         if heartbeat:
             heartbeat("① 配音 · 生成中…")
         master = engine.synthesize_full(text, voice, output, options)
+        # 单段路径也走后处理：speed/max_pause 生效并读回**实际秒数**覆盖 master 元数据
+        try:
+            actual_seconds = _apply_postprocess(output, options, engine, log=log)
+        except Exception as exc:  # noqa: BLE001
+            if log:
+                log(f"⚠ 后处理失败：{exc}")
+            actual_seconds = master.seconds
+        if actual_seconds != master.seconds:
+            # dataclass frozen → 重建；同时把 seconds 落回 master.json
+            master = MasterAudio(
+                path=master.path, engine=master.engine, voice_id=master.voice_id,
+                model=master.model, seed=master.seed, sample_rate=master.sample_rate,
+                seconds=round(actual_seconds, 3), options=master.options,
+            )
+            write_master_metadata(master)
         if progress:
             progress(1, 1)
         return master
@@ -127,9 +167,16 @@ def synthesize_long(engine, text: str, voice: VoiceRef | None, output: Path,
         if heartbeat:
             heartbeat(f"① 配音 · 第 {i}/{total} 行 生成中…")   # 行开始即打心跳（生成本身可数十秒）
         engine.synthesize_full(chunk, voice, part, options)
+        # 每段完成后立刻按引擎能力做 speed/max_pause 后处理，manifest 用后处理后的秒数
+        try:
+            actual_seconds = _apply_postprocess(part, options, engine, log=log)
+        except Exception as exc:  # noqa: BLE001
+            if log:
+                log(f"⚠ 第 {i} 段后处理失败（保留原始段）：{exc}")
+            actual_seconds = round(wav_seconds(part), 3)
         parts.append(part)
         manifest_chunks.append({"index": i, "line": i, "text": chunk, "file": part.name,
-                                "seconds": round(wav_seconds(part), 3)})
+                                "seconds": round(actual_seconds, 3)})
         # 每段完成即刷新清单：UI 分段面板边配边出现，可立即试听/重配已完成段（不必等整篇）
         _write_manifest(tmp_dir, output, manifest_chunks)
         if log:
@@ -197,7 +244,14 @@ def redub_chunk(engine, master: Path, index: int, voice: VoiceRef | None,
     if log:
         log(f"重配第 {index}/{len(chunks)} 段（{len(target['text'])} 字）…同一音色参考，其余段不动。")
     engine.synthesize_full(str(target["text"]), voice, part, options)
-    target["seconds"] = round(wav_seconds(part), 3)
+    # rechunk 路径也遵循同一 speed/max_pause 后处理契约（用户改了滑杆重配才生效）
+    try:
+        actual_seconds = _apply_postprocess(part, options, engine, log=log)
+    except Exception as exc:  # noqa: BLE001
+        if log:
+            log(f"⚠ 第 {index} 段后处理失败（保留原始段）：{exc}")
+        actual_seconds = round(wav_seconds(part), 3)
+    target["seconds"] = round(actual_seconds, 3)
     parts = [tmp_dir / str(c["file"]) for c in sorted(chunks, key=lambda x: int(x["index"]))]
     _concat_wavs(parts, master)
     _write_manifest(tmp_dir, master, chunks)

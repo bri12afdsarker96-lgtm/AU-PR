@@ -25,10 +25,11 @@ import importlib
 import importlib.util
 import inspect
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .base import (
+    EngineCapabilities,
     EngineStatus,
     EngineUnavailable,
     MasterAudio,
@@ -213,6 +214,18 @@ class DotsLocalEngine:
     max_chars: int = 120
 
     key: str = "dots_local"
+
+    #: 能力矩阵：dots_local 不原生消费 speed / max_pause——由通用后处理层生效。
+    #: seed 是否真送 SDK 视 upstream 签名而定（0.2.1 版本会被 _supported_generate_kwargs
+    #: 过滤掉），保守起见声明 supports_seed=False，前端明确"不承诺 seed 复现"。
+    capabilities: EngineCapabilities = field(default_factory=lambda: EngineCapabilities(
+        native_speed=False,
+        supports_seed=False,
+        supports_num_steps=True,
+        supports_guidance=True,
+        supports_voice_ref=True,
+        detail="dots.tts 本地：num_steps/guidance/参考音频原生；speed/max_pause 由软件后处理",
+    ))
 
     def probe(self) -> EngineStatus:
         if not _installed():

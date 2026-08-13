@@ -48,9 +48,15 @@ def _video_sc(width: int, height: int, fps: int) -> str:
 
 def build_fcp7_xml(sequence_name: str, segments: list[Path], master_wav: Path,
                    frames_per_segment: list[int], fps: int,
-                   width: int, height: int) -> str:
+                   width: int, height: int,
+                   audio_sample_rate: int = 48000,
+                   audio_channels: int = 2) -> str:
     """构造 Premiere 可「文件→导入」的 FCP7 XML（xmeml v4）。V1 顺排分镜段、A1 整轨配音；
     帧数由调用方给定（与渲染帧量化一致，Σ帧 = 序列总长 = master 总长）。
+
+    audio_sample_rate/audio_channels：必须与实际 A1 文件真实参数一致；混音单轨导出
+    模式下由 `export_premiere_project` 从 export_mixdown 传入（PCM16/48kHz/stereo）——
+    避免旧版硬编码 48000 与实际 WAV 采样率不一致造成 Premiere 拒收/时长漂移。
 
     对齐 Premiere 严格导入所需字段：序列 rate/timecode/in-out/format；每段 masterclipid、
     file 的 duration/rate/timecode/media 采样特征、pproTicksIn/Out；音频 channel/sourcetrack。
@@ -93,8 +99,8 @@ def build_fcp7_xml(sequence_name: str, segments: list[Path], master_wav: Path,
           <name>{escape(Path(master_wav).name)}</name>
           <pathurl>{escape(_pathurl(master_wav))}</pathurl>{_rate(fps)}
           <duration>{total}</duration>{_timecode(fps)}
-          <media><audio><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics>
-            <channelcount>2</channelcount></audio></media>
+          <media><audio><samplecharacteristics><depth>16</depth><samplerate>{audio_sample_rate}</samplerate></samplecharacteristics>
+            <channelcount>{audio_channels}</channelcount></audio></media>
         </file>
         <sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>
       </clipitem>"""
@@ -116,8 +122,8 @@ def build_fcp7_xml(sequence_name: str, segments: list[Path], master_wav: Path,
         </track>
       </video>
       <audio>
-        <numOutputChannels>2</numOutputChannels>
-        <format><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics></format>
+        <numOutputChannels>{audio_channels}</numOutputChannels>
+        <format><samplecharacteristics><depth>16</depth><samplerate>{audio_sample_rate}</samplerate></samplecharacteristics></format>
         <track>
 {audio_item}
         </track>
@@ -130,30 +136,56 @@ def build_fcp7_xml(sequence_name: str, segments: list[Path], master_wav: Path,
 
 def export_premiere_project(output_dir: Path, segments: list[Path], master_wav: Path,
                             frames_per_segment: list[int], fps: int,
-                            width: int, height: int) -> Path:
+                            width: int, height: int,
+                            film_mp4: Path | None = None) -> Path:
     """写出 Premiere工程.xml + 自包含素材到输出目录。返回 xml 路径。
 
     2026-07-25：把分镜段与配音**复制**进「Premiere工程_素材/」再引用副本（不再原地引用
     成片_segments/master.wav）——这样「清理缓存」删掉中间产物后 Premiere 工程仍可打开，
-    整个工程也可随「Premiere工程.xml + Premiere工程_素材/」独立拷走。"""
+    整个工程也可随「Premiere工程.xml + Premiere工程_素材/」独立拷走。
+
+    v0.7.71 P1-1：若给定 film_mp4（且成片存在），**A1 轨切换为"成片同款混音单轨"**——
+    从成片提取 PCM16/48k/stereo WAV，包含配音+BGM+SFX+原视频音效混音，打开工程后
+    听感 == 成片；分镜段也复制成"去音轨版本"，避免与 A1 混音重复出声（不承诺 BGM/SFX
+    独立可编辑轨道）。film_mp4=None 或不存在会**抛错**（禁止静默回退到裸 master）。"""
     import shutil
 
     output_dir = Path(output_dir)
     material_dir = output_dir / "Premiere工程_素材"
     material_dir.mkdir(parents=True, exist_ok=True)
+
+    # v0.7.71 契约：成片同款混音单轨必需 —— 没有成片就明确报错，不冒名顶替
+    from .export_mixdown import (
+        MIXDOWN_CHANNELS,
+        MIXDOWN_NAME,
+        MIXDOWN_SAMPLE_RATE,
+        MixdownError,
+        extract_mixdown_wav,
+        make_silent_video,
+    )
+
+    if film_mp4 is None:
+        raise MixdownError("Premiere 导出契约：必须先生成成片（成片.mp4），再导出 Premiere 工程"
+                           "——A1 用成片同款混音单轨，避免和 BGM/音效不同步。")
+    film_mp4 = Path(film_mp4)
+    audio_path = material_dir / MIXDOWN_NAME
+    extract_mixdown_wav(film_mp4, audio_path)
+    audio_sr = MIXDOWN_SAMPLE_RATE
+    audio_ch = MIXDOWN_CHANNELS
+
+    # 分镜段"去音轨"副本：V1 引用它 → 时间线上 A1 混音 + V1 无音 = 只出一份声
     staged_segments: list[Path] = []
     for i, seg in enumerate(segments, start=1):
         seg = Path(seg)
         if not seg.exists():
             raise FileNotFoundError(f"分镜段不存在：{seg}（请先执行「③ 渲染成片 / 生成成片」）")
         target = material_dir / f"{i:03d}{seg.suffix}"
-        shutil.copy2(seg, target)
+        make_silent_video(seg, target)
         staged_segments.append(target)
-    master_copy = material_dir / ("master" + Path(master_wav).suffix)
-    shutil.copy2(master_wav, master_copy)
 
     xml = build_fcp7_xml(output_dir.name or "水星成片", staged_segments,
-                         master_copy, frames_per_segment, fps, width, height)
+                         audio_path, frames_per_segment, fps, width, height,
+                         audio_sample_rate=audio_sr, audio_channels=audio_ch)
     path = output_dir / "Premiere工程.xml"
     path.write_text(xml, encoding="utf-8")
     note = output_dir / "Premiere导入说明.txt"
@@ -173,6 +205,10 @@ def export_premiere_project(output_dir: Path, segments: list[Path], master_wav: 
         "\n"
         "素材已复制进「Premiere工程_素材/」并被工程引用——自包含，可随 XML＋素材文件夹整体拷走；\n"
         "换电脑后若提示缺素材，在 Premiere 里对「Premiere工程_素材」重新链接即可。\n"
-        "（本工程不依赖 成片_segments/ 与 master_chunks/，清理缓存后仍可导入。）\n",
+        "（本工程不依赖 成片_segments/ 与 master_chunks/，清理缓存后仍可导入。）\n"
+        "\n"
+        "【v0.7.71 契约】A1 = mixdown.wav 是「成片同款混音单轨」，含配音+BGM+SFX+原视频音效，\n"
+        "打开工程后 A1 单独播放就等于成片音轨。分镜段是「去音轨版本」，V1 静音、只出 A1，\n"
+        "避免声音重叠。BGM/SFX 暂不承诺独立可编辑轨道；如需拆轨请单独出原始素材版本。\n",
         encoding="utf-8")
     return path

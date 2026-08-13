@@ -119,9 +119,12 @@ def build_audio_filtergraph(mix: AudioMix, master_input: int = 1,
     return ";".join(chains) + ";" + mixed, "[aout]"
 
 
-def mix_from_payload(payload: dict, resolve: "callable[[str], Path | None]") -> AudioMix:
+def mix_from_payload(payload: dict, resolve: "callable[[str], Path | None]",
+                     warnings: list[str] | None = None) -> AudioMix:
     """从前端 JSON 还原 AudioMix。resolve(name)->Path 把资产文件名映射到磁盘路径
-    （不存在的资产静默跳过，成片不因缺一个音效而失败）。"""
+    （不存在的资产**跳过但记警告**，成片不因缺一个音效而失败；缺失文件名会被
+    追加进 warnings 列表——上层负责往任务日志/UI 打黄色提示，避免"设置了但没声"
+    的静默假成功）。warnings=None 时保持旧无回显行为（对现有调用方向后兼容）。"""
     if not isinstance(payload, dict):
         return AudioMix()
     master_volume = _clamp_vol(payload.get("master_volume", 1.0))
@@ -131,18 +134,31 @@ def mix_from_payload(payload: dict, resolve: "callable[[str], Path | None]") -> 
     bgm = None
     bgm_raw = payload.get("bgm") or {}
     if isinstance(bgm_raw, dict) and bgm_raw.get("file"):
-        path = resolve(str(bgm_raw["file"]))
+        name = str(bgm_raw["file"])
+        path = resolve(name)
         if path is not None:
             bgm = BgmTrack(path=path, volume=_clamp_vol(bgm_raw.get("volume", 0.35)),
                            loop=bool(bgm_raw.get("loop", True)))
+        elif warnings is not None:
+            warnings.append(f"BGM 素材找不到：{name}（跳过，不影响其他音轨；请到"
+                            f"「素材库」重新上传或检查文件名）")
     sfx: list[SfxCue] = []
     for row in payload.get("sfx") or []:
         if not isinstance(row, dict) or not row.get("file"):
             continue
-        path = resolve(str(row["file"]))
+        name = str(row["file"])
+        path = resolve(name)
         if path is None:
+            if warnings is not None:
+                warnings.append(f"音效素材找不到：{name}（该音效跳过，其余照常）")
             continue
-        sfx.append(SfxCue(path=path, at_seconds=max(0.0, float(row.get("at", 0.0) or 0.0)),
-                          volume=_clamp_vol(row.get("volume", 1.0))))
+        # `row.get("at", 0.0) or 0.0` 会把合法 0.0 "或"成 0.0（结果对），但改成
+        # 显式 None 判断更清晰、且防 row["at"] 为其它 falsy（如 ""）时的意外
+        at_raw = row.get("at")
+        at_val = 0.0 if at_raw is None else float(at_raw or 0.0)
+        vol_raw = row.get("volume")
+        vol_val = 1.0 if vol_raw is None else float(vol_raw)
+        sfx.append(SfxCue(path=path, at_seconds=max(0.0, at_val),
+                          volume=_clamp_vol(vol_val)))
     return AudioMix(master_volume=master_volume, bgm=bgm, sfx=sfx,
                     orig_video_volume=orig_video_volume)

@@ -17,10 +17,11 @@ import base64
 import json
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .base import (
+    EngineCapabilities,
     EngineStatus,
     EngineUnavailable,
     MasterAudio,
@@ -45,6 +46,16 @@ class FishLocalEngine:
     max_chars: int = 160   # 单次合成字数上限；超长整篇由 longform 分块拼接，避免截断/漂移
 
     key: str = "fish_local"
+
+    #: 能力矩阵：fish-speech 只发 seed / 参考音频，不发 speed / max_pause——两项由通用后处理生效。
+    capabilities: "EngineCapabilities" = field(default_factory=lambda: EngineCapabilities(
+        native_speed=False,
+        supports_seed=True,
+        supports_num_steps=False,
+        supports_guidance=False,
+        supports_voice_ref=True,
+        detail="fish-speech：seed/参考音频原生；num_steps/guidance/speed/max_pause 由软件后处理",
+    ))
 
     def probe(self) -> EngineStatus:
         for path in ("/v1/health", "/"):

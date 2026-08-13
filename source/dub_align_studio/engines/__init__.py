@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from .base import (
     DubEngine,
+    EngineCapabilities,
     EngineStatus,
     EngineUnavailable,
     MasterAudio,
@@ -24,6 +25,7 @@ from .edge_tts import EdgeTtsEngine
 
 __all__ = [
     "DubEngine",
+    "EngineCapabilities",
     "EngineStatus",
     "EngineUnavailable",
     "MasterAudio",

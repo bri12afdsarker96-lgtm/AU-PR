@@ -16,7 +16,7 @@ from pathlib import Path
 from integrated_workbench.semantic_match import parse_script
 
 from ..timing import LINE_DURATION_FLOOR
-from .base import EngineStatus, MasterAudio, SynthesisOptions, write_master_metadata
+from .base import EngineCapabilities, EngineStatus, MasterAudio, SynthesisOptions, write_master_metadata
 from .voice_ref import VoiceRef
 
 
@@ -33,6 +33,17 @@ class MockEngine:
     max_chars: int = 1_000_000   # mock 不分块（确定性测试口径不变）
 
     key: str = "mock"
+
+    #: 能力矩阵：mock 不真变速——由通用后处理层用 ffmpeg atempo 实现。
+    #: seed 被计入基频偏移（可辨性），因此 supports_seed=True。
+    capabilities: EngineCapabilities = field(default_factory=lambda: EngineCapabilities(
+        native_speed=False,
+        supports_seed=True,
+        supports_num_steps=True,
+        supports_guidance=True,
+        supports_voice_ref=False,
+        detail="mock：正弦模拟，speed/max_pause 由软件后处理生效",
+    ))
 
     def probe(self) -> EngineStatus:
         return EngineStatus(key=self.key, available=True, detail="mock 引擎恒可用（确定性，测试专用）。")

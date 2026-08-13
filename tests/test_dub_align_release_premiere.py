@@ -66,14 +66,45 @@ class BatchImportTests(unittest.TestCase):
 
 
 class PremiereXmlTests(unittest.TestCase):
+    """v0.7.71 P1-1：Premiere A1 走"成片同款混音单轨"（mixdown.wav）。ffmpeg 提取
+    音频用 mock；build_fcp7_xml 层测试仍能纯字符串验证结构。"""
+
     def setUp(self):
+        from unittest import mock
+        from dub_align_studio import export_mixdown
+
         self.work = Path(tempfile.mkdtemp(prefix="pp_"))
         self.segs = []
         for i in (1, 2, 3):
             f = self.work / f"{i:03d}.mp4"; f.write_bytes(b"x"); self.segs.append(f)
         self.master = self.work / "master.wav"; _wav(self.master)
+        # 假成片文件（extract_mixdown_wav 被 mock，不真跑 ffmpeg）
+        self.film = self.work / "成片.mp4"; self.film.write_bytes(b"fake film mp4")
+
+        def fake_extract(film_mp4, out_wav, **_kw):
+            # 保留真实契约：film 不存在则抛 MixdownError（不 mock 掉这条错误路径）
+            if film_mp4 is None or not Path(film_mp4).is_file():
+                raise export_mixdown.MixdownError(f"成片文件不存在：{film_mp4}")
+            out_wav.parent.mkdir(parents=True, exist_ok=True)
+            _wav(out_wav)
+            return out_wav
+
+        def fake_silent_video(src, dst):
+            import shutil as _sh
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            _sh.copy2(src, dst)
+            return dst
+
+        self._patches = [
+            mock.patch.object(export_mixdown, "extract_mixdown_wav", side_effect=fake_extract),
+            mock.patch.object(export_mixdown, "make_silent_video", side_effect=fake_silent_video),
+        ]
+        for p in self._patches:
+            p.start()
 
     def tearDown(self):
+        for p in getattr(self, "_patches", []):
+            p.stop()
         shutil.rmtree(self.work, ignore_errors=True)
 
     def test_xml_parses_with_correct_structure(self):
@@ -93,16 +124,23 @@ class PremiereXmlTests(unittest.TestCase):
             self.assertTrue(url.text.startswith("file://localhost"))
 
     def test_export_writes_xml_and_note(self):
-        path = export_premiere_project(self.work, self.segs, self.master, [150, 210, 180], 30, 1080, 1920)
+        path = export_premiere_project(self.work, self.segs, self.master, [150, 210, 180], 30, 1080, 1920,
+                                        film_mp4=self.film)
         self.assertTrue(path.exists())
         self.assertTrue((self.work / "Premiere导入说明.txt").exists())
         ET.parse(path)                                              # 落盘文件同样可解析
+        # 说明文件必须明确"成片同款混音单轨"契约文案
+        note = (self.work / "Premiere导入说明.txt").read_text(encoding="utf-8")
+        self.assertIn("成片同款混音单轨", note)
 
     def test_export_is_self_contained_and_survives_cleanup(self):
-        # 导出后素材复制进 Premiere工程_素材/，且工程只引用副本——删掉源分镜段/配音后仍完整
-        path = export_premiere_project(self.work, self.segs, self.master, [150, 210, 180], 30, 1080, 1920)
+        # v0.7.71 契约：素材复制进 Premiere工程_素材/，A1=mixdown.wav（成片同款）、V1=去音副本；
+        # 清理源分镜段/配音后工程引用的副本仍在
+        path = export_premiere_project(self.work, self.segs, self.master, [150, 210, 180], 30, 1080, 1920,
+                                        film_mp4=self.film)
         mat = self.work / "Premiere工程_素材"
-        self.assertTrue((mat / "001.mp4").exists() and (mat / "master.wav").exists())
+        self.assertTrue((mat / "001.mp4").exists() and (mat / "mixdown.wav").exists())
+        self.assertFalse((mat / "master.wav").exists())     # 不再复制裸 master
         from urllib.parse import unquote
 
         root = ET.parse(path).getroot()
@@ -112,7 +150,27 @@ class PremiereXmlTests(unittest.TestCase):
         for s in self.segs:
             s.unlink()
         self.master.unlink()
-        self.assertTrue((mat / "001.mp4").exists() and (mat / "master.wav").exists())
+        self.assertTrue((mat / "001.mp4").exists() and (mat / "mixdown.wav").exists())
+
+    def test_export_requires_film_mp4(self):
+        """v0.7.71 契约：没有成片必须明确失败，不静默用裸 master 冒充成功。"""
+        from dub_align_studio.export_mixdown import MixdownError
+        with self.assertRaises(MixdownError):
+            export_premiere_project(self.work, self.segs, self.master, [150, 210, 180], 30, 1080, 1920,
+                                     film_mp4=None)
+        with self.assertRaises(MixdownError):
+            export_premiere_project(self.work, self.segs, self.master, [150, 210, 180], 30, 1080, 1920,
+                                     film_mp4=self.work / "不存在.mp4")
+
+    def test_build_fcp7_xml_audio_sample_rate_configurable(self):
+        """采样率参数化后必须真的落到 XML 里，且与实际 WAV 保持一致——
+        防旧版硬编码 48000 导致 XML 声明与音频文件不匹配的时长/拒收问题。"""
+        for sr in (44100, 48000):
+            xml = build_fcp7_xml("t", self.segs, self.master, [10, 10, 10], 30, 1080, 1920,
+                                  audio_sample_rate=sr, audio_channels=1)
+            self.assertIn(f"<samplerate>{sr}</samplerate>", xml)
+            self.assertIn("<channelcount>1</channelcount>", xml)
+            self.assertIn("<numOutputChannels>1</numOutputChannels>", xml)
 
     def test_import_robustness_fields_present(self):
         # Premiere 严格导入所需字段：缺了会判「格式不正确」而拒收（用户反馈）

@@ -298,16 +298,21 @@ def step_capcut(
     output_dir: Path,
     style: SubtitleStyle | None = None,
     canvas: tuple[int, int] = (1080, 1920),
+    film_mp4: Path | None = None,
 ) -> CapcutPackage:
     """④ 导出剪映草稿交接包（素材=渲染产出的逐行分镜段，与成片同一时间线）。
 
-    result 为 None 时（软件重启后）从输出目录磁盘读回分镜段，照常导出。"""
+    result 为 None 时（软件重启后）从输出目录磁盘读回分镜段，照常导出。
+    v0.7.71 P1-1：film_mp4 缺省时用 `output_dir / FILM_NAME`，A1 走"成片同款混音单轨"；
+    没有成片时 export_capcut_package 会抛错，禁止静默用裸 master 冒充成功。"""
     if result is not None:
         segments = [shot.segment_file for shot in result.shots if shot.segment_file]
     else:
         segments = segments_from_output(output_dir, len(timings))
+    if film_mp4 is None:
+        film_mp4 = Path(output_dir) / FILM_NAME
     return export_capcut_package(timings, segments, Path(master_wav), Path(output_dir), style,
-                                 canvas=canvas)
+                                 canvas=canvas, film_mp4=film_mp4)
 
 
 @dataclass

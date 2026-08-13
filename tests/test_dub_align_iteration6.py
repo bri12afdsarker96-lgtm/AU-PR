@@ -1,4 +1,7 @@
-"""第六轮迭代测试：音频混流(BGM循环/音效定点/音量) 纯逻辑 + 素材与配置端点 + UI 契约。"""
+"""第六轮迭代测试：音频混流(BGM循环/音效定点/音量) 纯逻辑 + 素材与配置端点 + UI 契约。
+
+v0.7.71 P0-2 增补：音量专项锁死——master/BGM/SFX/原视频音效的 0/默认/极值都必须
+被前端 collectAudio 与后端 mix_from_payload 忠实保留、进入 ffmpeg 命令。"""
 
 import json
 import os
@@ -317,6 +320,128 @@ class UiAudioContractTests(unittest.TestCase):
                        # 原视频音效滑杆——必须存在，否则用户没法在成片里保留分镜自带音效
                        'id="oVol"', "orig_video_volume"):
             self.assertIn(marker, html, marker)
+
+
+class VolumeChainLockdownTests(unittest.TestCase):
+    """v0.7.71 P0-2 音量专项：从 payload → AudioMix → ffmpeg filter_complex 全链路
+    锁死每一档合法值（含 0），杜绝"UI 有值但没进 ffmpeg"或"0 被恢复成默认"。"""
+
+    def _resolve(self, name: str):
+        # 通过测试用的 resolver：只要文件名非空就当"存在"，返回一个 Path
+        if not name:
+            return None
+        return Path("/tmp") / name
+
+    # ---- master 音量 0/120/200% ----
+    def test_master_volume_0_reaches_filtergraph(self):
+        mix = audio_mix.mix_from_payload({"master_volume": 0}, self._resolve)
+        self.assertEqual(mix.master_volume, 0.0)
+        graph, _ = audio_mix.build_audio_filtergraph(mix)
+        self.assertIn("volume=0.000", graph)
+
+    def test_master_volume_120_reaches_filtergraph(self):
+        mix = audio_mix.mix_from_payload({"master_volume": 1.2}, self._resolve)
+        self.assertAlmostEqual(mix.master_volume, 1.2)
+        graph, _ = audio_mix.build_audio_filtergraph(mix)
+        self.assertIn("volume=1.200", graph)
+
+    def test_master_volume_200_reaches_filtergraph(self):
+        mix = audio_mix.mix_from_payload({"master_volume": 2.0}, self._resolve)
+        self.assertEqual(mix.master_volume, 2.0)
+        graph, _ = audio_mix.build_audio_filtergraph(mix)
+        self.assertIn("volume=2.000", graph)
+
+    # ---- 原视频音效 0/100/200% ----
+    def test_orig_video_volume_zero_not_in_amix(self):
+        """orig_video_volume=0 → is_trivial 视 mix 为无原音；filtergraph 不会加 [0:a]。"""
+        mix = audio_mix.mix_from_payload({"orig_video_volume": 0}, self._resolve)
+        self.assertEqual(mix.orig_video_volume, 0.0)
+        graph, _ = audio_mix.build_audio_filtergraph(mix, video_input=0)
+        self.assertNotIn("[0:a]", graph)
+
+    def test_orig_video_volume_100_in_amix_at_1(self):
+        mix = audio_mix.mix_from_payload({"orig_video_volume": 1.0}, self._resolve)
+        graph, _ = audio_mix.build_audio_filtergraph(mix, video_input=0)
+        self.assertIn("[0:a]volume=1.000", graph)
+
+    def test_orig_video_volume_200_in_amix_at_2(self):
+        mix = audio_mix.mix_from_payload({"orig_video_volume": 2.0}, self._resolve)
+        graph, _ = audio_mix.build_audio_filtergraph(mix, video_input=0)
+        self.assertIn("[0:a]volume=2.000", graph)
+
+    # ---- BGM 0% 必须保留 ----
+    def test_bgm_volume_zero_preserved(self):
+        mix = audio_mix.mix_from_payload({
+            "bgm": {"file": "x.mp3", "volume": 0, "loop": True},
+        }, self._resolve)
+        self.assertIsNotNone(mix.bgm)
+        self.assertEqual(mix.bgm.volume, 0.0)   # 0 不被回默 0.35
+        graph, _ = audio_mix.build_audio_filtergraph(mix)
+        self.assertIn("volume=0.000", graph)
+
+    def test_bgm_loop_false_preserved(self):
+        mix = audio_mix.mix_from_payload({
+            "bgm": {"file": "x.mp3", "volume": 0.3, "loop": False},
+        }, self._resolve)
+        self.assertFalse(mix.bgm.loop)
+
+    # ---- SFX 0% 与位置 0 秒必须保留 ----
+    def test_sfx_volume_zero_preserved(self):
+        mix = audio_mix.mix_from_payload({
+            "sfx": [{"file": "s.wav", "at": 2.5, "volume": 0}],
+        }, self._resolve)
+        self.assertEqual(len(mix.sfx), 1)
+        self.assertEqual(mix.sfx[0].volume, 0.0)   # 0 不被回默 1.0
+        graph, _ = audio_mix.build_audio_filtergraph(mix)
+        self.assertIn("volume=0.000", graph)
+
+    def test_sfx_position_zero_preserved(self):
+        mix = audio_mix.mix_from_payload({
+            "sfx": [{"file": "s.wav", "at": 0, "volume": 1}],
+        }, self._resolve)
+        self.assertEqual(mix.sfx[0].at_seconds, 0.0)
+        graph, _ = audio_mix.build_audio_filtergraph(mix)
+        self.assertIn("adelay=0|0", graph)
+
+    # ---- mix_from_payload 缺失素材 warnings 回调 ----
+    def test_missing_bgm_warning_captured(self):
+        warns: list[str] = []
+        mix = audio_mix.mix_from_payload({
+            "bgm": {"file": "无.mp3", "volume": 0.3},
+        }, lambda _: None, warnings=warns)
+        self.assertIsNone(mix.bgm)   # 素材缺失，bgm 跳过
+        self.assertTrue(any("BGM 素材找不到" in w and "无.mp3" in w for w in warns))
+
+    def test_missing_sfx_warning_captured(self):
+        warns: list[str] = []
+        mix = audio_mix.mix_from_payload({
+            "sfx": [{"file": "缺.wav", "at": 0, "volume": 0}],
+        }, lambda _: None, warnings=warns)
+        self.assertEqual(mix.sfx, [])
+        self.assertTrue(any("音效素材找不到" in w and "缺.wav" in w for w in warns))
+
+    def test_missing_asset_no_warnings_when_no_callback(self):
+        """warnings=None 时保持旧无回显行为（对现有调用方向后兼容）"""
+        mix = audio_mix.mix_from_payload({
+            "bgm": {"file": "无.mp3", "volume": 0.3},
+        }, lambda _: None)  # 不传 warnings
+        self.assertIsNone(mix.bgm)  # 仍静默跳过
+
+
+class FrontendZeroValuesRoundtripTests(unittest.TestCase):
+    """v0.7.71 P0-2：前端 restoreAudio 必须严格用 null/undefined 判断，
+    保留合法的 0（音量=0=静音；位置=0 秒）。"""
+
+    def test_restoreAudio_uses_null_check_for_sfx_volume(self):
+        """定位 restoreAudio 里的 sfx map；必须**不出现** `+s.volume||1` 之类
+        会把 0 吞成默认的表达式。"""
+        html = (Path(web_server.__file__).parent / "web" / "index.html").read_text(encoding="utf-8")
+        # 反面断言：不能出现 `+s.volume||1` / `+s.at||0` 这种 falsy-or 语法
+        self.assertNotIn("volume:+s.volume||1", html)
+        self.assertNotIn("at:+s.at||0", html.replace(",at:+c.at||0", ""))
+        # 正面：必须用 s.volume==null / s.at==null 的显式 null 判断
+        self.assertIn("s.volume==null", html)
+        self.assertIn("s.at==null", html)
 
 
 if __name__ == "__main__":

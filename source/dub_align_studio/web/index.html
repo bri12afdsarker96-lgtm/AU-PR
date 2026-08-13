@@ -278,6 +278,9 @@ footer b{color:var(--muted);font-weight:600}
           <span class="f">🎬 原视频音效音量 <span class="val" id="oVolV">100%</span>
             <span class="mini" style="color:var(--faint);margin-left:8px">分镜自带音效；拉到 0 = 关掉原声</span></span>
           <input type="range" id="oVol" min="0" max="200" step="5" value="100" oninput="onMixChange()">
+          <p class="mini" style="color:#e08c58;margin:6px 0 0;line-height:1.6">
+            ⓘ <b>仅生成/重烧成片时生效</b>；网页「混音试听」不含分镜原音（试听是前端 Web Audio 合成 master+BGM+音效，无法读真实分镜视频）。
+          </p>
         </div>
       </div>
       <div class="grid g2e" style="gap:14px;margin-top:10px">
@@ -385,11 +388,14 @@ footer b{color:var(--muted);font-weight:600}
         <div><span class="f">语速 · 1.0 = 原速</span>
           <div class="row"><input type="range" id="speed" min="0.5" max="2" step="0.05" value="1" oninput="sv.textContent=(+this.value).toFixed(2)"><span class="val" id="sv">1.00</span></div></div>
       </div>
+      <p class="mini" id="engineCapHint" style="color:var(--faint);margin:-4px 0 8px;line-height:1.7">
+        当前引擎能力：<span id="engineCapText">加载中…</span>
+      </p>
       <div class="row" style="gap:22px;flex-wrap:wrap">
         <label class="row mini" style="gap:7px"><input type="checkbox" id="burn" checked>烧录字幕</label>
         <span class="mini" style="color:var(--faint)">字幕位置/字号/字体/进度条 → 下方「烧录列表」设置</span>
-        <span class="row mini" style="gap:7px">Seed <input type="number" id="seed" value="42" style="width:92px"></span>
-        <span class="mini" style="color:var(--faint)">剪映草稿导出 → 成片后在「文本框」页校对完成时一并导出</span>
+        <span class="row mini" style="gap:7px" title="素材选择（换 Seed = 同文案换一套画面）永远生效；TTS 复现性按引擎能力，dots.tts 云端支持、Edge/fish/dots 本地视 SDK 支持情况而定">Seed <input type="number" id="seed" value="42" style="width:92px"></span>
+        <span class="mini" style="color:var(--faint)">Seed：素材选择始终生效；TTS 可复现性按引擎能力（<span id="engineSeedHint">加载中…</span>）</span>
       </div>
       <div class="row" style="margin-top:14px;border-top:1px solid var(--line);padding-top:14px">
         <span class="f" style="margin:0;flex:none">💾 作品参数预设</span>
@@ -1161,6 +1167,8 @@ async function loadState(){
   $('engine').value=engs.includes('dots_local')?'dots_local':engs[0];
   // Edge TTS 预设声线/风格常量（不进音色库；引擎切换控件的显示切换）
   _fillEdgeChoices(s);
+  // v0.7.71 P0-1：缓存 /api/state 返回的引擎能力矩阵，供 onEngineChange 显示提示
+  window._engineCaps = s.engine_capabilities || {};
   onEngineChange();
   fill('aligner',s.aligners.map(k=>[k,k==='whisper'?'whisper（推荐）':k]));
   fill('aspect',s.aspects.map(k=>[k,k]));
@@ -1610,7 +1618,8 @@ function buildPayload(action){
     reuse_dub:$('reuseDub')?$('reuseDub').checked:false};
 }
 
-// 引擎切换：edge_tts 显示 Edge 声线/音调/风格，隐藏克隆音色；切回其他引擎恢复
+// 引擎切换：edge_tts 显示 Edge 声线/音调/风格，隐藏克隆音色；切回其他引擎恢复。
+// v0.7.71 P0-1：同步刷新"当前引擎能力"提示（原生 vs 软件后处理）。
 function onEngineChange(){
   const isEdge=($('engine')&&$('engine').value==='edge_tts');
   if($('voiceRow'))$('voiceRow').style.display=isEdge?'none':'';
@@ -1618,6 +1627,36 @@ function onEngineChange(){
   if($('edgeParamsRow'))$('edgeParamsRow').style.display=isEdge?'grid':'none';
   if($('edgeNotice'))$('edgeNotice').style.display=isEdge?'block':'none';
   if($('edgeTryRow'))$('edgeTryRow').style.display=isEdge?'flex':'none';
+  _updateEngineCapHint();
+}
+
+// 用 /api/state 返回的能力矩阵刷新"当前引擎能力"文案；未加载完时静默。
+function _updateEngineCapHint(){
+  const caps=(window._engineCaps||{})[$('engine')&&$('engine').value]||null;
+  const capEl=$('engineCapText'), seedEl=$('engineSeedHint');
+  if(!caps){
+    if(capEl)capEl.textContent='未知（未加载引擎能力清单）';
+    if(seedEl)seedEl.textContent='未知';
+    return;
+  }
+  const native=[];
+  if(caps.native_speed)native.push('语速');
+  if(caps.supports_seed)native.push('seed');
+  if(caps.supports_num_steps)native.push('步数');
+  if(caps.supports_guidance)native.push('引导强度');
+  if(caps.supports_edge_pitch)native.push('音调');
+  if(caps.supports_edge_style)native.push('风格');
+  if(caps.supports_voice_ref)native.push('参考音频克隆');
+  const post=[];
+  if(!caps.native_speed)post.push('语速（ffmpeg atempo，保持音调）');
+  post.push('停顿上限（silencedetect 压缩长静音）');
+  const detail=caps.detail?('· '+caps.detail):'';
+  if(capEl)capEl.innerHTML=
+    '原生：<b>'+(native.length?native.join('/'):'无')+'</b>'+
+    ' · 软件后处理：<b>'+post.join('/')+'</b> '+esc(detail);
+  if(seedEl)seedEl.textContent=caps.supports_seed
+    ?'本引擎 seed 影响 TTS 声音'
+    :'本引擎不承诺 seed 改变 TTS 声音，但素材选择照常';
 }
 
 // 「用当前 Edge 声线试听」：走 voice_try，engine=edge_tts，携带 edge_voice/pitch/style。
@@ -2723,7 +2762,13 @@ function restoreAudio(a){
   if($('oVol'))$('oVol').value=Math.round(((a.orig_video_volume==null?1:+a.orig_video_volume))*100);
   if(a.bgm){$('bgmSel').value=a.bgm.file||'';$('bVol').value=Math.round((a.bgm.volume??.35)*100);$('bLoop').checked=a.bgm.loop!==false;}
   else{$('bgmSel').value='';}
-  sfxCues=(a.sfx||[]).map(s=>({file:s.file,at:+s.at||0,volume:+s.volume||1}));
+  // 严格 null/undefined 判断 —— 保留合法的 0（音量=0=静音、位置=0 秒），
+  // 不能用 `+v || default` 把 0 吃成默认（用户设了 0 却被恢复成 100%）。
+  sfxCues=(a.sfx||[]).map(s=>({
+    file:s.file,
+    at:(s.at==null?0:+s.at),
+    volume:(s.volume==null?1:+s.volume),
+  }));
   onMixChange();renderSfxPins();renderSfxRows();
 }
 function applyConfigObj(c){

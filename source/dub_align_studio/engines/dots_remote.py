@@ -30,6 +30,7 @@ from pathlib import Path
 
 from .. import settings as studio_settings
 from .base import (
+    EngineCapabilities,
     EngineStatus,
     EngineUnavailable,
     MasterAudio,
@@ -67,6 +68,17 @@ class DotsRemoteEngine:
     """云 dots.tts：把推理发到远程 GPU，本地只做轻量收尾。key = "dots_remote"。"""
 
     key = "dots_remote"
+
+    #: 能力矩阵：远程 payload 只发 num_steps/guidance/seed/normalize_text/参考音频，
+    #: 不发 speed / max_pause——两项由通用后处理层生效。seed 送云端，云端支持时可复现。
+    capabilities: "EngineCapabilities" = EngineCapabilities(
+        native_speed=False,
+        supports_seed=True,
+        supports_num_steps=True,
+        supports_guidance=True,
+        supports_voice_ref=True,
+        detail="dots.tts 云端：num_steps/guidance/seed/参考音频原生；speed/max_pause 由软件后处理",
+    )
 
     def __init__(
         self,
