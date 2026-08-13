@@ -39,7 +39,7 @@ python -m dub_align_studio.cli verify    # 端到端渲染自检（mock，无需
 | ffmpeg/ffprobe | 渲染必需 · Edge TTS MP3→WAV 转码 | 随水星 vendor_tools 或系统安装 |
 | dots.tts | 本地整篇克隆（2B/48kHz，Apache-2.0） | `pip install dots.tts` + GPU（≥6GB 显存） |
 | fish-speech | 本地服务整篇克隆（S2 Pro） | 按官方文档启动 server（默认 127.0.0.1:8080） |
-| edge_tts（v0.7.70+） | 免费云端预设音色（不克隆） | 到 Cloudflare 部署 [wangwangit/tts](https://github.com/wangwangit/tts)（MIT），把 `xxx.workers.dev` 填到「工具箱 · 免费 Edge TTS」；无 API Key |
+| edge_tts（v0.7.71） | 免费云端预设音色（不克隆） | 到 Cloudflare 部署 [wangwangit/tts](https://github.com/wangwangit/tts)（MIT），把 `xxx.workers.dev` 填到「工具箱 · 免费 Edge TTS」；无 API Key |
 | whisper-cli + ggml | 逐行计时尺子 | 水星工具箱组件下载 |
 | pyCapCut | 真实剪映草稿生成 | 剪辑机安装；缺失时交接包照常产出 |
 | 中文字体 | 字幕烧录 | Windows 自带微软雅黑；缺失时只出 SRT |

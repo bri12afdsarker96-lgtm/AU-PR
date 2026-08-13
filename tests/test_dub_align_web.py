@@ -79,7 +79,7 @@ class WebServerTests(unittest.TestCase):
         names = [c["name"] for c in probe["components"]]
         keys = [c["key"] for c in probe["components"]]
         # ffmpeg + mock + dots.tts + dots.tts 云端 + fish + edge_tts + whisper（正式版；
-        # edge_tts 于 v0.7.70 加入，随之补一位）
+        # edge_tts 于 v0.7.71 加入，随之补一位）
         self.assertEqual(len(names), 7)
         self.assertIn("dots_remote", keys)  # 云配音远程引擎已注册进探针
         self.assertIn("edge_tts", keys)     # Edge TTS 免费云端预设引擎

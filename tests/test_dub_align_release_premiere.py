@@ -191,6 +191,50 @@ class PremiereXmlTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_fcp7_xml("x", self.segs, self.master, [100, 100], 30, 1080, 1920)
 
+    def test_transactional_preserves_old_project_on_segment_failure(self):
+        """v0.7.71 P1-1 事务化：先跑一次成功导出，再故意让第 2 段无音副本失败——
+        旧的 Premiere工程.xml + Premiere工程_素材/ 必须**字节级**完整保留，
+        不允许被半成品覆盖；staging 目录也彻底清干净。"""
+        from unittest import mock as _m
+        from dub_align_studio import export_mixdown
+        from dub_align_studio.export_mixdown import MixdownError
+
+        # 1) 先成功导一版
+        path = export_premiere_project(self.work, self.segs, self.master,
+                                        [150, 210, 180], 30, 1080, 1920, film_mp4=self.film)
+        mat = self.work / "Premiere工程_素材"
+        old_xml_bytes = path.read_bytes()
+        old_note_bytes = (self.work / "Premiere导入说明.txt").read_bytes()
+        old_material_files = {p.name: p.read_bytes() for p in mat.iterdir()}
+
+        # 2) 故意让第 2 段 make_silent_video 失败
+        call_count = {"n": 0}
+
+        def _boom_on_second(src, dst):
+            call_count["n"] += 1
+            if call_count["n"] == 2:
+                raise MixdownError("第 2 段模拟失败")
+            import shutil as _sh
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            _sh.copy2(src, dst)
+            return dst
+
+        with _m.patch.object(export_mixdown, "make_silent_video", side_effect=_boom_on_second):
+            with self.assertRaises(MixdownError):
+                export_premiere_project(self.work, self.segs, self.master,
+                                         [150, 210, 180], 30, 1080, 1920, film_mp4=self.film)
+
+        # 3) 旧工程字节完整保留
+        self.assertEqual(path.read_bytes(), old_xml_bytes,
+                          "事务化失败：旧 Premiere工程.xml 被覆盖或损坏")
+        self.assertEqual((self.work / "Premiere导入说明.txt").read_bytes(), old_note_bytes)
+        new_material_files = {p.name: p.read_bytes() for p in mat.iterdir()}
+        self.assertEqual(new_material_files, old_material_files,
+                          "事务化失败：素材目录内容被修改")
+        # 无 .staging 残留
+        residues = [p.name for p in self.work.iterdir() if ".staging" in p.name or ".old_" in p.name]
+        self.assertEqual(residues, [], f"残留：{residues}")
+
 
 if __name__ == "__main__":
     unittest.main()

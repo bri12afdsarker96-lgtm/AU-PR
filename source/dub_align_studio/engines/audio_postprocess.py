@@ -65,9 +65,21 @@ def atempo_chain(speed: float) -> list[str]:
     ffmpeg 官方 atempo 单节点范围 0.5~100.0。超出用多节链：
       · speed=4.0 → [2.0, 2.0]
       · speed=0.25 → [0.5, 0.5]
-    speed<=0 视为无效返回空链；speed≈1.0 也返回空链（调用方跳过 -af）。"""
-    if speed <= 0 or abs(speed - 1.0) < _ATEMPO_EPS:
+
+    speed<=0（含 NaN、非数字）→ 抛 ValueError，禁止静默按 1.0 处理——用户显式设成 0
+    或负数是明确错误，静默兜底会掩盖问题。speed≈1.0 返回空链（调用方跳过 -af）。"""
+    try:
+        s = float(speed)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"speed 参数不是数字：{speed!r}") from exc
+    if s != s:   # NaN
+        raise ValueError("speed 不能是 NaN")
+    if s <= 0:
+        raise ValueError(f"speed 必须为正数，收到 {s!r}（0 或负数无物理意义，"
+                         "如需静默请去掉后处理调用）")
+    if abs(s - 1.0) < _ATEMPO_EPS:
         return []
+    speed = s
     factors: list[float] = []
     remaining = float(speed)
     if remaining > 1.0:
@@ -175,7 +187,11 @@ def _detect_silence(src: Path, ffmpeg: str, threshold_seconds: float,
 
     threshold_seconds 是**最小静音时长**（<该值的静音不会被 silencedetect 报告）——
     但为了让"短静音也检测得到"，这里传入的应是 max_pause_seconds 的一半，
-    过短会被自然过滤；我们再自己按 (end-start) > max_pause 挑要压缩的段。"""
+    过短会被自然过滤；我们再自己按 (end-start) > max_pause 挑要压缩的段。
+
+    ffmpeg 非零退出时**必须**抛 PostProcessError——不能当成"没检测到静音"就无声
+    落空，否则用户设了 max_pause 却发现压缩没生效，还不知道 ffmpeg 早就崩了。
+    """
     from integrated_workbench.proc import run_silent as _run
 
     min_dur = max(0.05, threshold_seconds * 0.5)  # 略小于阈值，防漏检
@@ -188,6 +204,12 @@ def _detect_silence(src: Path, ffmpeg: str, threshold_seconds: float,
         ], capture_output=True, text=True, encoding="utf-8", errors="replace")
     except FileNotFoundError as exc:
         raise PostProcessError(f"silencedetect：ffmpeg 未找到（{exc}）") from exc
+    rc = getattr(completed, "returncode", 1)
+    if rc != 0:
+        detail = ((completed.stderr or "") + (completed.stdout or "")).strip()[-500:]
+        raise PostProcessError(
+            f"静音检测失败（ffmpeg 退出码 {rc}）：{detail or '未知错误'}"
+        )
     # ffmpeg 把 silencedetect 输出到 stderr（正常情况 returncode=0）
     err = (completed.stderr or "") + (completed.stdout or "")
     intervals: list[tuple[float, float]] = []
@@ -248,9 +270,23 @@ def postprocess_wav(path: Path, *, speed: float, max_pause_seconds: float,
       · 处理顺序：先 atempo、再压静音（用户滑杆语义："最终多久停顿"）。
       · 原子替换：所有中间态写 .part.wav；成功一次 Path.replace 覆盖 path；失败清临时。
 
-    speed<=0 或近似 1.0 视为无需变速；max_pause<=0 视为不压。全部不需要处理时，
-    只做一次"读回真实秒数"就返回，不动 path。"""
-    need_speed = (not native_speed) and speed > 0 and abs(speed - 1.0) >= _ATEMPO_EPS
+    speed 必须为正数（0/负数/NaN 抛 ValueError，不静默兜底）；speed≈1.0 视为无需
+    变速；max_pause<=0 视为不压。全部不需要处理时，只做一次"读回真实秒数"就返回，
+    不动 path。"""
+    # 参数校验：非法 speed 直接报错（P0-3），禁止把 0/负数当作 1.0 静默通过
+    try:
+        s = float(speed)
+    except (TypeError, ValueError) as exc:
+        raise PostProcessError(f"speed 参数不是数字：{speed!r}") from exc
+    if s != s:
+        raise PostProcessError("speed 不能是 NaN")
+    if s <= 0:
+        raise PostProcessError(
+            f"speed 必须为正数，收到 {s!r}（0/负数无物理意义；"
+            "如无需变速请显式传 speed=1.0）"
+        )
+    speed = s
+    need_speed = (not native_speed) and abs(speed - 1.0) >= _ATEMPO_EPS
     need_pause = max_pause_seconds is not None and max_pause_seconds > 0
 
     if not need_speed and not need_pause:

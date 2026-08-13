@@ -424,10 +424,10 @@ def mark_cloud_gpu_active_now() -> None:
 
 def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 —— 沿用旧函数体的 JOB 名
     log = JOB.append
-    # 云 GPU 空闲看门狗：仅当 action 是**直接调远程合成**（dub/rechunk/voice_try）
-    # 且引擎是 dots_remote 时刷活跃时间；run_all 由内部在进入远程合成前显式 mark。
-    # timing/render/finalize/capcut/premiere/cleanup 等本地 CPU 阶段一律**不刷**。
-    _mark_cloud_gpu_active_if_needed(action, payload)
+    # 云 GPU 保活：**不在入口无条件刷新**——那样 run_all+reuse_dub、voice_try 命中缓存、
+    # 参数校验失败、找不到分段等"根本没真调远程"的场景都会被误算成活跃，阻塞空闲自动关。
+    # 只有在 dub/rechunk/voice_try/run_all 里**真正进入 dots_remote 请求**的那一刻，
+    # 才由各分支自行显式调 `mark_cloud_gpu_active_now`（heartbeat + progress + 结束都续期）。
     try:
         text = str(payload.get("text") or "")
         output_dir = Path(str(payload.get("output_dir") or "")) if payload.get("output_dir") else None
@@ -477,6 +477,9 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                                       warnings=mix_warnings)
         for w in mix_warnings:
             log(f"⚠ {w}")
+        # P1-2：额外在成片结束前打一条**总数**汇总——避免用户被最后的"✅ 成片完成"
+        # 掩盖了前面滚过去的逐条 ⚠。汇总在 finally 里最后一句 log。
+        _mix_warning_count = len(mix_warnings)
 
         # 友好校验：目录留空时给明确提示，避免 Path(None) 抛 TypeError（用户反馈①）
         if action in ("run_all", "dub", "timing", "render", "capcut", "rechunk", "finalize", "premiere", "cleanup") and output_dir is None:
@@ -578,18 +581,30 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                 if result.ok:
                     _remember_edit_item(output_dir, canvas, payload)  # ⑧ 进待编辑队列
         elif action == "dub":
+            _uses_remote_gpu = pipeline.is_cloud_gpu_engine(engine_key)
+            if _uses_remote_gpu:
+                # 真正开始远程请求前打第一次；随后 heartbeat/progress 里续期
+                mark_cloud_gpu_active_now()
+
             def _dub_progress(done: int, total: int) -> None:
                 JOB.set_progress(f"配音 · 第 {done}/{total} 行", int(done / max(1, total) * 100))
+                if _uses_remote_gpu:
+                    mark_cloud_gpu_active_now()
 
             def _dub_beat(stage: str = "") -> None:
                 with JOB.lock:
                     if stage:
                         JOB.stage = stage
                     JOB.last_tick = time.time()
+                if _uses_remote_gpu:
+                    mark_cloud_gpu_active_now()
 
             master = pipeline.step_dub(text, engine_key, output_dir, voice, options, log=log,
                                        progress=_dub_progress, heartbeat=_dub_beat)
             log(f"✅ master：{master.path.name}（{master.seconds:.2f}s，引擎 {master.engine}）")
+            if _uses_remote_gpu:
+                # 收尾再打一次：刚合成完不该被空闲判定立即关机
+                mark_cloud_gpu_active_now()
             with JOB.lock:
                 JOB.ok = True
         elif action == "rechunk":
@@ -598,7 +613,12 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
 
             engine = pipeline.make_engine(engine_key)
             index = int(payload.get("chunk_index") or 0)
+            _uses_remote_gpu = pipeline.is_cloud_gpu_engine(engine_key)
+            if _uses_remote_gpu:
+                mark_cloud_gpu_active_now()
             redub_chunk(engine, output_dir / pipeline.MASTER_NAME, index, voice, options, log=log)
+            if _uses_remote_gpu:
+                mark_cloud_gpu_active_now()
             with JOB.lock:
                 JOB.ok = True
         elif action == "timing":
@@ -768,26 +788,52 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             cache_dir.mkdir(parents=True, exist_ok=True)
             cached = cache_dir / f"{_safe_name(voice_id)}_{engine_key}_{sig}.wav"
             if cached.is_file() and cached.stat().st_size > 44:
+                # 缓存命中**绝不**刷云 GPU——纯磁盘复用不打远程
                 log(f"✅ 命中试听缓存，直接复用（未重复渲染）：{cached.name}")
                 with JOB.lock:
                     JOB.ok = True
                     JOB.result = {"try_audio": str(cached)}
             else:
+                # 缓存未命中：事务式合成——先写候选 .staging.wav；后处理成功后再 replace
+                # 到正式 cached 路径；失败则清候选、旧缓存（若有半成品）不动。
+                # 只有真到 dots_remote 才 mark 云 GPU（edge/mock/本地全不刷）。
                 log(f"用引擎 {engine_key} 合成试听句（{len(sample)} 字）…首次合成后会缓存，之后试听秒开。")
                 _engine = pipeline.make_engine(engine_key)
-                master = _engine.synthesize_full(sample, try_voice, cached, opts)
-                # voice_try 与 dub/rechunk 遵循同一 speed/max_pause 后处理契约——
-                # 否则用户在音色卡片"合成试听"时改 speed 也不会影响试听长度。
+                _uses_remote_gpu = pipeline.is_cloud_gpu_engine(engine_key)
+                if _uses_remote_gpu:
+                    mark_cloud_gpu_active_now()
+                cand = cached.with_suffix(cached.suffix + ".staging.wav")
+                cand_meta = cand.with_suffix(".json")
+                try:
+                    if cand.exists():
+                        cand.unlink()
+                    if cand_meta.exists():
+                        cand_meta.unlink()
+                except Exception:  # noqa: BLE001
+                    pass
                 from .engines.longform import _apply_postprocess
                 try:
-                    actual = _apply_postprocess(cached, opts, _engine, log=log)
-                except Exception as exc:  # noqa: BLE001
-                    log(f"⚠ 试听后处理失败（保留原始合成）：{exc}")
-                    actual = master.seconds
+                    master = _engine.synthesize_full(sample, try_voice, cand, opts)
+                    # 后处理失败 = 任务失败（P0-1），不再吞异常伪装成功
+                    actual = _apply_postprocess(cand, opts, _engine, log=log)
+                    if not cand.is_file() or cand.stat().st_size < 44:
+                        raise RuntimeError(f"试听候选文件缺失或过小：{cand}")
+                    # 原子提交：候选覆盖正式缓存文件
+                    import os as _os
+                    _os.replace(str(cand), str(cached))
+                finally:
+                    for p in (cand, cand_meta):
+                        try:
+                            if p.exists():
+                                p.unlink()
+                        except Exception:  # noqa: BLE001
+                            pass
+                if _uses_remote_gpu:
+                    mark_cloud_gpu_active_now()
                 with JOB.lock:
                     JOB.ok = True
-                    JOB.result = {"try_audio": str(master.path)}
-                log(f"✅ 试听已生成并缓存：{master.path.name}（{actual:.2f}s）")
+                    JOB.result = {"try_audio": str(cached)}
+                log(f"✅ 试听已生成并缓存：{cached.name}（{actual:.2f}s）")
         elif action == "fish_server":
             toolbox.start_fish_server(log)
             with JOB.lock:
@@ -850,13 +896,16 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
     except Exception as exc:
         JOB.append("❌ 失败：" + "".join(traceback.format_exception_only(exc)).strip())
     finally:
+        # P1-2：finally 里把"缺失音频素材"汇总打一条，保证被最后一句"成片完成"看到。
+        # 若前置校验失败 _mix_warning_count 未定义——用 locals().get 兜底。
+        _count = locals().get("_mix_warning_count", 0) or 0
+        if _count > 0:
+            JOB.append(f"⚠ 本次共有 {_count} 个音频素材被跳过，成片中不包含这些声音。")
         with JOB.lock:
             JOB.running = False
             JOB.done = True
-        # 任务收尾**仅对直接远程合成动作**（dub/rechunk/voice_try + dots_remote）刷一次；
-        # run_all 的配音结束时刻由内部 mark_cloud_gpu_active_now() 显式打点。
-        # 本地阶段（timing/render/finalize/capcut/premiere/cleanup）绝不刷。
-        _mark_cloud_gpu_active_if_needed(action, payload)
+        # **finally 里绝不无条件刷云 GPU**：那样即使任务在参数校验就失败也会刷，
+        # 造成"没真调远程也算活跃"。真远程动作各自在成功完成后显式 mark。
 
 
 # ------------------------------------------------------------------ HTTP

@@ -216,6 +216,37 @@ class CapcutPackageTests(unittest.TestCase):
         self.assertAlmostEqual(draft_font_size(SubtitleStyle(font_size_px=108)), 15.0)
         self.assertGreater(draft_font_size(SubtitleStyle(font_size_px=96)), draft_font_size(SubtitleStyle(font_size_px=48)))
 
+    def test_transactional_no_half_package_on_segment_failure(self):
+        """v0.7.71 P1-1 事务化：第 N 段无音副本失败时，不留任何『剪映草稿包_*/』半成品目录，
+        staging 目录也彻底清干净——用户看到的应该是"整体失败"而非"只走了一半的草稿包"。"""
+        from unittest import mock as _m
+        from dub_align_studio import export_mixdown
+        # 覆写 make_silent_video：第 2 段失败
+        call_count = {"n": 0}
+
+        def _boom_on_second(src, dst):
+            call_count["n"] += 1
+            if call_count["n"] == 2:
+                raise export_mixdown.MixdownError("第 2 段模拟失败")
+            import shutil as _sh
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            _sh.copy2(src, dst)
+            return dst
+
+        with _m.patch.object(export_mixdown, "make_silent_video", side_effect=_boom_on_second):
+            with self.assertRaises(export_mixdown.MixdownError):
+                export_capcut_package(self.timings, self.segments, self.master,
+                                       self.workdir / "out_fail",
+                                       film_mp4=self.film)
+        # out_fail 目录里不应有任何『剪映草稿包_*』**或** 半成品 staging 目录
+        out_fail = self.workdir / "out_fail"
+        if out_fail.is_dir():
+            leftovers = [p.name for p in out_fail.iterdir()]
+            self.assertFalse(
+                any(name.startswith("剪映草稿包_") for name in leftovers),
+                f"事务化失败：留下了半成品目录 {leftovers}",
+            )
+
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "需要 ffmpeg/ffprobe")
 class BurnSubtitleRenderTests(unittest.TestCase):

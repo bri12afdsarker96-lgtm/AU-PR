@@ -72,9 +72,23 @@ class AtempoChainTests(unittest.TestCase):
         self.assertEqual(apo.atempo_chain(1.0), [])
         self.assertEqual(apo.atempo_chain(1.0 + 1e-6), [])  # 近似 1
 
-    def test_zero_and_negative_ignored(self):
-        self.assertEqual(apo.atempo_chain(0), [])
-        self.assertEqual(apo.atempo_chain(-1), [])
+    def test_zero_and_negative_raise(self):
+        """P0-3：speed<=0 明确报错，不再静默返回空链——防止用户把 0 当 1.0 走的假成功。"""
+        with self.assertRaises(ValueError):
+            apo.atempo_chain(0)
+        with self.assertRaises(ValueError):
+            apo.atempo_chain(-1)
+        with self.assertRaises(ValueError):
+            apo.atempo_chain(float("nan"))
+
+    def test_postprocess_wav_rejects_bad_speed(self):
+        """P0-3：postprocess_wav 入口层同样拒绝 0/负数/非数字，抛 PostProcessError。"""
+        with self.assertRaises(apo.PostProcessError):
+            apo.postprocess_wav(Path("/tmp/nope.wav"), speed=0.0,
+                                 max_pause_seconds=0.0, native_speed=False)
+        with self.assertRaises(apo.PostProcessError):
+            apo.postprocess_wav(Path("/tmp/nope.wav"), speed=-1.5,
+                                 max_pause_seconds=0.0, native_speed=False)
 
     def test_single_node_speeds(self):
         self.assertEqual(apo.atempo_chain(2.0), ["2.000000"])
@@ -247,6 +261,109 @@ class LongformPostprocessDispatchTests(unittest.TestCase):
         self.assertTrue(called_with_native, "postprocess_wav should have been invoked")
         self.assertTrue(all(called_with_native),
                          f"native_speed 期望全 True，实际 {called_with_native}")
+
+
+class TransactionalCommitTests(unittest.TestCase):
+    """P0-1 / P0-2 契约：
+
+    · 后处理失败必须让任务失败（抛异常），不吞异常继续；
+    · 引擎开始合成之前就存在的旧正式 master/chunk 在失败后仍必须**原字节保留**——
+      不允许被引擎中间产物覆盖。
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="lf_txn_"))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _seed_old_master(self, master: Path) -> bytes:
+        """先手动写一份"旧成功产物"（master.wav + master_chunks/），返回旧 master 字节。"""
+        _write_tone(master, seconds=1.0)
+        chunks_dir = master.parent / f"{master.stem}_chunks"
+        chunks_dir.mkdir(parents=True, exist_ok=True)
+        _write_tone(chunks_dir / "chunk_001.wav", seconds=1.0)
+        (chunks_dir / "分段清单.json").write_text(
+            '{"master": "old", "chunks": [{"index":1,"line":1,"text":"旧","file":"chunk_001.wav","seconds":1.0}]}',
+            encoding="utf-8")
+        return master.read_bytes()
+
+    def test_postprocess_failure_preserves_old_master_multi_chunk(self):
+        """多段路径：某段后处理失败时旧 master 字节不动、旧 chunks 目录不动。"""
+        from dub_align_studio.engines import longform, mock_engine
+        from dub_align_studio.engines.base import SynthesisOptions
+        master = self.tmp / "master.wav"
+        old_bytes = self._seed_old_master(master)
+        old_chunks_dir = master.parent / f"{master.stem}_chunks"
+        old_chunk_bytes = (old_chunks_dir / "chunk_001.wav").read_bytes()
+
+        eng = mock_engine.MockEngine()
+        # opts 里 max_pause_seconds=0.2 → 会真调后处理；用 mock 让它抛
+        opts = SynthesisOptions(speed=1.0, max_pause_seconds=0.2)
+
+        def _boom(*a, **kw):
+            raise apo.PostProcessError("模拟后处理失败")
+
+        with mock.patch.object(apo, "postprocess_wav", side_effect=_boom):
+            with self.assertRaises(longform.PostprocessRequired):
+                longform.synthesize_long(eng, "第一行\n第二行\n第三行", None, master, opts,
+                                          max_chars=1000, per_line=True)
+        # 旧 master 与旧 chunk 原字节保留（引擎从不直接写正式 master）
+        self.assertEqual(master.read_bytes(), old_bytes)
+        self.assertEqual((old_chunks_dir / "chunk_001.wav").read_bytes(), old_chunk_bytes)
+        # 无残留 staging 目录
+        stagings = list(self.tmp.glob("master_chunks.staging_*"))
+        self.assertEqual(stagings, [], f"残留 staging：{stagings}")
+
+    def test_postprocess_failure_preserves_old_master_single_chunk(self):
+        """单段路径同样：候选文件失败清干净，旧 master 不动。"""
+        from dub_align_studio.engines import longform, mock_engine
+        from dub_align_studio.engines.base import SynthesisOptions
+        master = self.tmp / "solo.wav"
+        _write_tone(master, seconds=1.0)
+        old_bytes = master.read_bytes()
+
+        eng = mock_engine.MockEngine()
+        opts = SynthesisOptions(max_pause_seconds=0.2)
+
+        def _boom(*a, **kw):
+            raise apo.PostProcessError("模拟后处理失败")
+
+        with mock.patch.object(apo, "postprocess_wav", side_effect=_boom):
+            with self.assertRaises(longform.PostprocessRequired):
+                longform.synthesize_long(eng, "只有一句。", None, master, opts,
+                                          max_chars=1_000_000)
+        self.assertEqual(master.read_bytes(), old_bytes)
+        # 无残留 .staging.wav
+        stagings = list(master.parent.glob("solo.wav.staging*"))
+        self.assertEqual(stagings, [], f"残留：{stagings}")
+
+    def test_redub_failure_preserves_old_chunk_and_master(self):
+        """redub_chunk 后处理失败：旧 chunk 与旧 master 均原字节保留。"""
+        from dub_align_studio.engines import longform, mock_engine
+        from dub_align_studio.engines.base import SynthesisOptions
+        master = self.tmp / "master.wav"
+        # 先跑一遍成功的合成把 chunks + master + manifest 全部落地
+        eng = mock_engine.MockEngine()
+        longform.synthesize_long(eng, "\n".join(["甲。", "乙。", "丙。"]), None, master,
+                                  SynthesisOptions(), max_chars=1_000_000, per_line=True)
+        chunks_dir = master.parent / f"{master.stem}_chunks"
+        old_master_bytes = master.read_bytes()
+        old_chunk2_bytes = (chunks_dir / "chunk_002.wav").read_bytes()
+
+        opts = SynthesisOptions(max_pause_seconds=0.2)
+
+        def _boom(*a, **kw):
+            raise apo.PostProcessError("模拟后处理失败")
+
+        with mock.patch.object(apo, "postprocess_wav", side_effect=_boom):
+            with self.assertRaises(longform.PostprocessRequired):
+                longform.redub_chunk(eng, master, 2, None, opts)
+        self.assertEqual(master.read_bytes(), old_master_bytes)
+        self.assertEqual((chunks_dir / "chunk_002.wav").read_bytes(), old_chunk2_bytes)
+        # 无残留 .staging.wav
+        residues = list(chunks_dir.glob("*.staging.wav"))
+        self.assertEqual(residues, [], residues)
 
 
 if __name__ == "__main__":

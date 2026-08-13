@@ -82,13 +82,21 @@ def export_capcut_package(
     canvas: tuple[int, int] = (1080, 1920),
     film_mp4: Path | None = None,
 ) -> CapcutPackage:
-    """导出剪映草稿交接包；pyCapCut 就绪时顺带创建真实草稿。
+    """导出剪映草稿交接包（v0.7.71 P1-1 事务化：staging → 全部成功后原子替换）；
+    pyCapCut 就绪时顺带创建真实草稿。
 
-    v0.7.71 P1-1：**必须传入** film_mp4（成片.mp4）——A1 轨改用"成片同款混音单轨"
-    （从成片提取 PCM16/48k/stereo），保证剪映时间线听感 == 成片；分镜段复制为
-    "去音轨版本"，V1 静音、只出 A1。film_mp4=None 或不存在会抛错，禁止静默用裸 master
-    冒充成功。BGM/SFX 暂不承诺独立可编辑轨道；如需拆轨用另一版本导出。
+    v0.7.71 P1-1：
+    · **必须传入** film_mp4（成片.mp4）——A1 轨改用"成片同款混音单轨"，剪映时间线听感
+      == 成片；分镜段复制为"去音轨版本"，V1 静音、只出 A1。film_mp4=None 或不存在
+      抛错，禁止静默用裸 master 冒充成功。
+    · **事务式**：先在 `剪映草稿包_{stamp}.staging` 里生成全部产物（去音轨副本、
+      mixdown.wav、CSV、字幕、脚本、manifest、说明），全部成功且基本自检通过后
+      整目录 rename 为 `剪映草稿包_{stamp}`；失败时 rmtree staging，不留半成品。
+
     master_wav 参数保留只是为了向后兼容签名（内部不再使用）。"""
+    import os as _os
+    import shutil as _sh
+
     if len(timings) != len(segment_files):
         raise ValueError(f"计时行数({len(timings)})与分镜段数({len(segment_files)})不一致。")
     if not timings:
@@ -108,41 +116,96 @@ def export_capcut_package(
     film_mp4 = Path(film_mp4)
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    package_dir = Path(output_dir) / f"剪映草稿包_{stamp}"
+    final_dir = Path(output_dir) / f"剪映草稿包_{stamp}"
+    staging_dir = final_dir.with_name(final_dir.name + ".staging")
+    # staging 已存在（上次异常残留）→ 清干净重来
+    if staging_dir.exists():
+        _sh.rmtree(staging_dir, ignore_errors=True)
+    material_dir_staging = staging_dir / "materials"
+    material_dir_staging.mkdir(parents=True, exist_ok=True)
+
+    try:
+        # 素材副本：逐行分镜段（**去音轨**版本）+ 混音单轨 WAV。
+        copied_segments: list[Path] = []
+        for index, segment in enumerate(segment_files, start=1):
+            segment = Path(segment)
+            if not segment.exists():
+                raise FileNotFoundError(f"分镜段不存在：{segment}")
+            target = material_dir_staging / f"{index:03d}{segment.suffix}"
+            make_silent_video(segment, target)
+            if not target.is_file() or target.stat().st_size == 0:
+                raise MixdownError(f"第 {index} 段无音副本转换失败：{target}")
+            copied_segments.append(target)
+        master_copy = material_dir_staging / MIXDOWN_NAME
+        extract_mixdown_wav(film_mp4, master_copy)
+        if not master_copy.is_file() or master_copy.stat().st_size < 44:
+            raise MixdownError("混音单轨提取后为空——请检查成片是否有声音。")
+
+        # 时间线 CSV
+        timeline_csv = staging_dir / TIMELINE_CSV_NAME
+        entries: list[SubtitleEntry] = []
+        cursor = 0.0
+        with timeline_csv.open("w", encoding="utf-8-sig", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["index", "text", "start", "end", "duration", "material"])
+            for timing, material in zip(timings, copied_segments):
+                start = cursor
+                cursor = round(cursor + timing.duration, 3)
+                writer.writerow(
+                    [timing.index, timing.text, f"{start:.3f}", f"{cursor:.3f}", f"{timing.duration:.3f}", material.name]
+                )
+                entries.append(SubtitleEntry(index=timing.index, start=start, end=cursor, text=timing.text))
+
+        srt_path = write_srt(staging_dir / SRT_NAME, entries) if any(e.text for e in entries) else None
+
+        script_py = staging_dir / SCRIPT_NAME
+        _write_script(script_py, staging_dir, draft_font_size(style), canvas)
+
+        # 元数据与说明
+        manifest = {
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "line_count": len(timings),
+            "total_seconds": round(sum(t.duration for t in timings), 3),
+            "font_size_px": style.font_size_px,
+            "canvas": list(canvas),
+            "draft_font_size": draft_font_size(style),
+            "master": master_copy.name,
+            "srt": srt_path.name if srt_path else "",
+        }
+        (staging_dir / "manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        (staging_dir / "使用说明.txt").write_text(
+            "\n".join(
+                [
+                    "这是配音对齐工作室导出的剪映草稿交接包。",
+                    "剪映时间线.csv：逐行分镜时间线（与配音计时表同口径）。",
+                    "materials/：逐行分镜段（去音轨）+ 混音单轨 mixdown.wav（配音+BGM+SFX+原视频音效，与成片一致）。",
+                    "【v0.7.71 契约】A1 = mixdown.wav 是「成片同款混音单轨」，V1 视频段静音，避免声音重叠；BGM/SFX 暂不承诺独立可编辑轨道。",
+                    "字幕.srt：整片字幕，可在剪映内直接导入（新建文本→导入字幕）。",
+                    "create_capcut_draft.py：装好 pyCapCut 后运行即可生成真草稿；",
+                    f"  脚本顶部 FONT_SIZE={draft_font_size(style)} 对应约 {style.font_size_px}px 字号，可直接改。",
+                    "草稿目录可用环境变量 CAPCUT_DRAFT_ROOT 指定（默认包内 CapCut Drafts）。",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        # 全部就绪 —— 原子提交：把 staging 整目录 rename 成 final_dir
+        # （final_dir 是全新时间戳目录，天然不冲突；即使冲突也先清旧目录再 rename）
+        if final_dir.exists():
+            _sh.rmtree(final_dir, ignore_errors=True)
+        _os.replace(str(staging_dir), str(final_dir))
+    except Exception:
+        # 任何一步失败：清 staging 半成品，不动 final_dir（本函数每次新时间戳，故理论上 final_dir 不存在）
+        _sh.rmtree(staging_dir, ignore_errors=True)
+        raise
+
+    # commit 完成后各产物路径必须重新指向 final_dir（供后续 pyCapCut / 返回值使用）
+    package_dir = final_dir
     material_dir = package_dir / "materials"
-    material_dir.mkdir(parents=True, exist_ok=True)
-
-    # 素材副本：逐行分镜段（**去音轨**版本，避免与 A1 混音重复出声）+ 混音单轨 WAV。
-    copied_segments: list[Path] = []
-    for index, segment in enumerate(segment_files, start=1):
-        segment = Path(segment)
-        if not segment.exists():
-            raise FileNotFoundError(f"分镜段不存在：{segment}")
-        target = material_dir / f"{index:03d}{segment.suffix}"
-        make_silent_video(segment, target)
-        copied_segments.append(target)
-    master_copy = material_dir / MIXDOWN_NAME
-    extract_mixdown_wav(film_mp4, master_copy)
-
-    # 时间线 CSV（行窗口由时长累加；与计时表同口径）
     timeline_csv = package_dir / TIMELINE_CSV_NAME
-    entries: list[SubtitleEntry] = []
-    cursor = 0.0
-    with timeline_csv.open("w", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["index", "text", "start", "end", "duration", "material"])
-        for timing, material in zip(timings, copied_segments):
-            start = cursor
-            cursor = round(cursor + timing.duration, 3)
-            writer.writerow(
-                [timing.index, timing.text, f"{start:.3f}", f"{cursor:.3f}", f"{timing.duration:.3f}", material.name]
-            )
-            entries.append(SubtitleEntry(index=timing.index, start=start, end=cursor, text=timing.text))
-
-    srt_path = write_srt(package_dir / SRT_NAME, entries) if any(e.text for e in entries) else None
-
+    srt_path = (package_dir / SRT_NAME) if (package_dir / SRT_NAME).is_file() else None
     script_py = package_dir / SCRIPT_NAME
-    _write_script(script_py, package_dir, draft_font_size(style), canvas)
+    master_copy = material_dir / MIXDOWN_NAME
 
     real_draft_dir: Path | None = None
     message = "已生成剪映草稿交接包。"
@@ -153,34 +216,15 @@ def export_capcut_package(
             if real_draft_dir
             else "已生成剪映草稿交接包；本机未装 pyCapCut，请在剪辑机上运行 create_capcut_draft.py。"
         )
-
-    manifest = {
-        "created_at": datetime.now().isoformat(timespec="seconds"),
-        "line_count": len(timings),
-        "total_seconds": round(sum(t.duration for t in timings), 3),
-        "font_size_px": style.font_size_px,
-        "canvas": list(canvas),
-        "draft_font_size": draft_font_size(style),
-        "master": master_copy.name,
-        "srt": srt_path.name if srt_path else "",
-        "real_draft_dir": str(real_draft_dir or ""),
-    }
-    (package_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    (package_dir / "使用说明.txt").write_text(
-        "\n".join(
-            [
-                "这是配音对齐工作室导出的剪映草稿交接包。",
-                "剪映时间线.csv：逐行分镜时间线（与配音计时表同口径）。",
-                "materials/：逐行分镜段（去音轨）+ 混音单轨 mixdown.wav（配音+BGM+SFX+原视频音效，与成片一致）。",
-                "【v0.7.71 契约】A1 = mixdown.wav 是「成片同款混音单轨」，V1 视频段静音，避免声音重叠；BGM/SFX 暂不承诺独立可编辑轨道。",
-                "字幕.srt：整片字幕，可在剪映内直接导入（新建文本→导入字幕）。",
-                "create_capcut_draft.py：装好 pyCapCut 后运行即可生成真草稿；",
-                f"  脚本顶部 FONT_SIZE={draft_font_size(style)} 对应约 {style.font_size_px}px 字号，可直接改。",
-                "草稿目录可用环境变量 CAPCUT_DRAFT_ROOT 指定（默认包内 CapCut Drafts）。",
-            ]
-        ),
-        encoding="utf-8",
-    )
+    # real_draft_dir 走到最后才把 manifest 里的字段落库；避免 commit 前引用外部路径失败
+    try:
+        mpath = package_dir / "manifest.json"
+        if mpath.is_file():
+            data = json.loads(mpath.read_text(encoding="utf-8"))
+            data["real_draft_dir"] = str(real_draft_dir or "")
+            mpath.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
     return CapcutPackage(package_dir, timeline_csv, srt_path, script_py, material_dir, real_draft_dir, message)
 
 

@@ -140,21 +140,23 @@ def export_premiere_project(output_dir: Path, segments: list[Path], master_wav: 
                             film_mp4: Path | None = None) -> Path:
     """写出 Premiere工程.xml + 自包含素材到输出目录。返回 xml 路径。
 
-    2026-07-25：把分镜段与配音**复制**进「Premiere工程_素材/」再引用副本（不再原地引用
-    成片_segments/master.wav）——这样「清理缓存」删掉中间产物后 Premiere 工程仍可打开，
-    整个工程也可随「Premiere工程.xml + Premiere工程_素材/」独立拷走。
+    2026-07-25：把分镜段与配音**复制**进「Premiere工程_素材/」再引用副本，这样清理
+    缓存后 Premiere 工程仍可打开、整个工程可独立拷走。
 
     v0.7.71 P1-1：若给定 film_mp4（且成片存在），**A1 轨切换为"成片同款混音单轨"**——
-    从成片提取 PCM16/48k/stereo WAV，包含配音+BGM+SFX+原视频音效混音，打开工程后
-    听感 == 成片；分镜段也复制成"去音轨版本"，避免与 A1 混音重复出声（不承诺 BGM/SFX
-    独立可编辑轨道）。film_mp4=None 或不存在会**抛错**（禁止静默回退到裸 master）。"""
+    从成片提取 PCM16/48k/stereo WAV，含配音+BGM+SFX+原视频音效混音。分镜段也复制
+    成"去音轨版本"，避免与 A1 混音重复出声。film_mp4=None 抛错，禁止静默回退到裸 master。
+
+    v0.7.71 P1-1 事务化：所有 material 副本 / mixdown / xml / 说明先落入
+    `Premiere工程_素材.staging/` + `Premiere工程.xml.staging` + `Premiere导入说明.txt.staging`；
+    整体成功且自检通过后再原子替换正式路径（旧素材目录先备份 `.old_<pid>`，
+    成功替换后删除；任一步失败清 staging，旧工程一字不动）。"""
+    import os as _os
     import shutil
 
     output_dir = Path(output_dir)
-    material_dir = output_dir / "Premiere工程_素材"
-    material_dir.mkdir(parents=True, exist_ok=True)
 
-    # v0.7.71 契约：成片同款混音单轨必需 —— 没有成片就明确报错，不冒名顶替
+    # v0.7.71 契约：成片同款混音单轨必需
     from .export_mixdown import (
         MIXDOWN_CHANNELS,
         MIXDOWN_NAME,
@@ -168,47 +170,107 @@ def export_premiere_project(output_dir: Path, segments: list[Path], master_wav: 
         raise MixdownError("Premiere 导出契约：必须先生成成片（成片.mp4），再导出 Premiere 工程"
                            "——A1 用成片同款混音单轨，避免和 BGM/音效不同步。")
     film_mp4 = Path(film_mp4)
-    audio_path = material_dir / MIXDOWN_NAME
-    extract_mixdown_wav(film_mp4, audio_path)
-    audio_sr = MIXDOWN_SAMPLE_RATE
-    audio_ch = MIXDOWN_CHANNELS
 
-    # 分镜段"去音轨"副本：V1 引用它 → 时间线上 A1 混音 + V1 无音 = 只出一份声
-    staged_segments: list[Path] = []
-    for i, seg in enumerate(segments, start=1):
-        seg = Path(seg)
-        if not seg.exists():
-            raise FileNotFoundError(f"分镜段不存在：{seg}（请先执行「③ 渲染成片 / 生成成片」）")
-        target = material_dir / f"{i:03d}{seg.suffix}"
-        make_silent_video(seg, target)
-        staged_segments.append(target)
+    material_dir = output_dir / "Premiere工程_素材"
+    xml_path = output_dir / "Premiere工程.xml"
+    note_path = output_dir / "Premiere导入说明.txt"
 
-    xml = build_fcp7_xml(output_dir.name or "水星成片", staged_segments,
-                         audio_path, frames_per_segment, fps, width, height,
-                         audio_sample_rate=audio_sr, audio_channels=audio_ch)
-    path = output_dir / "Premiere工程.xml"
-    path.write_text(xml, encoding="utf-8")
-    note = output_dir / "Premiere导入说明.txt"
-    note.write_text(
-        "【关键：用「导入」，不要用「打开项目」】\n"
-        "Premiere Pro 的原生工程是 .prproj，无法由外部工具离线生成；行业通用做法是导出\n"
-        "Final Cut Pro XML 交换文件，再用 Premiere「导入」生成时间线（DaVinci/FCP 也这样进 PR）。\n"
-        "\n"
-        "步骤：\n"
-        "  1) 打开 Premiere Pro（可新建一个空白项目）。\n"
-        "  2) 文件 → 导入（File → Import）… 注意不是「打开项目」——「打开项目」只认 .prproj，\n"
-        "     所以直接双击 / 用「打开」会提示格式不正确。\n"
-        "  3) 选择本目录的「Premiere工程.xml」→ Premiere 自动生成含完整时间线的序列\n"
-        "     （V1＝逐行分镜段，A1＝整轨配音）。\n"
-        "  4) 想要 .prproj：导入成功后「文件 → 另存为」即得到你自己的 .prproj 工程。\n"
-        "  5) 字幕：再「导入」同目录「成片.srt」到字幕轨。\n"
-        "\n"
-        "素材已复制进「Premiere工程_素材/」并被工程引用——自包含，可随 XML＋素材文件夹整体拷走；\n"
-        "换电脑后若提示缺素材，在 Premiere 里对「Premiere工程_素材」重新链接即可。\n"
-        "（本工程不依赖 成片_segments/ 与 master_chunks/，清理缓存后仍可导入。）\n"
-        "\n"
-        "【v0.7.71 契约】A1 = mixdown.wav 是「成片同款混音单轨」，含配音+BGM+SFX+原视频音效，\n"
-        "打开工程后 A1 单独播放就等于成片音轨。分镜段是「去音轨版本」，V1 静音、只出 A1，\n"
-        "避免声音重叠。BGM/SFX 暂不承诺独立可编辑轨道；如需拆轨请单独出原始素材版本。\n",
-        encoding="utf-8")
-    return path
+    material_staging = material_dir.with_name(material_dir.name + ".staging")
+    xml_staging = xml_path.with_name(xml_path.name + ".staging")
+    note_staging = note_path.with_name(note_path.name + ".staging")
+    # 清残留
+    for p in (material_staging, xml_staging, note_staging):
+        if p.is_dir():
+            shutil.rmtree(p, ignore_errors=True)
+        elif p.exists():
+            try:
+                p.unlink()
+            except Exception:  # noqa: BLE001
+                pass
+    material_staging.mkdir(parents=True, exist_ok=True)
+
+    try:
+        audio_path = material_staging / MIXDOWN_NAME
+        extract_mixdown_wav(film_mp4, audio_path)
+        if not audio_path.is_file() or audio_path.stat().st_size < 44:
+            raise MixdownError("混音单轨提取后为空——请检查成片是否有声音。")
+        audio_sr = MIXDOWN_SAMPLE_RATE
+        audio_ch = MIXDOWN_CHANNELS
+
+        staged_segments: list[Path] = []
+        for i, seg in enumerate(segments, start=1):
+            seg = Path(seg)
+            if not seg.exists():
+                raise FileNotFoundError(f"分镜段不存在：{seg}（请先执行「③ 渲染成片 / 生成成片」）")
+            target = material_staging / f"{i:03d}{seg.suffix}"
+            make_silent_video(seg, target)
+            if not target.is_file() or target.stat().st_size == 0:
+                raise MixdownError(f"第 {i} 段无音副本转换失败：{target}")
+            staged_segments.append(target)
+
+        # xml 与说明先写 staging；成功后一起原子替换
+        xml = build_fcp7_xml(output_dir.name or "水星成片", staged_segments,
+                             audio_path, frames_per_segment, fps, width, height,
+                             audio_sample_rate=audio_sr, audio_channels=audio_ch)
+        xml_staging.write_text(xml, encoding="utf-8")
+        note_staging.write_text(_PREMIERE_IMPORT_NOTE, encoding="utf-8")
+
+        # 全部就绪 → 原子提交
+        # 1) 素材目录：旧目录先重命名成 `.old_<pid>` 备份，staging → 正式；成功删备份，失败回滚
+        backup = material_dir.with_name(material_dir.name + f".old_{_os.getpid()}")
+        if backup.exists():
+            shutil.rmtree(backup, ignore_errors=True)
+        had_old_material = material_dir.exists()
+        try:
+            if had_old_material:
+                _os.replace(str(material_dir), str(backup))
+            _os.replace(str(material_staging), str(material_dir))
+        except Exception:
+            # 回滚素材目录
+            if had_old_material and backup.exists() and not material_dir.exists():
+                try:
+                    _os.replace(str(backup), str(material_dir))
+                except Exception:  # noqa: BLE001
+                    pass
+            raise
+        if backup.exists():
+            shutil.rmtree(backup, ignore_errors=True)
+        # 2) XML 与说明：文件替换（os.replace 原生原子）
+        _os.replace(str(xml_staging), str(xml_path))
+        _os.replace(str(note_staging), str(note_path))
+    except Exception:
+        # 失败清 staging；正式 material_dir/xml 由回滚保留旧字节
+        if material_staging.exists():
+            shutil.rmtree(material_staging, ignore_errors=True)
+        for p in (xml_staging, note_staging):
+            try:
+                if p.exists():
+                    p.unlink()
+            except Exception:  # noqa: BLE001
+                pass
+        raise
+    return xml_path
+
+
+_PREMIERE_IMPORT_NOTE = (
+    "【关键：用「导入」，不要用「打开项目」】\n"
+    "Premiere Pro 的原生工程是 .prproj，无法由外部工具离线生成；行业通用做法是导出\n"
+    "Final Cut Pro XML 交换文件，再用 Premiere「导入」生成时间线（DaVinci/FCP 也这样进 PR）。\n"
+    "\n"
+    "步骤：\n"
+    "  1) 打开 Premiere Pro（可新建一个空白项目）。\n"
+    "  2) 文件 → 导入（File → Import）… 注意不是「打开项目」——「打开项目」只认 .prproj，\n"
+    "     所以直接双击 / 用「打开」会提示格式不正确。\n"
+    "  3) 选择本目录的「Premiere工程.xml」→ Premiere 自动生成含完整时间线的序列\n"
+    "     （V1＝逐行分镜段，A1＝整轨配音）。\n"
+    "  4) 想要 .prproj：导入成功后「文件 → 另存为」即得到你自己的 .prproj 工程。\n"
+    "  5) 字幕：再「导入」同目录「成片.srt」到字幕轨。\n"
+    "\n"
+    "素材已复制进「Premiere工程_素材/」并被工程引用——自包含，可随 XML＋素材文件夹整体拷走；\n"
+    "换电脑后若提示缺素材，在 Premiere 里对「Premiere工程_素材」重新链接即可。\n"
+    "（本工程不依赖 成片_segments/ 与 master_chunks/，清理缓存后仍可导入。）\n"
+    "\n"
+    "【v0.7.71 契约】A1 = mixdown.wav 是「成片同款混音单轨」，含配音+BGM+SFX+原视频音效，\n"
+    "打开工程后 A1 单独播放就等于成片音轨。分镜段是「去音轨版本」，V1 静音、只出 A1，\n"
+    "避免声音重叠。BGM/SFX 暂不承诺独立可编辑轨道；如需拆轨请单独出原始素材版本。\n"
+)

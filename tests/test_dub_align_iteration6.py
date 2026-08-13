@@ -444,5 +444,69 @@ class FrontendZeroValuesRoundtripTests(unittest.TestCase):
         self.assertIn("s.at==null", html)
 
 
+class MixWarningSummaryTests(unittest.TestCase):
+    """v0.7.71 P1-2：_run_job 在成片结束前必须给出**汇总条**——
+    避免逐条 ⚠ 被最后一句"✅ 成片完成"淹没。
+    N 必须与真实缺失数量一致。"""
+
+    def test_run_job_appends_summary_when_assets_missing(self):
+        """故意提交 payload 里两个不存在的 SFX，末尾必须出现『共有 2 个音频素材被跳过』。"""
+        from unittest import mock as _m
+        import tempfile as _tf
+        from dub_align_studio import studio_pipeline as _pl
+
+        with _tf.TemporaryDirectory() as td:
+            (Path(td) / "shot.mp4").write_bytes(b"MP4")
+            payload = {
+                "action": "run_all",
+                "engine": "mock",
+                "text": "第一行\n第二行",
+                "output_dir": td,
+                "shots_dir": td,
+                "material_mode": "flat",
+                "reuse_dub": False,
+                "audio": {
+                    "sfx": [
+                        {"file": "不存在1.wav", "at": 0, "volume": 1},
+                        {"file": "不存在2.wav", "at": 1, "volume": 0.5},
+                    ],
+                },
+            }
+            fake_master = _m.MagicMock()
+            fake_master.seconds = 2.0; fake_master.engine = "mock"; fake_master.path = Path(td) / "master.wav"
+            with _m.patch.object(_pl, "step_dub", return_value=fake_master), \
+                 _m.patch.object(_pl, "step_timing", return_value=([], [])), \
+                 _m.patch.object(_pl, "step_render") as _sr, \
+                 _m.patch.object(_pl, "select_shot_videos", return_value=[Path(td) / "shot.mp4"]):
+                _sr.return_value = type("R", (), {"ok": True, "subtitle_note": "",
+                                                   "output_path": str(Path(td) / "成片.mp4")})()
+                job = web_server.JobState(slot="test", action="run_all")
+                web_server._run_job(job, "run_all", payload)
+            log_text = "\n".join(job.log)
+            self.assertIn("本次共有 2 个音频素材被跳过", log_text,
+                           f"缺少 P1-2 汇总条；日志：\n{log_text}")
+
+    def test_no_summary_when_all_assets_present(self):
+        """无缺失素材时不应出现汇总条（避免刷屏干扰）。"""
+        from unittest import mock as _m
+        import tempfile as _tf
+        from dub_align_studio import studio_pipeline as _pl
+        with _tf.TemporaryDirectory() as td:
+            payload = {
+                "action": "dub",
+                "engine": "mock",
+                "text": "行",
+                "output_dir": td,
+                "audio": {},
+            }
+            fake_master = _m.MagicMock()
+            fake_master.seconds = 1.0; fake_master.engine = "mock"; fake_master.path = Path(td) / "master.wav"
+            with _m.patch.object(_pl, "step_dub", return_value=fake_master):
+                job = web_server.JobState(slot="test", action="dub")
+                web_server._run_job(job, "dub", payload)
+            log_text = "\n".join(job.log)
+            self.assertNotIn("音频素材被跳过", log_text, log_text)
+
+
 if __name__ == "__main__":
     unittest.main()

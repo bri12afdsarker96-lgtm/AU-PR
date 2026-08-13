@@ -80,7 +80,7 @@ python -m unittest discover -s tests -p "test_*.py"
 全套源码主线；`source/integrated_workbench/` 为水星内核完整收录，
 两侧后续演进以本仓库为准。
 
-## 免费云端引擎 · Edge TTS（v0.7.70 新增）
+## 免费云端引擎 · Edge TTS（v0.7.71）
 
 新增一个**独立**的配音引擎 `edge_tts`，与 `dots_remote` **并列**（不替代）。
 接的是开源项目 [wangwangit/tts](https://github.com/wangwangit/tts)（MIT），

@@ -129,6 +129,9 @@ def make_silent_video(src_mp4: Path, dst_mp4: Path) -> Path:
         if getattr(completed, "returncode", 1) != 0:
             detail = (completed.stderr or completed.stdout or "").strip()[-500:]
             raise MixdownError(f"生成无音分镜段失败：{detail or '未知错误'}")
+        # replace 前先检查临时文件真的写成了且非空（ffmpeg 有时返回 0 但输出损坏）
+        if not tmp.is_file() or tmp.stat().st_size == 0:
+            raise MixdownError(f"生成无音分镜段失败：临时文件为空 {tmp}")
         tmp.replace(dst_mp4)
     except Exception:
         _clean()
