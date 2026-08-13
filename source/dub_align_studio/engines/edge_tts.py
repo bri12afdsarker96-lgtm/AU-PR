@@ -32,7 +32,6 @@ from __future__ import annotations
 import json
 import re
 import socket
-import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -190,32 +189,33 @@ class EdgeTtsEngine:
 
         output = Path(output)
         output.parent.mkdir(parents=True, exist_ok=True)
+        # 双临时策略：先写 .part.mp3 → ffmpeg 转到 .part.wav → 原子 replace 覆盖 output。
+        # 这样任何失败都不会误删用户旧 output（比如重跑同一 chunk / 手动覆盖 master 的
+        # 半成品保护），因为旧 output 只在 tmp_wav 完全生成后才被替换（Path.replace 原子）。
         tmp_mp3 = output.with_suffix(output.suffix + ".part.mp3")
+        tmp_wav = output.with_suffix(output.suffix + ".part.wav")
 
-        # 出现异常时保证 .part 与半成品 output 都清理，不留脏；正常路径也删 .part。
-        cleanup_paths: list[Path] = [tmp_mp3]
-        try:
-            mp3_bytes = self._request_mp3(text, voice_id, speed=speed, pitch=pitch, style=style)
-            tmp_mp3.write_bytes(mp3_bytes)
-            _convert_mp3_to_wav(tmp_mp3, output,
-                                 sample_rate=_WAV_SAMPLE_RATE,
-                                 channels=_WAV_CHANNELS)
-        except Exception:
-            # 半成品清理：只清本次生成的、非目标已有的文件
-            for p in (output, tmp_mp3):
-                try:
-                    if p.exists() and p in cleanup_paths + [output]:
-                        p.unlink()
-                except Exception:  # noqa: BLE001
-                    pass
-            raise
-        finally:
-            for p in cleanup_paths:
+        def _cleanup_temp() -> None:
+            for p in (tmp_mp3, tmp_wav):
                 try:
                     if p.exists():
                         p.unlink()
                 except Exception:  # noqa: BLE001
                     pass
+
+        try:
+            mp3_bytes = self._request_mp3(text, voice_id, speed=speed, pitch=pitch, style=style)
+            tmp_mp3.write_bytes(mp3_bytes)
+            _convert_mp3_to_wav(tmp_mp3, tmp_wav,
+                                 sample_rate=_WAV_SAMPLE_RATE,
+                                 channels=_WAV_CHANNELS)
+            # 原子替换 — 只有 tmp_wav 完整可用时才动 output；旧 output 若失败**不动**。
+            tmp_wav.replace(output)
+        except Exception:
+            _cleanup_temp()
+            raise
+        finally:
+            _cleanup_temp()
 
         seconds = wav_seconds(output)
         master = MasterAudio(

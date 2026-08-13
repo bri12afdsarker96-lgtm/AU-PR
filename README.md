@@ -99,7 +99,7 @@ python -m unittest discover -s tests -p "test_*.py"
 
 配置（软件内 · 无需 API Key）：
 1. 到 [Cloudflare](https://dash.cloudflare.com/sign-up) 注册免费账户；
-2. 打开 [wangwangit/tts 的 Deploy 按钮](https://github.com/wangwangit/tts#-一键部署到-cloudflare-workers)，
+2. 打开 [wangwangit/tts 官方 Deploy Workers 直达链接](https://deploy.workers.cloudflare.com/?url=https://github.com/wangwangit/tts)，
    一键部署到你自己的账户 → 拿到 `https://xxx.workers.dev`；
 3. 软件「工具箱 → 免费 Edge TTS」填这个地址 → 保存 → 「测试连接」；
 4. 「配音引擎」下拉选「Edge TTS（免费云端 · 预设音色 · 不支持克隆）」→ 选声线/风格/音调 → 一键成片。
@@ -108,7 +108,7 @@ python -m unittest discover -s tests -p "test_*.py"
 仅适合临时试用、共用限流。软件不预置任何公共 Worker 地址。
 
 许可与归属：
-- Worker 源码 [MIT](https://github.com/wangwangit/tts/blob/main/LICENSE)——本项目
+- Worker 源码 [MIT](https://github.com/wangwangit/tts/blob/master/LICENSE)——本项目
   仅调用其 HTTP 接口，未复制其代码；接口字段命名为兼容而对齐。
 - MIT 只覆盖 Worker 源码；Microsoft Edge 生成音频的商业发布授权不在此内，
   用户按自己场景自负合规责任。

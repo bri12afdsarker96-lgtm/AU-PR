@@ -46,10 +46,30 @@ class PackagingScriptTests(unittest.TestCase):
         self.assertIn("打包收尾.py", bat)        # 自检/版本/压缩包收尾在独立脚本
 
     def test_calls_finalize_script(self):
+        """契约：收尾逻辑（压缩包/版本文件/自检）必须在 `打包收尾.py` 里，
+        不能内联到 bat 里跑复杂的 `python -c "shutil.make_archive(...)"`——
+        cmd 对复杂引号会拆断。bat 里保留 `python -c "import sys"` 之类**短探测**
+        （只为判断解释器是否可用）是允许的：任务书明确要求"不要为了让本任务变绿
+        而删除正常的 Python 探测逻辑"。"""
+        import re
+
         bat = self._bat()
-        # 收尾改用独立脚本，避免 cmd 对 python -c 复杂引号拆断
         self.assertIn("打包收尾.py", bat)
-        self.assertNotIn("python -c", bat)     # 不再在 bat 里用 python -c
+        # 收尾操作绝不能内联到 bat（防旧写法回潮）
+        self.assertNotIn("make_archive", bat)
+        self.assertNotIn("shutil.make_archive", bat)
+        # bat 里出现的 `python -c "..."` 必须是短探测：只能是 import 类语句、长度<=40。
+        # 这样 `python -c "import sys"` 允许；`python -c "shutil.make_archive(...)"` 禁用。
+        for match in re.finditer(r'(?:py(?:thon3?)?(?:\s+-3)?)\s+-c\s+"([^"]{0,200})"', bat):
+            inline = match.group(1).strip()
+            self.assertLessEqual(
+                len(inline), 40,
+                f"bat 里的 python -c 不能塞收尾逻辑（发现 {len(inline)} 字符：{inline!r}）",
+            )
+            self.assertTrue(
+                inline.startswith("import "),
+                f"bat 里的 python -c 仅允许 import 探测（发现：{inline!r}）",
+            )
 
     def test_finalize_script_present_and_valid(self):
         for cand in (Path("打包收尾.py"), Path(__file__).resolve().parents[1] / "打包收尾.py"):

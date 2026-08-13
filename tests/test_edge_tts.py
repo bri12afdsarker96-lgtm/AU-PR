@@ -328,9 +328,37 @@ class SynthesizeFullContractTests(unittest.TestCase):
                                  side_effect=EngineUnavailable("boom")):
             with self.assertRaises(EngineUnavailable):
                 eng.synthesize_full("hi", None, out, SynthesisOptions())
-        # 不留 .part.mp3
+        # 不留 .part.mp3 / .part.wav
         for p in self.tmp.iterdir():
             self.assertFalse(p.name.endswith(".part.mp3"), p)
+            self.assertFalse(p.name.endswith(".part.wav"), p)
+
+    def test_failure_preserves_prior_output(self):
+        """契约：用户重跑同一 chunk / 覆盖 master 时，若本次失败**不能删掉旧 output**——
+        双临时策略（tmp_mp3 + tmp_wav → 原子 replace）保证旧文件在最后 replace 之前不动。"""
+        eng = self._prepare_engine()
+        out = self.tmp / "m.wav"
+        out.write_bytes(b"OLD-USER-DATA-DO-NOT-DELETE")
+        # 场景 A：网络阶段失败，output 应完整保留
+        with mock.patch.object(eng, "_request_mp3",
+                                 side_effect=EngineUnavailable("net down")):
+            with self.assertRaises(EngineUnavailable):
+                eng.synthesize_full("hi", None, out, SynthesisOptions())
+        self.assertTrue(out.is_file())
+        self.assertEqual(out.read_bytes(), b"OLD-USER-DATA-DO-NOT-DELETE")
+        # 场景 B：ffmpeg 转码阶段失败，output 仍应保留旧内容
+        with mock.patch.object(eng, "_request_mp3", return_value=b"MP3"), \
+             mock.patch("dub_align_studio.engines.edge_tts.run_silent",
+                          return_value=mock.MagicMock(returncode=1,
+                                                       stdout="", stderr="ffmpeg error")):
+            with self.assertRaises(EngineUnavailable):
+                eng.synthesize_full("hi", None, out, SynthesisOptions())
+        self.assertTrue(out.is_file())
+        self.assertEqual(out.read_bytes(), b"OLD-USER-DATA-DO-NOT-DELETE")
+        # 不留任何 .part.*
+        for p in self.tmp.iterdir():
+            self.assertFalse(p.name.endswith(".part.mp3"), p)
+            self.assertFalse(p.name.endswith(".part.wav"), p)
 
     def test_voice_default_when_options_missing_edge_voice(self):
         """edge_voice 空时用引擎默认声线（不炸）。"""
