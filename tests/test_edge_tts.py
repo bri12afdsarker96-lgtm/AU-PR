@@ -483,17 +483,48 @@ class CloudGpuIsolationTests(unittest.TestCase):
 
 class CloudGpuRunJobEndToEndTests(unittest.TestCase):
     """完整 `_run_job` 端到端矩阵（v0.7.71 P0-4）——只测辅助函数不够，必须证明
-    真跑 action 时 cloud_gpu 保活次数符合契约。"""
+    真跑 action 时 cloud_gpu 保活次数符合契约。**保活钩子必须紧邻真实
+    engine.synthesize_full 调用**——mock 掉 step_dub 但没有实际 engine 调用时
+    应 0 次刷新（这是本修订区分"入口 mark"与"真正远程 mark"的关键测试）。"""
 
     def _job(self, action):
         return web_server.JobState(slot="test", action=action)
 
     def _mock_manager(self):
-        """把 cloud_gpu.manager 换成 MagicMock，返回 mark_active 计数器句柄。"""
         from unittest.mock import MagicMock as _M
         fake_manager = _M()
         fake_manager.mark_active = _M()
         return fake_manager
+
+    def _write_wav(self, path):
+        import wave as _w, struct as _s, math as _m
+        with _w.open(str(path), "wb") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(22050)
+            for i in range(22050):
+                w.writeframes(_s.pack("<h", int(1000 * _m.sin(2*_m.pi*440*i/22050))))
+
+    def _fake_synth_writes_wav(self, engine_key: str):
+        """返回 (fake_engine, synth_side_effect_recording_calls_list)。
+        synthesize_full 会写一段真实 WAV 到 candidate 路径并返回 MasterAudio。"""
+        from dub_align_studio.engines.base import MasterAudio, EngineCapabilities
+        calls: list[Path] = []
+
+        def _synth(text, voice, cand, opts):
+            cand = Path(cand)
+            self._write_wav(cand)
+            calls.append(cand)
+            return MasterAudio(path=cand, engine=engine_key, voice_id="",
+                                model="?", seed=42, sample_rate=22050, seconds=1.0)
+
+        fake_engine = mock.MagicMock()
+        fake_engine.key = engine_key
+        fake_engine.synthesize_full = mock.MagicMock(side_effect=_synth)
+        # native_speed=False → 不影响；不设 warmup（synthesize_long 会跳过）
+        fake_engine.capabilities = EngineCapabilities()
+        fake_engine.max_chars = 1_000_000
+        # 让 hasattr(engine, "warmup") 返回 False
+        del fake_engine.warmup
+        return fake_engine, calls
 
     def test_run_all_reuse_dub_never_marks(self):
         """run_all + reuse_dub=True（master 已存在）→ 完全跳过配音 → 0 次 mark_active。"""
@@ -530,12 +561,44 @@ class CloudGpuRunJobEndToEndTests(unittest.TestCase):
         finally:
             _sh.rmtree(tmp, ignore_errors=True)
 
-    def test_run_all_real_dots_remote_marks_before_and_after(self):
-        """run_all + dots_remote 真合成：入口 + 每次 progress/heartbeat + 收尾都 mark。"""
+    def test_run_all_marks_before_and_after_real_engine_call(self):
+        """run_all + dots_remote 真调 engine.synthesize_full：紧邻调用前/后各 mark 一次。
+        钩子由 synthesize_long 在**真的** engine.synthesize_full 前调 before、在 finally 里
+        调 after——每段各 (before, after)，成功/失败都保证。"""
+        import shutil as _sh, tempfile as _tf
+        from dub_align_studio import studio_pipeline as _pl
+        tmp = Path(_tf.mkdtemp(prefix="ra_real_"))
+        try:
+            shots = tmp / "shots"; shots.mkdir()
+            (shots / "1.mp4").write_bytes(b"MP4")
+            payload = {"action": "run_all", "engine": "dots_remote",
+                       "text": "只有一行", "output_dir": str(tmp),
+                       "shots_dir": str(shots), "material_mode": "flat"}
+            fake_manager = self._mock_manager()
+            fake_engine, synth_calls = self._fake_synth_writes_wav("dots_remote")
+            with mock.patch("dub_align_studio.cloud_gpu.manager", return_value=fake_manager), \
+                 mock.patch.object(_pl, "make_engine", return_value=fake_engine), \
+                 mock.patch.object(_pl, "step_timing", return_value=([], [])), \
+                 mock.patch.object(_pl, "step_render") as _sr, \
+                 mock.patch.object(_pl, "select_shot_videos", return_value=[shots / "1.mp4"]):
+                _sr.return_value = type("R", (), {"ok": True, "subtitle_note": "",
+                                                   "output_path": str(tmp / "成片.mp4")})()
+                job = self._job("run_all")
+                web_server._run_job(job, "run_all", payload)
+            # 期望：真调了 1 次 synthesize_full → 前后各 mark 一次 = 2
+            self.assertEqual(len(synth_calls), 1, "应真调 synthesize_full 一次")
+            self.assertEqual(fake_manager.mark_active.call_count, 2,
+                              f"期望紧邻 engine 调用 before+after=2，实际 {fake_manager.mark_active.call_count}")
+        finally:
+            _sh.rmtree(tmp, ignore_errors=True)
+
+    def test_run_all_step_dub_mocked_yields_zero_marks(self):
+        """把整个 step_dub mock 掉 → 没有实际 engine.synthesize_full 调用 → 0 次 mark。
+        这条测试证明保活钩子**不在**分支入口——旧的"进 dub 分支就 mark"实现无法通过这条。"""
         import shutil as _sh, tempfile as _tf
         from dub_align_studio import studio_pipeline as _pl
         from dub_align_studio.engines.base import MasterAudio
-        tmp = Path(_tf.mkdtemp(prefix="ra_real_"))
+        tmp = Path(_tf.mkdtemp(prefix="ra_mocked_"))
         try:
             shots = tmp / "shots"; shots.mkdir()
             (shots / "1.mp4").write_bytes(b"MP4")
@@ -547,90 +610,143 @@ class CloudGpuRunJobEndToEndTests(unittest.TestCase):
                                        voice_id="", model="?", seed=42,
                                        sample_rate=22050, seconds=2.0)
             with mock.patch("dub_align_studio.cloud_gpu.manager", return_value=fake_manager), \
-                 mock.patch.object(_pl, "step_dub", return_value=fake_master) as _sd, \
+                 mock.patch.object(_pl, "step_dub", return_value=fake_master), \
                  mock.patch.object(_pl, "step_timing", return_value=([], [])), \
                  mock.patch.object(_pl, "step_render") as _sr, \
                  mock.patch.object(_pl, "select_shot_videos", return_value=[shots / "1.mp4"]):
                 _sr.return_value = type("R", (), {"ok": True, "subtitle_note": "",
                                                    "output_path": str(tmp / "成片.mp4")})()
-                job = self._job("run_all")
-                web_server._run_job(job, "run_all", payload)
-            # 期望：≥2 次（配音开始 + 结束；heartbeat/progress 未被真调因为 step_dub 被 mock）
-            self.assertGreaterEqual(fake_manager.mark_active.call_count, 2,
-                                     f"真远程配音期望 ≥2 次 mark，实际 {fake_manager.mark_active.call_count}")
+                web_server._run_job(self._job("run_all"), "run_all", payload)
+            self.assertEqual(fake_manager.mark_active.call_count, 0,
+                              "step_dub 被 mock（没有真 engine 调用）时不得刷云 GPU")
         finally:
             _sh.rmtree(tmp, ignore_errors=True)
 
-    def test_dub_action_heartbeat_marks(self):
-        """dub 长文合成：入口 + 每次 heartbeat/progress + 收尾都 mark，
-        edge/mock 引擎则完全不 mark。"""
+    def test_dub_marks_after_even_when_engine_raises(self):
+        """dub + dots_remote，engine.synthesize_full 抛异常：after 在 finally 仍执行。
+        期望：before mark + after mark = 2 次；任务状态 ok=False。"""
         import shutil as _sh, tempfile as _tf
         from dub_align_studio import studio_pipeline as _pl
-        from dub_align_studio.engines.base import MasterAudio
+        from dub_align_studio.engines.base import EngineCapabilities
 
-        tmp = Path(_tf.mkdtemp(prefix="dub_hb_"))
+        tmp = Path(_tf.mkdtemp(prefix="dub_raise_"))
         try:
             payload = {"action": "dub", "engine": "dots_remote",
-                       "text": "行一\n行二", "output_dir": str(tmp)}
-
-            def _fake_step_dub(text, engine_key, output_dir, voice, options,
-                                log=None, progress=None, heartbeat=None):
-                # 模拟真实合成：先 heartbeat("加载")、progress(1,2)+heartbeat("行1")、progress(2,2)+heartbeat("行2")
-                if heartbeat: heartbeat("加载模型")
-                if progress: progress(1, 2)
-                if heartbeat: heartbeat("行1 生成中")
-                if progress: progress(2, 2)
-                if heartbeat: heartbeat("行2 生成中")
-                return MasterAudio(path=Path(output_dir) / _pl.MASTER_NAME,
-                                    engine="dots_remote", voice_id="", model="?", seed=42,
-                                    sample_rate=22050, seconds=2.0)
+                       "text": "行", "output_dir": str(tmp)}
+            fake_engine = mock.MagicMock()
+            fake_engine.key = "dots_remote"
+            fake_engine.capabilities = EngineCapabilities()
+            fake_engine.max_chars = 1_000_000
+            del fake_engine.warmup
+            fake_engine.synthesize_full = mock.MagicMock(
+                side_effect=RuntimeError("simulated remote failure"))
 
             fake_manager = self._mock_manager()
             with mock.patch("dub_align_studio.cloud_gpu.manager", return_value=fake_manager), \
-                 mock.patch.object(_pl, "step_dub", side_effect=_fake_step_dub):
+                 mock.patch.object(_pl, "make_engine", return_value=fake_engine):
                 job = self._job("dub")
                 web_server._run_job(job, "dub", payload)
-            # 期望：入口 1 + 3 heartbeat + 2 progress + 收尾 1 = 7
-            self.assertEqual(fake_manager.mark_active.call_count, 7,
-                              f"dub+dots_remote heartbeat/progress 期望 7 次，实际 {fake_manager.mark_active.call_count}")
+            self.assertEqual(fake_manager.mark_active.call_count, 2,
+                              f"engine 抛异常 after 仍必须刷，期望 2 次，实际 "
+                              f"{fake_manager.mark_active.call_count}")
+            self.assertFalse(job.ok)
 
-            # edge_tts 走同一 action 应完全不 mark
-            payload_edge = {"action": "dub", "engine": "edge_tts",
-                            "text": "行", "output_dir": str(tmp)}
+            # edge_tts + engine 抛异常：0 次 mark
             fake_manager2 = self._mock_manager()
+            fake_engine.key = "edge_tts"
+            payload["engine"] = "edge_tts"
             with mock.patch("dub_align_studio.cloud_gpu.manager", return_value=fake_manager2), \
-                 mock.patch.object(_pl, "step_dub", side_effect=_fake_step_dub):
-                job = self._job("dub")
-                web_server._run_job(job, "dub", payload_edge)
+                 mock.patch.object(_pl, "make_engine", return_value=fake_engine):
+                web_server._run_job(self._job("dub"), "dub", payload)
             self.assertEqual(fake_manager2.mark_active.call_count, 0,
-                              f"dub+edge_tts 应 0 次，实际 {fake_manager2.mark_active.call_count}")
+                              "edge_tts engine 异常也不刷云 GPU")
         finally:
             _sh.rmtree(tmp, ignore_errors=True)
 
-    def test_rechunk_marks_only_for_dots_remote(self):
-        """rechunk：dots_remote → mark（前后各一次）；其它引擎 → 0 次。"""
+    def test_rechunk_marks_only_when_engine_actually_called(self):
+        """rechunk：dots_remote 且 manifest/index 均合法 → 2 次；否则 0 次。
+        证明保活钩子在参数校验/manifest 查找**之后**——校验失败不误刷。"""
         import shutil as _sh, tempfile as _tf
         from dub_align_studio import studio_pipeline as _pl
+        from dub_align_studio.engines import MockEngine, SynthesisOptions
+        from dub_align_studio.engines.longform import synthesize_long
 
-        tmp = Path(_tf.mkdtemp(prefix="rc_"))
+        tmp = Path(_tf.mkdtemp(prefix="rc_e2e_"))
         try:
-            fake_engine = mock.MagicMock()
-            with mock.patch.object(_pl, "make_engine", return_value=fake_engine), \
-                 mock.patch("dub_align_studio.engines.longform.redub_chunk") as _rc:
-                # dots_remote → 期望 2 次 mark
-                payload = {"action": "rechunk", "engine": "dots_remote",
-                           "text": "行", "output_dir": str(tmp), "chunk_index": 1}
-                fake_manager = self._mock_manager()
-                with mock.patch("dub_align_studio.cloud_gpu.manager", return_value=fake_manager):
-                    web_server._run_job(self._job("rechunk"), "rechunk", payload)
-                self.assertEqual(fake_manager.mark_active.call_count, 2,
-                                  f"rechunk+dots_remote 期望 2 次，实际 {fake_manager.mark_active.call_count}")
-                # mock 引擎 → 0 次
-                payload["engine"] = "mock"
-                fake_manager2 = self._mock_manager()
-                with mock.patch("dub_align_studio.cloud_gpu.manager", return_value=fake_manager2):
-                    web_server._run_job(self._job("rechunk"), "rechunk", payload)
-                self.assertEqual(fake_manager2.mark_active.call_count, 0)
+            # 1) 先造一份真实的 chunks + manifest（用 MockEngine）
+            master = tmp / _pl.MASTER_NAME
+            synthesize_long(MockEngine(), "\n".join(["甲。", "乙。"]),
+                             None, master, SynthesisOptions(), max_chars=1_000_000,
+                             per_line=True)
+
+            # 2) dots_remote + 真调 → 期望 2 次
+            fake_engine, synth_calls = self._fake_synth_writes_wav("dots_remote")
+            fake_manager = self._mock_manager()
+            payload = {"action": "rechunk", "engine": "dots_remote",
+                       "text": "甲。", "output_dir": str(tmp), "chunk_index": 1}
+            with mock.patch("dub_align_studio.cloud_gpu.manager", return_value=fake_manager), \
+                 mock.patch.object(_pl, "make_engine", return_value=fake_engine):
+                web_server._run_job(self._job("rechunk"), "rechunk", payload)
+            self.assertEqual(len(synth_calls), 1, "应真调 engine.synthesize_full 一次")
+            self.assertEqual(fake_manager.mark_active.call_count, 2,
+                              f"rechunk+dots_remote 真调期望 2 次 mark，实际 "
+                              f"{fake_manager.mark_active.call_count}")
+
+            # 3) mock 引擎（is_cloud_gpu=False）→ 0 次
+            fake_engine2, _c = self._fake_synth_writes_wav("mock")
+            fake_manager2 = self._mock_manager()
+            payload["engine"] = "mock"
+            with mock.patch("dub_align_studio.cloud_gpu.manager", return_value=fake_manager2), \
+                 mock.patch.object(_pl, "make_engine", return_value=fake_engine2):
+                web_server._run_job(self._job("rechunk"), "rechunk", payload)
+            self.assertEqual(fake_manager2.mark_active.call_count, 0)
+        finally:
+            _sh.rmtree(tmp, ignore_errors=True)
+
+    def test_rechunk_missing_manifest_yields_zero_marks(self):
+        """rechunk 缺 manifest（chunks 目录不存在）→ 0 次 mark（校验早于钩子）。"""
+        import shutil as _sh, tempfile as _tf
+        from dub_align_studio import studio_pipeline as _pl
+        tmp = Path(_tf.mkdtemp(prefix="rc_nom_"))
+        try:
+            (tmp / _pl.MASTER_NAME).write_bytes(b"RIFF" + b"\x00" * 100)
+            fake_engine, _c = self._fake_synth_writes_wav("dots_remote")
+            fake_manager = self._mock_manager()
+            payload = {"action": "rechunk", "engine": "dots_remote",
+                       "text": "行", "output_dir": str(tmp), "chunk_index": 1}
+            with mock.patch("dub_align_studio.cloud_gpu.manager", return_value=fake_manager), \
+                 mock.patch.object(_pl, "make_engine", return_value=fake_engine):
+                job = self._job("rechunk")
+                web_server._run_job(job, "rechunk", payload)
+            self.assertFalse(job.ok)
+            self.assertEqual(fake_manager.mark_active.call_count, 0,
+                              "manifest 缺失禁止刷 cloud_gpu")
+        finally:
+            _sh.rmtree(tmp, ignore_errors=True)
+
+    def test_rechunk_bad_index_yields_zero_marks(self):
+        """rechunk chunk_index 越界 → 0 次 mark（段号校验早于钩子）。"""
+        import shutil as _sh, tempfile as _tf
+        from dub_align_studio import studio_pipeline as _pl
+        from dub_align_studio.engines import MockEngine, SynthesisOptions
+        from dub_align_studio.engines.longform import synthesize_long
+        tmp = Path(_tf.mkdtemp(prefix="rc_bad_"))
+        try:
+            master = tmp / _pl.MASTER_NAME
+            synthesize_long(MockEngine(), "\n".join(["甲。", "乙。"]),
+                             None, master, SynthesisOptions(), max_chars=1_000_000,
+                             per_line=True)
+            fake_engine, _c = self._fake_synth_writes_wav("dots_remote")
+            fake_manager = self._mock_manager()
+            payload = {"action": "rechunk", "engine": "dots_remote",
+                       "text": "行", "output_dir": str(tmp), "chunk_index": 99}
+            with mock.patch("dub_align_studio.cloud_gpu.manager", return_value=fake_manager), \
+                 mock.patch.object(_pl, "make_engine", return_value=fake_engine):
+                job = self._job("rechunk")
+                web_server._run_job(job, "rechunk", payload)
+            self.assertFalse(job.ok)
+            self.assertEqual(fake_manager.mark_active.call_count, 0,
+                              "段号错误禁止刷 cloud_gpu")
         finally:
             _sh.rmtree(tmp, ignore_errors=True)
 

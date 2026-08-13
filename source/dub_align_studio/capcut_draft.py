@@ -94,8 +94,8 @@ def export_capcut_package(
       整目录 rename 为 `剪映草稿包_{stamp}`；失败时 rmtree staging，不留半成品。
 
     master_wav 参数保留只是为了向后兼容签名（内部不再使用）。"""
-    import os as _os
     import shutil as _sh
+    import uuid as _uuid
 
     if len(timings) != len(segment_files):
         raise ValueError(f"计时行数({len(timings)})与分镜段数({len(segment_files)})不一致。")
@@ -103,6 +103,7 @@ def export_capcut_package(
         raise ValueError("没有可导出的行。")
     style = style or SubtitleStyle()
 
+    from .atomic_commit import AtomicMultiCommit
     from .export_mixdown import (
         MIXDOWN_NAME,
         MixdownError,
@@ -115,10 +116,19 @@ def export_capcut_package(
                            "——A1 用成片同款混音单轨，避免和 BGM/音效不同步。")
     film_mp4 = Path(film_mp4)
 
+    # 同一秒重复导出时不冲突：`剪映草稿包_YYYYmmdd_HHMMSS[_2/_3/...]`
+    # ——**禁止**"先 rmtree 旧目录再 commit"（那会删掉用户上一次成功的包）。
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    final_dir = Path(output_dir) / f"剪映草稿包_{stamp}"
-    staging_dir = final_dir.with_name(final_dir.name + ".staging")
-    # staging 已存在（上次异常残留）→ 清干净重来
+    base_final = Path(output_dir) / f"剪映草稿包_{stamp}"
+    final_dir = base_final
+    suffix_n = 2
+    while final_dir.exists():
+        final_dir = base_final.with_name(f"{base_final.name}_{suffix_n}")
+        suffix_n += 1
+
+    txn_id = _uuid.uuid4().hex[:12]
+    staging_dir = final_dir.with_name(final_dir.name + f".staging.{txn_id}")
+    # staging 已存在（上次异常残留同 uuid 概率 ~0）→ 清干净重来
     if staging_dir.exists():
         _sh.rmtree(staging_dir, ignore_errors=True)
     material_dir_staging = staging_dir / "materials"
@@ -189,14 +199,15 @@ def export_capcut_package(
             ),
             encoding="utf-8",
         )
-        # 全部就绪 —— 原子提交：把 staging 整目录 rename 成 final_dir
-        # （final_dir 是全新时间戳目录，天然不冲突；即使冲突也先清旧目录再 rename）
-        if final_dir.exists():
-            _sh.rmtree(final_dir, ignore_errors=True)
-        _os.replace(str(staging_dir), str(final_dir))
+        # 全部就绪 —— 单目标 AtomicMultiCommit（final_dir 已保证不冲突；即便同秒多次
+        # 导出，final_dir 也是 _2/_3 递增，绝不"先删旧再 commit"）
+        txn = AtomicMultiCommit(txn_id=txn_id)
+        txn.add(staging_dir, final_dir)
+        txn.commit()
     except Exception:
-        # 任何一步失败：清 staging 半成品，不动 final_dir（本函数每次新时间戳，故理论上 final_dir 不存在）
-        _sh.rmtree(staging_dir, ignore_errors=True)
+        # 任何一步失败：清 staging 半成品；旧交接包（若前一次导出留下）字节不动
+        if staging_dir.exists():
+            _sh.rmtree(staging_dir, ignore_errors=True)
         raise
 
     # commit 完成后各产物路径必须重新指向 final_dir（供后续 pyCapCut / 返回值使用）
@@ -285,9 +296,15 @@ def main() -> None:
                 segment = cc.TextSegment(text, trange(f"{{start}}s", f"{{duration}}s"))
             script.add_segment(segment, "字幕")
 
-    master = next(MATERIALS.glob("master.*"), None)
-    if master:
-        script.add_segment(cc.AudioSegment(str(master), trange("0s", f"{{total}}s")), "配音")
+    # v0.7.71 P0-5：A1 = mixdown.wav（成片同款混音单轨）——固定文件名，禁止再走
+    # `master.glob("master.*")` 的旧惯例（交接包已不再包含 master.wav；漏音是假成功）
+    mixdown = MATERIALS / "mixdown.wav"
+    if not mixdown.is_file():
+        raise SystemExit(
+            f"缺少音频轨素材：{{mixdown}}——交接包被破坏或不是本工具 v0.7.71+ 导出的。"
+            "重新在软件里导出剪映草稿即可。"
+        )
+    script.add_segment(cc.AudioSegment(str(mixdown), trange("0s", f"{{total}}s")), "配音")
 
     script.save()
     print(f"草稿已生成：{{DRAFT_ROOT / DRAFT_NAME}}")

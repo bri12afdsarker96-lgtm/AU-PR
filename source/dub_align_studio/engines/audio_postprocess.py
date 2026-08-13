@@ -62,18 +62,22 @@ def _which(name: str) -> str | None:
 def atempo_chain(speed: float) -> list[str]:
     """把任意 speed（正数）分解为 ffmpeg `atempo=...,atempo=...` 链的每节值。
 
-    ffmpeg 官方 atempo 单节点范围 0.5~100.0。超出用多节链：
-      · speed=4.0 → [2.0, 2.0]
-      · speed=0.25 → [0.5, 0.5]
+    ffmpeg 官方 atempo 单节点范围 0.5~100.0。超出上限用多节：
+      · speed=200.0 → 单节点 100 * 剩余 2.0 → ["100.000000", "2.000000"]
+      · speed=0.25 → 单节点 0.5 * 剩余 0.5 → ["0.500000", "0.500000"]
+    speed 在合法单节点范围内直接单节，例如 speed=4.0 → ["4.000000"]（不再拆），
+    speed=0.5 → ["0.500000"]，speed≈1.0 → 空链（调用方跳过 -af）。
 
-    speed<=0（含 NaN、非数字）→ 抛 ValueError，禁止静默按 1.0 处理——用户显式设成 0
-    或负数是明确错误，静默兜底会掩盖问题。speed≈1.0 返回空链（调用方跳过 -af）。"""
+    speed<=0（含 NaN、Inf、非数字）→ 抛 ValueError；禁止静默按 1.0 兜底——那是
+    过去"UI 设成 0 却生成正常成片"的假成功根因之一。"""
     try:
         s = float(speed)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"speed 参数不是数字：{speed!r}") from exc
     if s != s:   # NaN
         raise ValueError("speed 不能是 NaN")
+    if s in (float("inf"), float("-inf")):
+        raise ValueError(f"speed 不能是无穷大：{s!r}")
     if s <= 0:
         raise ValueError(f"speed 必须为正数，收到 {s!r}（0 或负数无物理意义，"
                          "如需静默请去掉后处理调用）")
@@ -270,24 +274,39 @@ def postprocess_wav(path: Path, *, speed: float, max_pause_seconds: float,
       · 处理顺序：先 atempo、再压静音（用户滑杆语义："最终多久停顿"）。
       · 原子替换：所有中间态写 .part.wav；成功一次 Path.replace 覆盖 path；失败清临时。
 
-    speed 必须为正数（0/负数/NaN 抛 ValueError，不静默兜底）；speed≈1.0 视为无需
-    变速；max_pause<=0 视为不压。全部不需要处理时，只做一次"读回真实秒数"就返回，
-    不动 path。"""
-    # 参数校验：非法 speed 直接报错（P0-3），禁止把 0/负数当作 1.0 静默通过
+    speed 必须为正数（0/负数/NaN/Inf 抛 PostProcessError，不静默兜底）；speed≈1.0
+    视为无需变速；max_pause_seconds 必须是 >=0 的有限数（负数/NaN/Inf 抛错）；
+    max_pause_seconds==0 视为不压。全部不需要处理时，只做一次"读回真实秒数"就
+    返回，不动 path。"""
+    # 参数校验：非法 speed / max_pause 直接报错（P0-3），禁止 0/负数/NaN 静默通过
     try:
         s = float(speed)
     except (TypeError, ValueError) as exc:
         raise PostProcessError(f"speed 参数不是数字：{speed!r}") from exc
     if s != s:
         raise PostProcessError("speed 不能是 NaN")
+    if s in (float("inf"), float("-inf")):
+        raise PostProcessError(f"speed 不能是无穷大：{s!r}")
     if s <= 0:
         raise PostProcessError(
             f"speed 必须为正数，收到 {s!r}（0/负数无物理意义；"
             "如无需变速请显式传 speed=1.0）"
         )
     speed = s
+    try:
+        mp = float(max_pause_seconds) if max_pause_seconds is not None else 0.0
+    except (TypeError, ValueError) as exc:
+        raise PostProcessError(
+            f"max_pause_seconds 不是数字：{max_pause_seconds!r}") from exc
+    if mp != mp or mp in (float("inf"), float("-inf")):
+        raise PostProcessError(f"max_pause_seconds 必须是有限数：{max_pause_seconds!r}")
+    if mp < 0:
+        raise PostProcessError(
+            f"max_pause_seconds 不能为负：{mp!r}（如不压请传 0 或省略）"
+        )
+    max_pause_seconds = mp
     need_speed = (not native_speed) and abs(speed - 1.0) >= _ATEMPO_EPS
-    need_pause = max_pause_seconds is not None and max_pause_seconds > 0
+    need_pause = mp > 0
 
     if not need_speed and not need_pause:
         # 没有任何后处理需求：只回读实际秒数

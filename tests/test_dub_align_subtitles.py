@@ -216,6 +216,112 @@ class CapcutPackageTests(unittest.TestCase):
         self.assertAlmostEqual(draft_font_size(SubtitleStyle(font_size_px=108)), 15.0)
         self.assertGreater(draft_font_size(SubtitleStyle(font_size_px=96)), draft_font_size(SubtitleStyle(font_size_px=48)))
 
+    def test_generated_script_references_mixdown_wav_not_master_glob(self):
+        """v0.7.71 P0-5：交接包生成的 create_capcut_draft.py 必须**明确**读
+        materials/mixdown.wav（v0.7.71 契约），不能保留旧的
+        `next(MATERIALS.glob("master.*"), None)`——否则拷到剪辑机跑脚本会漏音。"""
+        package = export_capcut_package(self.timings, self.segments, self.master,
+                                          self.workdir / "out_script",
+                                          film_mp4=self.film)
+        script = package.script_py.read_text(encoding="utf-8")
+        # 反面：不再对 `MATERIALS.glob("master.*")` 求下一个（旧漏音写法）
+        self.assertNotIn('MATERIALS.glob("master.*")', script)
+        self.assertNotIn('next(MATERIALS.glob(', script)
+        self.assertNotIn('AudioSegment(str(master),', script)
+        # 正面：明确读 mixdown.wav
+        self.assertIn('"mixdown.wav"', script)
+        self.assertIn("AudioSegment(str(mixdown)", script)
+        # 缺失时明确报错，不静默生成无声草稿
+        self.assertIn("缺少音频轨素材", script)
+
+    def test_generated_script_actually_wires_audio_via_fake_pycapcut(self):
+        """v0.7.71 P0-5：以 fake pycapcut 执行脚本 main()，断言
+        `AudioSegment(<mixdown.wav 绝对路径>, ...)` **真的**被调用。"""
+        import runpy, sys, types
+        package = export_capcut_package(self.timings, self.segments, self.master,
+                                          self.workdir / "out_exec",
+                                          film_mp4=self.film)
+        mixdown = package.material_dir / "mixdown.wav"
+        self.assertTrue(mixdown.is_file(), "materials/mixdown.wav 必须存在")
+
+        # 造 fake pycapcut：记录 AudioSegment 的调用参数
+        audio_calls: list[str] = []
+
+        class _FakeSeg:
+            def __init__(self, *a, **k): self.args = a; self.kwargs = k
+
+        class _FakeAudioSeg(_FakeSeg):
+            def __init__(self, path, tr, *a, **k):
+                super().__init__(path, tr, *a, **k)
+                audio_calls.append(path)
+
+        class _FakeScript:
+            def __init__(self, *a, **k):
+                self.segments = {"分镜": [], "配音": [], "字幕": []}
+            def add_track(self, kind, track_name=""):
+                self.segments.setdefault(track_name, [])
+            def add_segment(self, seg, track): self.segments[track].append(seg)
+            def save(self): pass
+
+        class _FakeDraftFolder:
+            def __init__(self, root): self.root = root
+            def create_draft(self, name, w, h, allow_replace=True): return _FakeScript()
+
+        class _FakeTT:
+            video = "video"; audio = "audio"; text = "text"
+
+        fake_cc = types.ModuleType("pycapcut")
+        fake_cc.DraftFolder = _FakeDraftFolder
+        fake_cc.TrackType = _FakeTT
+        fake_cc.VideoSegment = _FakeSeg
+        fake_cc.AudioSegment = _FakeAudioSeg
+        fake_cc.TextSegment = _FakeSeg
+        fake_cc.TextStyle = _FakeSeg
+        def _trange(start, dur): return (start, dur)
+        fake_cc.trange = _trange
+        sys.modules["pycapcut"] = fake_cc
+        try:
+            # 直接执行脚本的 main()——runpy 以 __main__ 语义运行 py 文件
+            runpy.run_path(str(package.script_py), run_name="__main__")
+        finally:
+            sys.modules.pop("pycapcut", None)
+        self.assertEqual(len(audio_calls), 1, f"AudioSegment 应被调用一次，实际 {audio_calls}")
+        # 传入的是 mixdown.wav 的绝对/相对路径
+        self.assertTrue(audio_calls[0].endswith("mixdown.wav"),
+                         f"AudioSegment 未指向 mixdown.wav：{audio_calls[0]}")
+
+    def test_same_second_reexport_uses_suffix_not_overwrite(self):
+        """v0.7.71 P0-5 附加：同一秒重复导出必须分配 `_2/_3` 后缀，**禁止** rmtree
+        旧包再 commit——那样会静默删掉用户上一次成功的交接包。"""
+        # 第一次导出 → package_dir_1
+        pkg1 = export_capcut_package(self.timings, self.segments, self.master,
+                                       self.workdir / "out_dup",
+                                       film_mp4=self.film)
+        # Mock datetime.now 让第二次拿到相同 stamp
+        from unittest import mock as _m
+        import dub_align_studio.capcut_draft as _cd
+        fake_now = pkg1.package_dir.name.replace("剪映草稿包_", "")
+
+        class _FixedTs:
+            def strftime(self, fmt): return fake_now
+            def isoformat(self, timespec="seconds"): return "2026-01-01T00:00:00"
+
+        class _FixedDt:
+            @classmethod
+            def now(cls): return _FixedTs()
+
+        with _m.patch.object(_cd, "datetime", _FixedDt):
+            pkg2 = export_capcut_package(self.timings, self.segments, self.master,
+                                           self.workdir / "out_dup",
+                                           film_mp4=self.film)
+        self.assertNotEqual(pkg1.package_dir, pkg2.package_dir,
+                             "同秒重复导出必须走不冲突后缀，绝不覆盖旧包")
+        self.assertTrue(pkg2.package_dir.name.endswith("_2"),
+                         f"期望 `_2` 后缀，实际 {pkg2.package_dir.name}")
+        # 旧包完整保留
+        self.assertTrue(pkg1.package_dir.is_dir())
+        self.assertTrue((pkg1.material_dir / "mixdown.wav").is_file())
+
     def test_transactional_no_half_package_on_segment_failure(self):
         """v0.7.71 P1-1 事务化：第 N 段无音副本失败时，不留任何『剪映草稿包_*/』半成品目录，
         staging 目录也彻底清干净——用户看到的应该是"整体失败"而非"只走了一半的草稿包"。"""

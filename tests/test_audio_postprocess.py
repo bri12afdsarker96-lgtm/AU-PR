@@ -15,6 +15,7 @@ ffmpeg 缺失时**跳过**需要 ffmpeg 的用例，纯逻辑用例仍全跑（a
 from __future__ import annotations
 
 import math
+import os
 import shutil
 import struct
 import tempfile
@@ -263,6 +264,88 @@ class LongformPostprocessDispatchTests(unittest.TestCase):
                          f"native_speed 期望全 True，实际 {called_with_native}")
 
 
+class CommitStageFailureTests(unittest.TestCase):
+    """v0.7.71 P0-2：**commit 阶段**（真正 os.replace 那一步）失败也必须整体回滚。
+    这与"生成阶段失败"不同——后者候选还没进 commit，前者候选已经在替换正式目标；
+    我们注入 os.replace 在第 2/3 次调用时失败，验证旧字节仍恢复。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="lf_commit_"))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _seed_multi(self) -> tuple[Path, bytes, dict]:
+        """先跑一次成功合成，返回 (master, old_master_bytes, {chunk_name: bytes}, meta_bytes)。"""
+        from dub_align_studio.engines import longform, mock_engine
+        from dub_align_studio.engines.base import SynthesisOptions
+        master = self.tmp / "master.wav"
+        longform.synthesize_long(mock_engine.MockEngine(),
+                                  "\n".join(["甲。", "乙。", "丙。"]), None, master,
+                                  SynthesisOptions(), max_chars=1_000_000, per_line=True)
+        chunks_dir = master.parent / f"{master.stem}_chunks"
+        old_master = master.read_bytes()
+        old_chunks = {p.name: p.read_bytes() for p in chunks_dir.iterdir()}
+        meta = master.with_suffix(".json")
+        old_meta = meta.read_bytes() if meta.is_file() else b""
+        return master, old_master, old_chunks, old_meta
+
+    def _run_second_synthesis_with_failing_replace(self, master, boom_at: int):
+        """跑第二次多段合成——patch atomic_commit.os.replace 在第 N 次调用时抛错，
+        验证旧的三目标（chunks 目录、master、meta）全部字节级恢复。"""
+        from dub_align_studio.atomic_commit import TransactionError
+        from dub_align_studio.engines import longform, mock_engine
+        from dub_align_studio.engines.base import SynthesisOptions
+
+        real_replace = os.replace
+        call_count = {"n": 0}
+
+        def _flaky(src, dst):
+            call_count["n"] += 1
+            if call_count["n"] == boom_at:
+                raise OSError(f"simulated commit failure at call {boom_at}")
+            return real_replace(src, dst)
+
+        with mock.patch("dub_align_studio.atomic_commit.os.replace", side_effect=_flaky):
+            with self.assertRaises(TransactionError):
+                longform.synthesize_long(mock_engine.MockEngine(),
+                                          "\n".join(["新A。", "新B。", "新C。"]),
+                                          None, master,
+                                          SynthesisOptions(), max_chars=1_000_000, per_line=True)
+
+    def test_commit_second_os_replace_failure_restores_all(self):
+        """3 目标提交时第 2 次 os.replace 失败——第 1 个新目标（chunks_dir）被回滚，
+        master + meta 未提交，全部旧字节保留。
+
+        atomic_commit 调用序列：3 次 backup + 3 次 commit → 让第 4+2-1=5 次爆掉即 commit#2。"""
+        master, old_master, old_chunks, old_meta = self._seed_multi()
+        chunks_dir = master.parent / f"{master.stem}_chunks"
+        # 3 backup + commit#1(4) + commit#2(5) → boom=5
+        self._run_second_synthesis_with_failing_replace(master, boom_at=5)
+        # 三目标字节恢复
+        self.assertEqual(master.read_bytes(), old_master, "master 未字节恢复")
+        for name, data in old_chunks.items():
+            self.assertEqual((chunks_dir / name).read_bytes(), data,
+                              f"chunks/{name} 未字节恢复")
+        meta = master.with_suffix(".json")
+        if old_meta:
+            self.assertEqual(meta.read_bytes(), old_meta, "master.json 未字节恢复")
+
+    def test_commit_third_os_replace_failure_restores_all(self):
+        """第 3 次 os.replace（commit#3 = meta）失败——前两个新目标（chunks + master）
+        都要被 backup 覆盖回旧字节。boom = 3 backup + 2 commit + 1 = 6。"""
+        master, old_master, old_chunks, old_meta = self._seed_multi()
+        chunks_dir = master.parent / f"{master.stem}_chunks"
+        self._run_second_synthesis_with_failing_replace(master, boom_at=6)
+        self.assertEqual(master.read_bytes(), old_master, "master 未字节恢复")
+        for name, data in old_chunks.items():
+            self.assertEqual((chunks_dir / name).read_bytes(), data,
+                              f"chunks/{name} 未字节恢复")
+        meta = master.with_suffix(".json")
+        if old_meta:
+            self.assertEqual(meta.read_bytes(), old_meta, "master.json 未字节恢复")
+
+
 class TransactionalCommitTests(unittest.TestCase):
     """P0-1 / P0-2 契约：
 
@@ -364,6 +447,98 @@ class TransactionalCommitTests(unittest.TestCase):
         # 无残留 .staging.wav
         residues = list(chunks_dir.glob("*.staging.wav"))
         self.assertEqual(residues, [], residues)
+
+
+class Speed0FullChainTests(unittest.TestCase):
+    """v0.7.71 P0-3：speed=0 / NaN / Inf 必须在**完整调用链**里被拒绝——
+    不能只测 postprocess_wav；必须证明 web_server _run_job、synthesize_long、
+    redub_chunk、voice_try 都不会把 0 悄悄转成 1.0 走通合成。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="s0_chain_"))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_synthesize_long_rejects_speed_zero(self):
+        from dub_align_studio.engines import longform, mock_engine
+        from dub_align_studio.engines.base import SynthesisOptions
+        with self.assertRaises(longform.PostprocessRequired) as ctx:
+            longform.synthesize_long(mock_engine.MockEngine(), "行", None,
+                                      self.tmp / "m.wav",
+                                      SynthesisOptions(speed=0), max_chars=1_000_000)
+        self.assertIn("speed", str(ctx.exception))
+
+    def test_synthesize_long_rejects_speed_negative_nan_inf(self):
+        from dub_align_studio.engines import longform, mock_engine
+        from dub_align_studio.engines.base import SynthesisOptions
+        for bad in (-1.5, float("nan"), float("inf"), float("-inf")):
+            with self.assertRaises(longform.PostprocessRequired, msg=f"未拒绝 speed={bad}"):
+                longform.synthesize_long(mock_engine.MockEngine(), "行", None,
+                                          self.tmp / f"m_{bad!r}.wav",
+                                          SynthesisOptions(speed=bad), max_chars=1_000_000)
+
+    def test_synthesize_long_rejects_negative_max_pause(self):
+        from dub_align_studio.engines import longform, mock_engine
+        from dub_align_studio.engines.base import SynthesisOptions
+        with self.assertRaises(longform.PostprocessRequired):
+            longform.synthesize_long(mock_engine.MockEngine(), "行", None,
+                                      self.tmp / "m.wav",
+                                      SynthesisOptions(max_pause_seconds=-0.5),
+                                      max_chars=1_000_000)
+        with self.assertRaises(longform.PostprocessRequired):
+            longform.synthesize_long(mock_engine.MockEngine(), "行", None,
+                                      self.tmp / "m2.wav",
+                                      SynthesisOptions(max_pause_seconds=float("nan")),
+                                      max_chars=1_000_000)
+
+    def test_redub_chunk_rejects_speed_zero(self):
+        from dub_align_studio.engines import longform, mock_engine
+        from dub_align_studio.engines.base import SynthesisOptions
+        master = self.tmp / "m.wav"
+        longform.synthesize_long(mock_engine.MockEngine(), "\n".join(["甲。", "乙。"]),
+                                  None, master, SynthesisOptions(), max_chars=1_000_000,
+                                  per_line=True)
+        old_master = master.read_bytes()
+        with self.assertRaises(longform.PostprocessRequired):
+            longform.redub_chunk(mock_engine.MockEngine(), master, 1, None,
+                                  SynthesisOptions(speed=0))
+        # 旧字节不动
+        self.assertEqual(master.read_bytes(), old_master)
+
+    def test_run_job_run_all_rejects_speed_zero(self):
+        """_run_job(action=run_all) 收到 payload.speed=0 → 任务失败，master 不生成。"""
+        from dub_align_studio import web_server, studio_pipeline as _pl
+        payload = {"action": "run_all", "engine": "mock",
+                   "text": "只有一行", "output_dir": str(self.tmp),
+                   "shots_dir": str(self.tmp), "material_mode": "flat",
+                   "speed": 0}
+        (self.tmp / "1.mp4").write_bytes(b"MP4")
+        with mock.patch.object(_pl, "select_shot_videos",
+                                 return_value=[self.tmp / "1.mp4"]):
+            job = web_server.JobState(slot="test", action="run_all")
+            web_server._run_job(job, "run_all", payload)
+        self.assertFalse(job.ok, "speed=0 应让 run_all 失败")
+        self.assertFalse((self.tmp / _pl.MASTER_NAME).exists(),
+                          "任务失败但 master.wav 却生成了——旧假成功路径")
+        log_text = "\n".join(job.log)
+        self.assertIn("speed", log_text)
+
+    def test_run_job_voice_try_rejects_speed_zero(self):
+        """voice_try 收到 speed=0 → 失败，不写入任何 cached wav。"""
+        from dub_align_studio import web_server
+        from dub_align_studio import settings as _st
+        payload = {"action": "voice_try", "engine": "mock",
+                   "text": "试听", "speed": 0}
+        with mock.patch.object(_st, "clones_dir", return_value=self.tmp):
+            job = web_server.JobState(slot="test", action="voice_try")
+            web_server._run_job(job, "voice_try", payload)
+        self.assertFalse(job.ok)
+        # 缓存目录里不能有任何 .wav 落地
+        cache_dir = self.tmp / "试听缓存"
+        if cache_dir.is_dir():
+            wavs = list(cache_dir.glob("*.wav"))
+            self.assertEqual(wavs, [], f"speed=0 却写了缓存 wav：{wavs}")
 
 
 if __name__ == "__main__":

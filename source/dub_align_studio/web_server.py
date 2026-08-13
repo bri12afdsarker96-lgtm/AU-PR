@@ -440,15 +440,20 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             entry = voice_library.get_voice(_vroot(), str(payload["voice_id"]))
             voice = entry.to_ref()
             vparams = entry.params or {}
-        # 合成参数：所选音色设计的 num_steps/guidance 生效于成片；速度/种子/停顿以界面为准（界面有滑杆）
+        # 合成参数：所选音色设计的 num_steps/guidance 生效于成片；速度/种子/停顿以界面为准。
+        # P0-3：**严格区分** None/空串（用默认）与数字 0（合法但对 speed 是错误）——
+        # 旧写法 `payload.get("speed") or vparams.get("speed") or 1.0` 会把 0 吞成 1.0。
         options = SynthesisOptions(
-            num_steps=int(payload.get("num_steps") or vparams.get("num_steps") or 10),
-            guidance_scale=float(payload.get("guidance_scale") or vparams.get("guidance_scale") or 1.2),
-            speed=float(payload.get("speed") or vparams.get("speed") or 1.0),
-            max_pause_seconds=float(payload.get("max_pause") or 0.0),
-            seed=int(payload.get("seed") or vparams.get("seed") or 42),
+            num_steps=int(_as_number(payload.get("num_steps"),
+                                     _as_number(vparams.get("num_steps"), 10))),
+            guidance_scale=float(_as_number(payload.get("guidance_scale"),
+                                            _as_number(vparams.get("guidance_scale"), 1.2))),
+            speed=float(_as_number(payload.get("speed"),
+                                    _as_number(vparams.get("speed"), 1.0))),
+            max_pause_seconds=float(_as_number(payload.get("max_pause"), 0.0)),
+            seed=int(_as_number(payload.get("seed"), _as_number(vparams.get("seed"), 42))),
             edge_voice=str(payload.get("edge_voice") or ""),
-            edge_pitch=int(payload.get("edge_pitch") or 0),
+            edge_pitch=int(_as_number(payload.get("edge_pitch"), 0)),
             edge_style=str(payload.get("edge_style") or "general"),
         )
         style = None
@@ -477,9 +482,15 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                                       warnings=mix_warnings)
         for w in mix_warnings:
             log(f"⚠ {w}")
-        # P1-2：额外在成片结束前打一条**总数**汇总——避免用户被最后的"✅ 成片完成"
-        # 掩盖了前面滚过去的逐条 ⚠。汇总在 finally 里最后一句 log。
+        # P1（汇总条位置）：**仅**在真正产生成片且 result.ok=True 时输出汇总。
+        # 由各 render-产出分支自行调用 `_log_mix_summary`；finally 里绝不输出——
+        # 否则会误报：仅配音/试听/探测不产生成片、或成片渲染失败时报"成片中不包含
+        # 这些声音"，但根本没有"成片"。
         _mix_warning_count = len(mix_warnings)
+
+        def _log_mix_summary_if_needed() -> None:
+            if _mix_warning_count > 0:
+                log(f"⚠ 本次共有 {_mix_warning_count} 个音频素材被跳过，成片中不包含这些声音。")
 
         # 友好校验：目录留空时给明确提示，避免 Path(None) 抛 TypeError（用户反馈①）
         if action in ("run_all", "dub", "timing", "render", "capcut", "rechunk", "finalize", "premiere", "cleanup") and output_dir is None:
@@ -514,19 +525,15 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                 else:
                     JOB.set_progress("① 配音 · 逐行克隆", 5)
                     log("① 配音 · 逐行克隆…")
-                    # 云 GPU 只在**真的要走 dots_remote 配音**时才刷活跃计时——
-                    # reuse_dub 路径不刷；其它引擎（edge_tts / mock / 本地）也不刷。
                     _uses_remote_gpu = pipeline.is_cloud_gpu_engine(engine_key)
-                    if _uses_remote_gpu:
-                        mark_cloud_gpu_active_now()
+                    # P0-4：**不在分支入口 mark**——保活钩子由 synthesize_long 在紧邻
+                    # engine.synthesize_full 的位置调用；after 放 finally，成功/失败都刷。
+                    # dub_progress/heartbeat 仍保留（UI 用），但不再刷云 GPU。
 
                     def _dub_progress(done: int, total: int) -> None:
-                        JOB.check_cancel()   # 队列任务被取消 → 逐行处理间隙中止
-                        pct = 5 + int(done / max(1, total) * 73)  # 配音占 5~78%
+                        JOB.check_cancel()
+                        pct = 5 + int(done / max(1, total) * 73)
                         JOB.set_progress(f"① 配音 · 第 {done}/{total} 行", pct)
-                        # 每完成一行都续期一次 —— 长文本配音时避免中途被空闲误关
-                        if _uses_remote_gpu:
-                            mark_cloud_gpu_active_now()
 
                     def _dub_beat(stage: str = "") -> None:
                         JOB.check_cancel()
@@ -534,15 +541,14 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                             if stage:
                                 JOB.stage = stage
                             JOB.last_tick = time.time()
-                        if _uses_remote_gpu:
-                            mark_cloud_gpu_active_now()
 
+                    _before = mark_cloud_gpu_active_now if _uses_remote_gpu else None
+                    _after = mark_cloud_gpu_active_now if _uses_remote_gpu else None
                     master = pipeline.step_dub(text, engine_key, output_dir, voice, options, log=log,
-                                               progress=_dub_progress, heartbeat=_dub_beat)
+                                               progress=_dub_progress, heartbeat=_dub_beat,
+                                               before_engine_call=_before,
+                                               after_engine_call=_after)
                     log(f"  ✅ master {master.seconds:.2f}s（引擎 {master.engine}）")
-                    # 配音阶段结束再打一次，避免刚合成完立即被空闲判定关机
-                    if _uses_remote_gpu:
-                        mark_cloud_gpu_active_now()
 
             JOB.check_cancel()   # 配音后、量时长前的取消检查点
             JOB.set_progress("② 量时长 · 排队中（等待渲染槽）…", 77)
@@ -576,49 +582,47 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                     log(f"  剪映：{capcut.message}")
                 JOB.set_progress("完成", 100)
                 log(("✅ 成片完成：" if result.ok else "❌ 收口断言未通过：") + str(result.output_path))
+                if result.ok:
+                    _log_mix_summary_if_needed()   # 仅成片成功时才输出"共 N 个素材被跳过"
                 with JOB.lock:
                     JOB.timings, JOB.result, JOB.ok = timings, result, result.ok
                 if result.ok:
                     _remember_edit_item(output_dir, canvas, payload)  # ⑧ 进待编辑队列
         elif action == "dub":
             _uses_remote_gpu = pipeline.is_cloud_gpu_engine(engine_key)
-            if _uses_remote_gpu:
-                # 真正开始远程请求前打第一次；随后 heartbeat/progress 里续期
-                mark_cloud_gpu_active_now()
 
             def _dub_progress(done: int, total: int) -> None:
                 JOB.set_progress(f"配音 · 第 {done}/{total} 行", int(done / max(1, total) * 100))
-                if _uses_remote_gpu:
-                    mark_cloud_gpu_active_now()
 
             def _dub_beat(stage: str = "") -> None:
                 with JOB.lock:
                     if stage:
                         JOB.stage = stage
                     JOB.last_tick = time.time()
-                if _uses_remote_gpu:
-                    mark_cloud_gpu_active_now()
 
+            # P0-4：保活钩子紧邻 engine.synthesize_full（after 放 finally）
+            _before = mark_cloud_gpu_active_now if _uses_remote_gpu else None
+            _after = mark_cloud_gpu_active_now if _uses_remote_gpu else None
             master = pipeline.step_dub(text, engine_key, output_dir, voice, options, log=log,
-                                       progress=_dub_progress, heartbeat=_dub_beat)
+                                       progress=_dub_progress, heartbeat=_dub_beat,
+                                       before_engine_call=_before,
+                                       after_engine_call=_after)
             log(f"✅ master：{master.path.name}（{master.seconds:.2f}s，引擎 {master.engine}）")
-            if _uses_remote_gpu:
-                # 收尾再打一次：刚合成完不该被空闲判定立即关机
-                mark_cloud_gpu_active_now()
             with JOB.lock:
                 JOB.ok = True
         elif action == "rechunk":
-            # 只重配某一段（避免整篇重来的死循环）：重合成该段 → 重拼 master
+            # 只重配某一段：重合成该段 → 重拼 master（事务式）
             from .engines.longform import redub_chunk
 
             engine = pipeline.make_engine(engine_key)
-            index = int(payload.get("chunk_index") or 0)
+            index = int(_as_number(payload.get("chunk_index"), 0))
             _uses_remote_gpu = pipeline.is_cloud_gpu_engine(engine_key)
-            if _uses_remote_gpu:
-                mark_cloud_gpu_active_now()
-            redub_chunk(engine, output_dir / pipeline.MASTER_NAME, index, voice, options, log=log)
-            if _uses_remote_gpu:
-                mark_cloud_gpu_active_now()
+            # P0-4：**不在分支入口 mark**——manifest 缺失/段号错误也别刷。
+            # 钩子由 redub_chunk 在验证通过、真正调 synthesize_full 前后触发。
+            _before = mark_cloud_gpu_active_now if _uses_remote_gpu else None
+            _after = mark_cloud_gpu_active_now if _uses_remote_gpu else None
+            redub_chunk(engine, output_dir / pipeline.MASTER_NAME, index, voice, options, log=log,
+                        before_engine_call=_before, after_engine_call=_after)
             with JOB.lock:
                 JOB.ok = True
         elif action == "timing":
@@ -646,6 +650,8 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                                           progress_bar=progress_bar, watermark=watermark)
             log(f"字幕/文本框：{result.subtitle_note or '未启用'}")
             log(("✅ 成片完成：" if result.ok else "❌ 收口断言未通过：") + str(result.output_path))
+            if result.ok:
+                _log_mix_summary_if_needed()
             with JOB.lock:
                 JOB.result, JOB.ok = result, result.ok
         elif action == "finalize":
@@ -668,6 +674,8 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                                           progress=_fin_progress, progress_bar=progress_bar, watermark=watermark)
             log(("✅ 成片：" if result.ok else "❌ 收口未过：") + str(result.output_path))
             JOB.set_progress("完成", 100)
+            if result.ok:
+                _log_mix_summary_if_needed()
             with JOB.lock:
                 JOB.timings, JOB.result, JOB.ok = timings, result, result.ok
             if result.ok:
@@ -764,14 +772,15 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
 
             sample = str(payload.get("text") or "水星配音对齐，整篇克隆，逐行对齐，一句一画面。")
             engine_key = str(payload.get("engine") or "mock")
+            # P0-3：严格保留 0；由 SynthesisOptions/_validate_options 上层拒错
             opts = SynthesisOptions(
-                num_steps=int(float(payload.get("num_steps") or 10)),
-                guidance_scale=float(payload.get("guidance_scale") or 1.2),
-                speed=float(payload.get("speed") or 1.0),
-                max_pause_seconds=float(payload.get("max_pause_seconds") or 0.0),
-                seed=int(float(payload.get("seed") or 42)),
+                num_steps=int(_as_number(payload.get("num_steps"), 10)),
+                guidance_scale=float(_as_number(payload.get("guidance_scale"), 1.2)),
+                speed=float(_as_number(payload.get("speed"), 1.0)),
+                max_pause_seconds=float(_as_number(payload.get("max_pause_seconds"), 0.0)),
+                seed=int(_as_number(payload.get("seed"), 42)),
                 edge_voice=str(payload.get("edge_voice") or ""),
-                edge_pitch=int(payload.get("edge_pitch") or 0),
+                edge_pitch=int(_as_number(payload.get("edge_pitch"), 0)),
                 edge_style=str(payload.get("edge_style") or "general"),
             )
             # Edge 试听按预设声线区分缓存；其他引擎按用户音色 id
@@ -794,31 +803,35 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                     JOB.ok = True
                     JOB.result = {"try_audio": str(cached)}
             else:
-                # 缓存未命中：事务式合成——先写候选 .staging.wav；后处理成功后再 replace
-                # 到正式 cached 路径；失败则清候选、旧缓存（若有半成品）不动。
-                # 只有真到 dots_remote 才 mark 云 GPU（edge/mock/本地全不刷）。
+                # 缓存未命中：候选 .staging.wav → 后处理 → 原子 replace 到 cached
+                # P0-4：保活钩子**紧邻** engine.synthesize_full；after 放 finally；
+                # 参数校验、缓存查找已在前面完成，钩子不会因这些不真发远程的情况误刷。
                 log(f"用引擎 {engine_key} 合成试听句（{len(sample)} 字）…首次合成后会缓存，之后试听秒开。")
                 _engine = pipeline.make_engine(engine_key)
                 _uses_remote_gpu = pipeline.is_cloud_gpu_engine(engine_key)
-                if _uses_remote_gpu:
-                    mark_cloud_gpu_active_now()
+                # P0-3：透过 SynthesisOptions 的合法性校验（sanitize speed/max_pause）
+                from .engines.longform import _apply_postprocess, _validate_options
+                _validate_options(opts)
+
                 cand = cached.with_suffix(cached.suffix + ".staging.wav")
                 cand_meta = cand.with_suffix(".json")
+                for p in (cand, cand_meta):
+                    try:
+                        if p.exists():
+                            p.unlink()
+                    except Exception:  # noqa: BLE001
+                        pass
                 try:
-                    if cand.exists():
-                        cand.unlink()
-                    if cand_meta.exists():
-                        cand_meta.unlink()
-                except Exception:  # noqa: BLE001
-                    pass
-                from .engines.longform import _apply_postprocess
-                try:
-                    master = _engine.synthesize_full(sample, try_voice, cand, opts)
-                    # 后处理失败 = 任务失败（P0-1），不再吞异常伪装成功
+                    if _uses_remote_gpu:
+                        mark_cloud_gpu_active_now()      # before：紧邻真实调用
+                    try:
+                        _engine.synthesize_full(sample, try_voice, cand, opts)
+                    finally:
+                        if _uses_remote_gpu:
+                            mark_cloud_gpu_active_now()  # after：finally，成功/失败都刷
                     actual = _apply_postprocess(cand, opts, _engine, log=log)
                     if not cand.is_file() or cand.stat().st_size < 44:
                         raise RuntimeError(f"试听候选文件缺失或过小：{cand}")
-                    # 原子提交：候选覆盖正式缓存文件
                     import os as _os
                     _os.replace(str(cand), str(cached))
                 finally:
@@ -828,8 +841,6 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                                 p.unlink()
                         except Exception:  # noqa: BLE001
                             pass
-                if _uses_remote_gpu:
-                    mark_cloud_gpu_active_now()
                 with JOB.lock:
                     JOB.ok = True
                     JOB.result = {"try_audio": str(cached)}
@@ -896,16 +907,12 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
     except Exception as exc:
         JOB.append("❌ 失败：" + "".join(traceback.format_exception_only(exc)).strip())
     finally:
-        # P1-2：finally 里把"缺失音频素材"汇总打一条，保证被最后一句"成片完成"看到。
-        # 若前置校验失败 _mix_warning_count 未定义——用 locals().get 兜底。
-        _count = locals().get("_mix_warning_count", 0) or 0
-        if _count > 0:
-            JOB.append(f"⚠ 本次共有 {_count} 个音频素材被跳过，成片中不包含这些声音。")
+        # **finally 里绝不打"成片中不包含"汇总**——render 失败 / voice_try / probe 等
+        # 根本没成片的 action 会误报。汇总由各成片成功分支自行调用 `_log_mix_summary_if_needed`。
         with JOB.lock:
             JOB.running = False
             JOB.done = True
-        # **finally 里绝不无条件刷云 GPU**：那样即使任务在参数校验就失败也会刷，
-        # 造成"没真调远程也算活跃"。真远程动作各自在成功完成后显式 mark。
+        # **finally 里绝不无条件刷云 GPU**：真远程动作各自在成功完成后显式 mark。
 
 
 # ------------------------------------------------------------------ HTTP
@@ -1504,6 +1511,26 @@ def _safe_name(text: str) -> str:
     import re as _re
 
     return _re.sub(r"[^\w一-鿿-]+", "_", str(text)).strip("_") or "voice"
+
+
+def _as_number(raw, default):
+    """P0-3：从 payload 里取数字**并严格保留 0**——None/空串走默认，数字 0/负数
+    /小数原样返回，让 SynthesisOptions 校验去接手明确报错（不再被 `or default` 吞掉）。
+    非数字字符串（例如 "abc"）当作缺省，避免让 float("abc") 直接崩溃 UI。"""
+    if raw is None:
+        return default
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return default
+        try:
+            v = float(s)
+        except ValueError:
+            return default
+        return v
+    if isinstance(raw, (int, float)):
+        return raw
+    return default
 
 
 def _resolve_asset(filename: str) -> Path | None:

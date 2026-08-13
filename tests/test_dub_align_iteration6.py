@@ -507,6 +507,91 @@ class MixWarningSummaryTests(unittest.TestCase):
             log_text = "\n".join(job.log)
             self.assertNotIn("音频素材被跳过", log_text, log_text)
 
+    def test_no_summary_when_render_fails(self):
+        """v0.7.71 P1：成片渲染失败时**绝不**输出'成片中不包含'汇总——
+        因为根本没有成片，那句话是假的。"""
+        from unittest import mock as _m
+        import tempfile as _tf
+        from dub_align_studio import studio_pipeline as _pl
+        with _tf.TemporaryDirectory() as td:
+            (Path(td) / "shot.mp4").write_bytes(b"MP4")
+            payload = {
+                "action": "run_all",
+                "engine": "mock",
+                "text": "行",
+                "output_dir": td,
+                "shots_dir": td,
+                "material_mode": "flat",
+                "reuse_dub": False,
+                "audio": {"sfx": [{"file": "缺失.wav", "at": 0, "volume": 1}]},
+            }
+            fake_master = _m.MagicMock()
+            fake_master.seconds = 1.0; fake_master.engine = "mock"
+            fake_master.path = Path(td) / "master.wav"
+            fake_result = type("R", (), {"ok": False, "subtitle_note": "",
+                                          "output_path": str(Path(td) / "成片.mp4")})()
+            with _m.patch.object(_pl, "step_dub", return_value=fake_master), \
+                 _m.patch.object(_pl, "step_timing", return_value=([], [])), \
+                 _m.patch.object(_pl, "step_render", return_value=fake_result), \
+                 _m.patch.object(_pl, "select_shot_videos", return_value=[Path(td) / "shot.mp4"]):
+                job = web_server.JobState(slot="test", action="run_all")
+                web_server._run_job(job, "run_all", payload)
+            log_text = "\n".join(job.log)
+            # 逐条 ⚠ 依然出现（用户看到有素材缺失）；但汇总"成片中不包含"绝不出现
+            self.assertIn("音效素材找不到：缺失.wav", log_text)
+            self.assertNotIn("成片中不包含", log_text,
+                              "渲染失败却打了'成片中不包含'汇总——用户会以为有成片")
+
+    def test_no_summary_for_voice_try_action(self):
+        """voice_try 根本不产生成片；即便有缺失素材字段也不能打汇总。"""
+        from unittest import mock as _m
+        import tempfile as _tf
+        from dub_align_studio import settings as _st
+        with _tf.TemporaryDirectory() as td:
+            payload = {
+                "action": "voice_try",
+                "engine": "mock",
+                "text": "试听",
+                # 故意塞缺失素材（虽然 voice_try 不用；但_run_job 头部会解析）
+                "audio": {"sfx": [{"file": "no.wav", "at": 0, "volume": 1}]},
+            }
+            with _m.patch.object(_st, "clones_dir", return_value=Path(td)):
+                job = web_server.JobState(slot="test", action="voice_try")
+                web_server._run_job(job, "voice_try", payload)
+            log_text = "\n".join(job.log)
+            self.assertNotIn("成片中不包含", log_text)
+
+    def test_summary_when_run_all_render_succeeds(self):
+        """run_all + result.ok=True 时正常输出汇总条。"""
+        from unittest import mock as _m
+        import tempfile as _tf
+        from dub_align_studio import studio_pipeline as _pl
+        with _tf.TemporaryDirectory() as td:
+            (Path(td) / "shot.mp4").write_bytes(b"MP4")
+            payload = {
+                "action": "run_all",
+                "engine": "mock",
+                "text": "行",
+                "output_dir": td,
+                "shots_dir": td,
+                "material_mode": "flat",
+                "reuse_dub": False,
+                "audio": {"sfx": [{"file": "缺失.wav", "at": 0, "volume": 1}]},
+            }
+            fake_master = _m.MagicMock()
+            fake_master.seconds = 1.0; fake_master.engine = "mock"
+            fake_master.path = Path(td) / "master.wav"
+            fake_result = type("R", (), {"ok": True, "subtitle_note": "",
+                                          "output_path": str(Path(td) / "成片.mp4")})()
+            with _m.patch.object(_pl, "step_dub", return_value=fake_master), \
+                 _m.patch.object(_pl, "step_timing", return_value=([], [])), \
+                 _m.patch.object(_pl, "step_render", return_value=fake_result), \
+                 _m.patch.object(_pl, "select_shot_videos", return_value=[Path(td) / "shot.mp4"]):
+                job = web_server.JobState(slot="test", action="run_all")
+                web_server._run_job(job, "run_all", payload)
+            log_text = "\n".join(job.log)
+            self.assertIn("本次共有 1 个音频素材被跳过", log_text)
+
 
 if __name__ == "__main__":
     unittest.main()

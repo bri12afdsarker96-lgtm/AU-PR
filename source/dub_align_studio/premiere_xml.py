@@ -147,16 +147,17 @@ def export_premiere_project(output_dir: Path, segments: list[Path], master_wav: 
     从成片提取 PCM16/48k/stereo WAV，含配音+BGM+SFX+原视频音效混音。分镜段也复制
     成"去音轨版本"，避免与 A1 混音重复出声。film_mp4=None 抛错，禁止静默回退到裸 master。
 
-    v0.7.71 P1-1 事务化：所有 material 副本 / mixdown / xml / 说明先落入
-    `Premiere工程_素材.staging/` + `Premiere工程.xml.staging` + `Premiere导入说明.txt.staging`；
-    整体成功且自检通过后再原子替换正式路径（旧素材目录先备份 `.old_<pid>`，
-    成功替换后删除；任一步失败清 staging，旧工程一字不动）。"""
-    import os as _os
+    v0.7.71 事务化（AtomicMultiCommit）：所有素材副本 / mixdown / xml / 说明先落入
+    `.staging.<uuid>` 命名的 staging 位置（同盘）；XML 内的 pathurl **写提交后的最终
+    路径**（不能写 staging，否则 rename 后引用失效——P0-1 修复根因）；全部就绪后
+    走原子多目标事务，任一步失败旧素材/旧 xml/旧说明字节级恢复。"""
     import shutil
+    import uuid as _uuid
 
     output_dir = Path(output_dir)
 
     # v0.7.71 契约：成片同款混音单轨必需
+    from .atomic_commit import AtomicMultiCommit
     from .export_mixdown import (
         MIXDOWN_CHANNELS,
         MIXDOWN_NAME,
@@ -175,10 +176,11 @@ def export_premiere_project(output_dir: Path, segments: list[Path], master_wav: 
     xml_path = output_dir / "Premiere工程.xml"
     note_path = output_dir / "Premiere导入说明.txt"
 
-    material_staging = material_dir.with_name(material_dir.name + ".staging")
-    xml_staging = xml_path.with_name(xml_path.name + ".staging")
-    note_staging = note_path.with_name(note_path.name + ".staging")
-    # 清残留
+    # 事务 uuid + staging 位置（同盘）
+    txn_id = _uuid.uuid4().hex[:12]
+    material_staging = material_dir.with_name(material_dir.name + f".staging.{txn_id}")
+    xml_staging = xml_path.with_name(xml_path.name + f".staging.{txn_id}")
+    note_staging = note_path.with_name(note_path.name + f".staging.{txn_id}")
     for p in (material_staging, xml_staging, note_staging):
         if p.is_dir():
             shutil.rmtree(p, ignore_errors=True)
@@ -190,56 +192,46 @@ def export_premiere_project(output_dir: Path, segments: list[Path], master_wav: 
     material_staging.mkdir(parents=True, exist_ok=True)
 
     try:
-        audio_path = material_staging / MIXDOWN_NAME
-        extract_mixdown_wav(film_mp4, audio_path)
-        if not audio_path.is_file() or audio_path.stat().st_size < 44:
+        # 1) 生成候选素材：mixdown + 逐段无音副本，先写到 staging（真实文件）
+        audio_path_staging = material_staging / MIXDOWN_NAME
+        extract_mixdown_wav(film_mp4, audio_path_staging)
+        if not audio_path_staging.is_file() or audio_path_staging.stat().st_size < 44:
             raise MixdownError("混音单轨提取后为空——请检查成片是否有声音。")
         audio_sr = MIXDOWN_SAMPLE_RATE
         audio_ch = MIXDOWN_CHANNELS
 
-        staged_segments: list[Path] = []
+        staged_segments: list[Path] = []       # staging 里的真实副本（供 make_silent_video 校验）
+        final_segments: list[Path] = []        # 提交后的最终路径（XML 里必须写这个）
         for i, seg in enumerate(segments, start=1):
             seg = Path(seg)
             if not seg.exists():
                 raise FileNotFoundError(f"分镜段不存在：{seg}（请先执行「③ 渲染成片 / 生成成片」）")
-            target = material_staging / f"{i:03d}{seg.suffix}"
-            make_silent_video(seg, target)
-            if not target.is_file() or target.stat().st_size == 0:
-                raise MixdownError(f"第 {i} 段无音副本转换失败：{target}")
-            staged_segments.append(target)
+            fname = f"{i:03d}{seg.suffix}"
+            target_staging = material_staging / fname
+            make_silent_video(seg, target_staging)
+            if not target_staging.is_file() or target_staging.stat().st_size == 0:
+                raise MixdownError(f"第 {i} 段无音副本转换失败：{target_staging}")
+            staged_segments.append(target_staging)
+            final_segments.append(material_dir / fname)   # 提交后 XML 引用这条
 
-        # xml 与说明先写 staging；成功后一起原子替换
-        xml = build_fcp7_xml(output_dir.name or "水星成片", staged_segments,
-                             audio_path, frames_per_segment, fps, width, height,
+        # 2) 关键修复（P0-1）：构造 XML 时**必须**用**提交后**的最终路径——
+        #    否则 XML 里写死了 `Premiere工程_素材.staging.<uuid>/001.mp4`，
+        #    staging 目录被 rename 后 pathurl 变成不存在的路径。
+        audio_path_final = material_dir / MIXDOWN_NAME
+        xml = build_fcp7_xml(output_dir.name or "水星成片", final_segments,
+                             audio_path_final, frames_per_segment, fps, width, height,
                              audio_sample_rate=audio_sr, audio_channels=audio_ch)
         xml_staging.write_text(xml, encoding="utf-8")
         note_staging.write_text(_PREMIERE_IMPORT_NOTE, encoding="utf-8")
 
-        # 全部就绪 → 原子提交
-        # 1) 素材目录：旧目录先重命名成 `.old_<pid>` 备份，staging → 正式；成功删备份，失败回滚
-        backup = material_dir.with_name(material_dir.name + f".old_{_os.getpid()}")
-        if backup.exists():
-            shutil.rmtree(backup, ignore_errors=True)
-        had_old_material = material_dir.exists()
-        try:
-            if had_old_material:
-                _os.replace(str(material_dir), str(backup))
-            _os.replace(str(material_staging), str(material_dir))
-        except Exception:
-            # 回滚素材目录
-            if had_old_material and backup.exists() and not material_dir.exists():
-                try:
-                    _os.replace(str(backup), str(material_dir))
-                except Exception:  # noqa: BLE001
-                    pass
-            raise
-        if backup.exists():
-            shutil.rmtree(backup, ignore_errors=True)
-        # 2) XML 与说明：文件替换（os.replace 原生原子）
-        _os.replace(str(xml_staging), str(xml_path))
-        _os.replace(str(note_staging), str(note_path))
+        # 3) AtomicMultiCommit：素材目录 + XML + 说明 一起原子提交
+        txn = AtomicMultiCommit(txn_id=txn_id)
+        txn.add(material_staging, material_dir)
+        txn.add(xml_staging, xml_path)
+        txn.add(note_staging, note_path)
+        txn.commit()
     except Exception:
-        # 失败清 staging；正式 material_dir/xml 由回滚保留旧字节
+        # 失败：清 staging 半成品；正式旧字节由 AtomicMultiCommit 保留（若已进 commit 阶段）
         if material_staging.exists():
             shutil.rmtree(material_staging, ignore_errors=True)
         for p in (xml_staging, note_staging):

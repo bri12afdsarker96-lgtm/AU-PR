@@ -191,6 +191,33 @@ class PremiereXmlTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_fcp7_xml("x", self.segs, self.master, [100, 100], 30, 1080, 1920)
 
+    def test_xml_pathurls_reference_final_material_not_staging(self):
+        """v0.7.71 P0-1：导出后 Premiere工程.xml 里的 pathurl 必须**只**指向
+        提交后的最终路径 `Premiere工程_素材/...`——严禁出现 `.staging` 或 `.old_` 后缀。
+        解析所有 pathurl，逐条断言：
+          1) 不含 `.staging` / `.old_`；
+          2) 目录名恰是 `Premiere工程_素材`（非 `Premiere工程_素材.staging.<uuid>`）；
+          3) 实际文件都存在（导入 Premiere 时不能是死链）。"""
+        from urllib.parse import unquote
+        path = export_premiere_project(self.work, self.segs, self.master,
+                                        [150, 210, 180], 30, 1080, 1920,
+                                        film_mp4=self.film)
+        root = ET.parse(path).getroot()
+        urls = [unquote(u.text) for u in root.iter("pathurl")]
+        self.assertTrue(urls, "XML 里应至少有一条 pathurl")
+        for url in urls:
+            # (1) 严禁 staging / backup 后缀
+            self.assertNotIn(".staging", url, f"pathurl 泄漏了 staging 路径：{url}")
+            self.assertNotIn(".old_", url, f"pathurl 泄漏了 backup 路径：{url}")
+            # (2) 目录名严格是最终提交后的
+            self.assertIn("/Premiere工程_素材/", url,
+                           f"pathurl 未指向最终素材目录：{url}")
+            # (3) 引用的文件必须真实存在
+            # 去掉 file://localhost 前缀，得到本地绝对路径
+            assert url.startswith("file://localhost"), url
+            local = url[len("file://localhost"):]
+            self.assertTrue(Path(local).exists(), f"pathurl 死链：{local}")
+
     def test_transactional_preserves_old_project_on_segment_failure(self):
         """v0.7.71 P1-1 事务化：先跑一次成功导出，再故意让第 2 段无音副本失败——
         旧的 Premiere工程.xml + Premiere工程_素材/ 必须**字节级**完整保留，
