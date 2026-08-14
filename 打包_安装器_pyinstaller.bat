@@ -50,6 +50,15 @@ exit /b 1
 
 :have_spec
 
+REM ---------- 老 spec 的 marker/数据文件预检 ----------
+REM 老 spec 里可能引用 installer\cloud_edition.flag 等 marker 文件。
+REM 当前代码不再用它，但 spec 找不到会 fatal，所以按需自动补一份空的。
+if not exist "installer\cloud_edition.flag" (
+    echo   [补] 缺失 installer\cloud_edition.flag ^(老 spec marker^)
+    echo   -^> 创建空文件 满足 spec
+    echo. > "installer\cloud_edition.flag"
+)
+
 REM ---------- Step 2  pyinstaller ----------
 echo.
 echo ============================================================
