@@ -265,8 +265,17 @@ def _read_baseline_hash() -> str:
       2) 把 hash 写入 `<dist>/integrity.hash`（或环境变量 DUB_ALIGN_INTEGRITY_HASH）
       3) 运行时 rasp.integrity_check() 拉出对比
     """
-    # 优先级 1：打包时 _build_info.EXE_HMAC_HEX（HMAC-SHA256(exe, key)
-    # 存到编译后的 .pyd，攻击者不知道 key 就伪造不了 —— 比 side-file 强很多）
+    # 优先级 1：exe 同目录的 _build_hmac.dat（打包时 finalize_build_info_hmac
+    # 生成；里面就是 "hmac:<hex>" 一行；key 藏在 PYZ 的 _build_info.INTEGRITY_HMAC_KEY）
+    try:
+        exe = sys.executable
+        if exe:
+            side = os.path.join(os.path.dirname(exe), "_build_hmac.dat")
+            if os.path.exists(side):
+                return open(side).read().strip().lower()
+    except Exception:  # noqa: BLE001
+        pass
+    # 优先级 2：_build_info.EXE_HMAC_HEX（预留，如果将来做 sidecar-less）
     try:
         from .. import _build_info as _bi  # type: ignore[import-not-found]
         embedded = str(getattr(_bi, "EXE_HMAC_HEX", "")).strip().lower()
@@ -274,11 +283,11 @@ def _read_baseline_hash() -> str:
             return "hmac:" + embedded
     except ImportError:
         pass
-    # 优先级 2：env（CI 里用）
+    # 优先级 3：env（CI 里用）
     env = os.environ.get("DUB_ALIGN_INTEGRITY_HASH", "").strip().lower()
     if env:
         return env
-    # 优先级 3：老 side-file（本地开发向后兼容；生产走优先级 1）
+    # 优先级 4：老 integrity.hash side-file（本地开发向后兼容）
     try:
         exe = sys.executable
         if exe:

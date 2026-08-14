@@ -2192,10 +2192,25 @@ def serve(port: int = DEFAULT_PORT, open_browser: bool = True) -> ThreadingHTTPS
     # 不再用 try/except Exception 包住整个 RASP 分支（那样任何异常都会被吞掉，
     # 攻击者只需触发一个 rasp.py 里的 import 错误就能绕过）。
     # 单独 try 保 mgr.rasp_scan()（怕外部工具异常），但 exit 语句本身不被吞。
+    # 【关键顺序调整】socket bind 必须先于 licensing 网络 IO，
+    # 否则 licensing 服务器慢/不通 → start_from_saved 挂 30 秒 → socket 从没 bind
+    # → pywebview 抢先请求 URL 拿到 ERR_EMPTY_RESPONSE（用户看到的白屏×）
+    server = None
+    last_error: OSError | None = None
+    for candidate in range(port, port + 20):  # 端口被占自动顺延，避免双击闪退
+        try:
+            server = ThreadingHTTPServer(("127.0.0.1", candidate), _Handler)
+            port = candidate
+            break
+        except OSError as exc:
+            last_error = exc
+    if server is None:
+        raise OSError(f"端口 {port}~{port + 19} 均被占用：{last_error}")
+
+    # ---------- 先立即 RASP 硬检查（打包版 strict 命中就退，不给启动机会） ----------
     try:
         mgr = _licensing_pkg.get_manager()
     except Exception as _exc:  # noqa: BLE001
-        # licensing 系统本身崩了 —— 若打包版就直接退出（fail closed）
         print(f"[FATAL] licensing 子系统初始化失败：{_exc}")
         try:
             from . import _build_info as _bi
@@ -2212,31 +2227,24 @@ def serve(port: int = DEFAULT_PORT, open_browser: bool = True) -> ThreadingHTTPS
             report = mgr.rasp_scan()
         except Exception as _exc:  # noqa: BLE001
             print(f"[RASP] scan raised: {_exc}")
-        # strict 模式判定：打包版永远 strict；开发靠 env 显式开
         strict = _licensing_pkg.rasp.strict_mode_enabled()
         if report is not None and report.suspicious and strict:
             print(
-                f"[FATAL] RASP 检测到高风险环境：{report.summary()}，"
-                f"软件退出。若为误报请联系管理员。"
+                f"[FATAL] RASP 检测到高风险环境：{report.summary()}，软件退出。"
             )
             import sys as _sys
             _sys.exit(3)
-        try:
-            mgr.start_from_saved()
-        except Exception as _exc:  # noqa: BLE001
-            print(f"[license] start_from_saved: {_exc}")
 
-    server = None
-    last_error: OSError | None = None
-    for candidate in range(port, port + 20):  # 端口被占自动顺延，避免双击闪退
-        try:
-            server = ThreadingHTTPServer(("127.0.0.1", candidate), _Handler)
-            port = candidate
-            break
-        except OSError as exc:
-            last_error = exc
-    if server is None:
-        raise OSError(f"端口 {port}~{port + 19} 均被占用：{last_error}")
+        # ---------- start_from_saved 放**后台线程** ----------
+        # 网络失败不再挂住主启动（现在 is_active 也是激活过就放行，
+        # 不再要 session_token 一定拿到手）
+        def _lic_boot():
+            try:
+                mgr.start_from_saved()
+            except Exception as _exc:  # noqa: BLE001
+                print(f"[license] start_from_saved (bg): {_exc}")
+        threading.Thread(target=_lic_boot, daemon=True,
+                         name="license-boot").start()
     from .version import full_version
 
     url = f"http://127.0.0.1:{port}/"

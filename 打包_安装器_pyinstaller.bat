@@ -56,6 +56,19 @@ if not exist "installer\cloud_edition.flag" (
     echo. > "installer\cloud_edition.flag"
 )
 
+REM ---------- Step 1.5  写 _build_info.py（PACKAGED + 随机密钥；PYZ 会打进去） ----------
+echo.
+echo ============================================================
+echo   Step 1.5  写 source/dub_align_studio/_build_info.py
+echo   （必须在 pyinstaller 之前，才能被 PYZ 归档 -^> 运行时 import 得到）
+echo ============================================================
+python -c "import sys; sys.path.insert(0, '.'); from build_dist import prepare_build_info; prepare_build_info()"
+if errorlevel 1 (
+    echo   [X] prepare_build_info 失败 -^> 防护会被绕过，中止打包
+    pause
+    exit /b 7
+)
+
 REM ---------- Step 1.9  Cython 编译 licensing（强化反破译） ----------
 echo.
 echo ============================================================
@@ -168,14 +181,13 @@ if exist "%PYI_DIST%\_internal\dub_align_studio\licensing\" (
 REM 3.4  生成 启动软件.bat（含发行必需的 env）
 python -c "import sys; sys.path.insert(0, '.'); from build_dist import write_launcher_bat; from pathlib import Path; write_launcher_bat(Path(r'%PYI_DIST%'), r'%PYI_EXE%'); print('  [OK] 启动软件.bat')"
 
-REM 3.5  生成 _build_info.py（PACKAGED + 随机密钥 + exe HMAC baseline）
-REM      比老 integrity.hash side-file 强：baseline 藏在 .pyc 里，攻击者不知道 key 就伪造不了
-python -c "import sys; sys.path.insert(0, '.'); from build_dist import write_build_info; from pathlib import Path; write_build_info(Path(r'%PYI_DIST%'), r'%PYI_EXE%')"
+REM 3.5  算 exe HMAC baseline 写到 sidecar dist/_build_hmac.dat
+REM      key 藏在 Step 1.5 生成的 _build_info.py（打进 PYZ），
+REM      sidecar 只放 HMAC 值本身，攻击者伪造需先解 PYZ 拿 key
+python -c "import sys; sys.path.insert(0, '.'); from build_dist import finalize_build_info_hmac; from pathlib import Path; finalize_build_info_hmac(Path(r'%PYI_DIST%'), r'%PYI_EXE%')"
 if errorlevel 1 (
-    echo   [X] write_build_info 失败 —— 打包版会走 fallback 到 env / side-file
-    echo       攻击者可用老手段绕过。强烈建议查错重来。
-    pause
-    exit /b 6
+    echo   [!] finalize_build_info_hmac 失败 —— integrity_check 会跳过
+    echo       其他防护层（gate/RASP/Cython）仍生效，可继续
 )
 
 REM ---------- Step 4  ISCC ----------
@@ -206,6 +218,9 @@ echo.
 echo ============================================================
 echo   [OK] 打包完成
 echo ============================================================
+REM 清理 source/_build_info.py（保持仓库干净，密钥不入库）
+python -c "import sys; sys.path.insert(0, '.'); from build_dist import cleanup_build_info; cleanup_build_info()"
+
 echo   产物：dist\安装器\setup_水星配音对齐工作室_v0.7.71_lite.exe
 echo.
 echo   已启用的防护：

@@ -64,9 +64,15 @@ def _detect_hardware_cap() -> tuple[int, int]:
     smi = _sh.which("nvidia-smi")
     if smi:
         try:
+            # Windows pyinstaller windowed exe：必须传 CREATE_NO_WINDOW，
+            # 否则每个 subprocess 都会闪一个黑色 cmd 窗（用户抱怨的「两个黑色闪屏」）
+            _flags = 0
+            if hasattr(subprocess, "CREATE_NO_WINDOW"):
+                _flags = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
             r = subprocess.run(
                 [smi, "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
                 capture_output=True, text=True, timeout=3,
+                creationflags=_flags,
             )
             if r.returncode == 0:
                 for line in r.stdout.splitlines():
