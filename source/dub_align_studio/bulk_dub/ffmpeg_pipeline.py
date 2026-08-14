@@ -279,6 +279,7 @@ def render_single(*, input_video: str | Path, tts_audio: str | Path,
                    fallback_gate=None,
                    hw_failure_cb=None,
                    hw_success_cb=None,
+                   cpu_fallback_failure_cb=None,
                    breaker=None) -> RenderResult:
     """一次 ffmpeg 完成整个滤镜链，写到 staging，再原子搬到 reserved_output。
 
@@ -344,17 +345,34 @@ def render_single(*, input_video: str | Path, tts_audio: str | Path,
 
     _fallback_gate_held = False
     tmp_out: Path | None = None
+    # R14-FIX P0-3：等 gate 时也要能被 cancel_flag / scheduler stop 打断，
+    # 不能无限阻塞。取消 → 抛 VideoCancelled，上层已负责收敛。
+    def _gate_is_cancelled() -> bool:
+        try:
+            return cancel_flag is not None and cancel_flag.is_set()
+        except Exception:  # noqa: BLE001
+            return False
     try:
         for attempt_pass in ("primary", "fallback"):
             # R14-4：若当前 encoder 已经是 libx264（一开始就是 CPU 或已经因 breaker/回退切了 CPU）
             # → 必须先在 CpuFallbackGate 上获得名额，防止 CPU fallback 风暴
             if fallback_gate is not None and used_encoder.encoder == "libx264" \
                     and not _fallback_gate_held:
+                # R14-FIX P0-3：短 timeout 轮询；取消 → GateCancelled → VideoCancelled
                 try:
-                    fallback_gate.acquire()
-                    _fallback_gate_held = True
-                except Exception:  # noqa: BLE001
-                    pass
+                    got = fallback_gate.acquire(
+                        timeout=None, is_cancelled=_gate_is_cancelled,
+                    )
+                    if got:
+                        _fallback_gate_held = True
+                    else:
+                        # timeout=None + 未 cancel 不会走到；防御
+                        raise VideoError("CPU fallback gate 未获得")
+                except Exception as exc:  # noqa: BLE001
+                    # GateCancelled → VideoCancelled；其他 → VideoError
+                    if type(exc).__name__ == "GateCancelled":
+                        raise VideoCancelled("等 CPU fallback gate 时被取消") from exc
+                    raise
             tmp_out = staging_dir / f"{uuid.uuid4().hex[:8]}.mp4"
             encoder_args = list(used_encoder.args)
             cmd = [
@@ -380,10 +398,16 @@ def render_single(*, input_video: str | Path, tts_audio: str | Path,
                 )
             except (VideoCancelled, VideoError):
                 _safe_unlink(tmp_out)
+                # R14-FIX P0-3：half-open 探测被取消时归还 probe 名额，
+                # 避免 breaker 永久卡在 half-open 拒绝其他任务
+                if breaker is not None and used_encoder.encoder != "libx264":
+                    try: breaker.record_cancel()
+                    except Exception:  # noqa: BLE001
+                        pass
                 raise
 
             if code == 0 and tmp_out.is_file() and tmp_out.stat().st_size >= 1024:
-                # R14-4：硬件路径成功 → 通知 breaker/success 计数
+                # R14-4：硬件路径成功 → 通知 breaker/success 计数（不影响 CPU fallback 失败计数）
                 if used_encoder.encoder != "libx264" and hw_success_cb is not None:
                     try: hw_success_cb(used_encoder.encoder)
                     except Exception:  # noqa: BLE001
@@ -398,6 +422,11 @@ def render_single(*, input_video: str | Path, tts_audio: str | Path,
                 and used_encoder.encoder != "libx264"
             )
             if not can_fallback:
+                # R14-FIX P0-3：CPU fallback 失败也必须单独记录，不能被硬件 success 清零
+                if used_encoder.encoder == "libx264" and cpu_fallback_failure_cb is not None:
+                    try: cpu_fallback_failure_cb()
+                    except Exception:  # noqa: BLE001
+                        pass
                 raise VideoError(
                     f"ffmpeg 失败 (code={code}, encoder={used_encoder.encoder}): "
                     f"{err_tail or '无 stderr'}"

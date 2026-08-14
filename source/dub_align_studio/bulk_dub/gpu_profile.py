@@ -48,6 +48,9 @@ from .hw_encoder import (
 
 PROFILE_SCHEMA = "bulk_dub_gpu_profile@v1"
 PROFILE_FILENAME = "gpu_profiles.json"
+# R14-FIX P0-5：控制器持久化状态（mode/user_max/manual_video/profile_fingerprint）
+STATE_SCHEMA = "bulk_dub_gpu_state@v1"
+STATE_FILENAME = "gpu_state.json"
 
 # 基准阶梯——不允许直接跳到 16
 DEFAULT_LADDER: tuple[int, ...] = (1, 2, 3, 4, 6, 8, 12, 16)
@@ -267,6 +270,42 @@ def profile_path() -> Path:
     return _profile_dir() / PROFILE_FILENAME
 
 
+def state_path() -> Path:
+    return _profile_dir() / STATE_FILENAME
+
+
+def save_state(state: dict) -> Path:
+    """R14-FIX P0-5：原子写入 gpu_state.json；损坏/不匹配 schema 时静默忽略。"""
+    p = state_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.parent / f"{p.name}.tmp.{uuid.uuid4().hex[:8]}"
+    payload = dict(state)
+    payload["schema"] = STATE_SCHEMA
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
+                    encoding="utf-8")
+    try:
+        fd = os.open(str(tmp), os.O_RDONLY)
+        try: os.fsync(fd)
+        finally: os.close(fd)
+    except OSError:
+        pass
+    os.replace(str(tmp), str(p))
+    return p
+
+
+def load_state() -> dict | None:
+    p = state_path()
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(data, dict) or data.get("schema") != STATE_SCHEMA:
+        return None
+    return {k: v for k, v in data.items() if k != "schema"}
+
+
 def load_profile(path: Path | None = None) -> DeviceCapability | None:
     """R14 读取 profile；文件不存在 / 损坏 / schema 不认得 → None（安全忽略）。"""
     p = path or profile_path()
@@ -412,8 +451,15 @@ def _build_render_cmd(ctx: _BenchmarkContext, out_path: Path) -> list[str]:
 
 def _run_one(ctx: _BenchmarkContext, idx: int, cancel_event: threading.Event,
               slot_dir: Path, results: list[dict], results_lock: threading.Lock,
-              per_job_timeout: float) -> None:
-    """单次编码 job。写受控 staging；结束后清 mp4。"""
+              per_job_timeout: float,
+              expected_seconds: float | None = None,
+              duration_tolerance: float = 0.4) -> None:
+    """单次编码 job。写受控 staging；结束后清 mp4。
+
+    R14-FIX P1-1：**并发排空 stderr**——用后台线程 drain pipe，避免 ffmpeg
+    因 stderr 写满 pipe buffer 阻塞导致假 hang；校验产物 returncode + size +
+    视频流 + 音频流 + 时长容差，全部通过才算 ok。
+    """
     slot_dir.mkdir(parents=True, exist_ok=True)
     out_path = slot_dir / f"bench_{idx}.mp4"
     cmd = _build_render_cmd(ctx, out_path)
@@ -422,6 +468,21 @@ def _run_one(ctx: _BenchmarkContext, idx: int, cancel_event: threading.Event,
                         stderr=subprocess.PIPE, text=True,
                         encoding="utf-8", errors="replace")
     stderr_buf: list[str] = []
+    stderr_lock = threading.Lock()
+
+    def _drain() -> None:
+        try:
+            for line in (proc.stderr or []):
+                with stderr_lock:
+                    stderr_buf.append(line)
+                    if len(stderr_buf) > 120:
+                        del stderr_buf[:-120]
+        except Exception:  # noqa: BLE001
+            pass
+
+    drain_t = threading.Thread(target=_drain, name=f"bench-drain-{idx}",
+                                 daemon=True)
+    drain_t.start()
     try:
         while True:
             if cancel_event.is_set():
@@ -437,7 +498,7 @@ def _run_one(ctx: _BenchmarkContext, idx: int, cancel_event: threading.Event,
                         "ok": False, "returncode": -1,
                         "seconds": time.time() - started,
                         "stderr": "cancelled",
-                        "size": 0,
+                        "size": 0, "duration_ok": False, "streams_ok": False,
                     })
                 return
             if (time.time() - started) > per_job_timeout:
@@ -452,30 +513,43 @@ def _run_one(ctx: _BenchmarkContext, idx: int, cancel_event: threading.Event,
                         "ok": False, "returncode": -2,
                         "seconds": time.time() - started,
                         "stderr": f"timeout>{per_job_timeout:.0f}s",
-                        "size": 0,
+                        "size": 0, "duration_ok": False, "streams_ok": False,
                     })
                 return
             code = proc.poll()
             if code is not None:
                 break
             time.sleep(0.1)
-        try:
-            for line in (proc.stderr or []):
-                stderr_buf.append(line)
-                if len(stderr_buf) > 60:
-                    stderr_buf.pop(0)
-        except Exception:  # noqa: BLE001
-            pass
     finally:
+        drain_t.join(timeout=2)
         if proc.stderr:
             try: proc.stderr.close()
             except Exception:  # noqa: BLE001
                 pass
     seconds = time.time() - started
-    ok = (proc.returncode == 0 and out_path.is_file()
-           and out_path.stat().st_size >= 1024)
+    # R14-FIX P1-1 校验产物：returncode + size + 流 + 时长容差
+    rc_ok = (proc.returncode == 0)
     size = out_path.stat().st_size if out_path.is_file() else 0
-    stderr_tail = "".join(stderr_buf).strip()[-500:]
+    size_ok = size >= 1024
+    streams_ok = False
+    duration_ok = False
+    actual_seconds = 0.0
+    if rc_ok and size_ok and out_path.is_file():
+        try:
+            from .ffmpeg_pipeline import has_video_and_audio_streams, ffprobe_seconds
+            has_v, has_a = has_video_and_audio_streams(out_path)
+            streams_ok = has_v and has_a
+            actual_seconds = ffprobe_seconds(out_path)
+            if expected_seconds is not None:
+                duration_ok = abs(actual_seconds - expected_seconds) <= duration_tolerance
+            else:
+                duration_ok = actual_seconds > 0
+        except Exception:  # noqa: BLE001
+            streams_ok = False
+            duration_ok = False
+    ok = rc_ok and size_ok and streams_ok and duration_ok
+    with stderr_lock:
+        stderr_tail = "".join(stderr_buf).strip()[-500:]
     # 尽力清理 mp4；忽略失败
     try:
         if out_path.exists():
@@ -486,14 +560,20 @@ def _run_one(ctx: _BenchmarkContext, idx: int, cancel_event: threading.Event,
         results.append({
             "ok": ok, "returncode": int(proc.returncode or 0),
             "seconds": seconds, "stderr": stderr_tail, "size": size,
+            "duration_ok": duration_ok, "streams_ok": streams_ok,
+            "actual_seconds": actual_seconds,
         })
 
 
 def run_one_ladder_step(ctx: _BenchmarkContext, concurrency: int,
                           *, cancel_event: threading.Event,
                           per_job_timeout: float,
-                          warmup: bool = False) -> LadderRunResult:
-    """跑一档：同时启动 N 个 FFmpeg，等全部结束，聚合统计。"""
+                          warmup: bool = False,
+                          expected_seconds: float | None = None,
+                          duration_tolerance: float = 0.4) -> LadderRunResult:
+    """跑一档：同时启动 N 个 FFmpeg，等全部结束，聚合统计。
+    R14-FIX P1-1：每个 job 都校验 returncode/size/流/时长；stderr 并发排空。
+    """
     if cancel_event.is_set():
         raise BenchmarkCancelled("benchmark cancelled before ladder step")
     step_root = ctx.staging_root / f"step_c{concurrency}_{uuid.uuid4().hex[:6]}"
@@ -507,7 +587,8 @@ def run_one_ladder_step(ctx: _BenchmarkContext, concurrency: int,
             t = threading.Thread(
                 target=_run_one,
                 args=(ctx, i, cancel_event, step_root / f"slot{i}",
-                       results, results_lock, per_job_timeout),
+                       results, results_lock, per_job_timeout,
+                       expected_seconds, duration_tolerance),
                 name=f"bench-{concurrency}-{i}", daemon=True,
             )
             threads.append(t)
@@ -618,6 +699,7 @@ def run_benchmark(*, ffmpeg: str, sample_video: str | Path,
                     preset: str = "medium", crf: int = 20,
                     ladder: Iterable[int] = DEFAULT_LADDER,
                     warmup_rounds: int = 1,
+                    measured_rounds: int = 2,
                     per_job_timeout: float = 300.0,
                     progress_cb: Callable[[dict], None] | None = None,
                     cancel_event: threading.Event | None = None,
@@ -659,39 +741,72 @@ def run_benchmark(*, ffmpeg: str, sample_video: str | Path,
             preset=preset, crf=crf,
         )
 
+        # R14-FIX P1-1：expected_seconds = min(video*2, tts) → 生产同款计算
+        try:
+            from .ffmpeg_pipeline import ffprobe_seconds
+            tts_seconds = ffprobe_seconds(sample_tts_audio)
+        except Exception:  # noqa: BLE001
+            tts_seconds = 0.0
+        expected_out_seconds = min(probe.duration * 2, tts_seconds) if tts_seconds > 0 else (probe.duration * 2)
+        cap.sample_seconds = probe.duration
+        cap.filter_chain_kind = "mirror_concat_130_v1"
+
         results: list[LadderRunResult] = []
         stopped_early = False
+        m_rounds = max(1, int(measured_rounds))
         for c in ladder:
             if cancel_event.is_set():
                 raise BenchmarkCancelled("benchmark cancelled")
-            # warmup 一轮（不计入 recommendation），再跑一轮计入
-            best: LadderRunResult | None = None
-            for round_i in range(max(1, 1 + warmup_rounds)):
+            # R14-FIX P1-1 warmup + N 轮正式测量，取中位数
+            measured: list[LadderRunResult] = []
+            for round_i in range(max(1, warmup_rounds) + m_rounds):
                 if cancel_event.is_set():
                     raise BenchmarkCancelled("benchmark cancelled mid-round")
+                is_warmup = round_i < warmup_rounds
                 r = run_one_ladder_step(
                     ctx, c, cancel_event=cancel_event,
                     per_job_timeout=per_job_timeout,
-                    warmup=(round_i < warmup_rounds),
+                    warmup=is_warmup,
+                    expected_seconds=expected_out_seconds,
                 )
-                if round_i < warmup_rounds:
+                if is_warmup:
                     if progress_cb:
                         progress_cb({"phase": "warmup", "concurrency": c,
                                        "result": asdict(r)})
                     continue
-                if best is None or r.projected_renders_per_hour > best.projected_renders_per_hour:
-                    best = r
+                measured.append(r)
                 if progress_cb:
                     progress_cb({"phase": "measure", "concurrency": c,
                                    "result": asdict(r)})
-            assert best is not None
-            results.append(best)
-            # 累计错误计数
-            cap.hw_failures_total += best.hw_fallbacks
-            cap.session_limit_errors_total += best.session_limit_errors
-            cap.oom_errors_total += best.oom_errors
-            # 提前停止判断
-            if not best.is_recommendable:
+            # 取中位数（按 projected_renders_per_hour 排序）
+            assert measured, "at least one measured round"
+            ordered = sorted(measured, key=lambda x: x.projected_renders_per_hour)
+            median = ordered[len(ordered) // 2]
+            # is_recommendable = 所有测量轮都通过 才算稳定档
+            all_stable = all(x.is_recommendable for x in measured)
+            median = LadderRunResult(
+                concurrency=median.concurrency,
+                successes=median.successes,
+                failures=median.failures,
+                hw_fallbacks=median.hw_fallbacks,
+                session_limit_errors=median.session_limit_errors,
+                oom_errors=median.oom_errors,
+                device_errors=median.device_errors,
+                wall_clock_seconds=median.wall_clock_seconds,
+                aggregate_fps=median.aggregate_fps,
+                realtime_multiple=median.realtime_multiple,
+                projected_renders_per_hour=median.projected_renders_per_hour,
+                projected_renders_per_day=median.projected_renders_per_day,
+                is_recommendable=all_stable,
+                notes=median.notes + (" | median" if len(measured) > 1 else ""),
+            )
+            results.append(median)
+            # 累计错误计数（对所有测量轮求和）
+            for r in measured:
+                cap.hw_failures_total += r.hw_fallbacks
+                cap.session_limit_errors_total += r.session_limit_errors
+                cap.oom_errors_total += r.oom_errors
+            if not all_stable:
                 stopped_early = True
                 break
 

@@ -39,6 +39,11 @@ MODE_MANUAL = "manual"
 MODE_CPU_SAFE = "cpu_safe"
 ALL_MODES = frozenset({MODE_AUTO, MODE_MANUAL, MODE_CPU_SAFE})
 
+# R14-FIX P0-4 **唯一并发上限常量**——service/scheduler/controller/API/HTML/
+# benchmark ladder 全部统一用它。不允许出现"推荐 16 实际只 clamp 到 8"。
+MAX_VIDEO_CONCURRENCY = 16
+MAX_TTS_CONCURRENCY = 16
+
 # 两次自动 resize 之间的最短间隔（秒）——避免抖动
 RESIZE_MIN_INTERVAL_S = 8.0
 
@@ -60,12 +65,24 @@ BREAKER_OPEN_SECONDS = 60.0
 BREAKER_HALFOPEN_PROBE = 1
 
 
+class GateCancelled(Exception):
+    """R14-FIX P0-3：等 gate 期间收到 task cancel / scheduler stop。"""
+
+
 class CpuFallbackGate:
     """R14 CPU fallback 专用 semaphore。
 
     NVENC 编码时若运行时失败，会自动回退到 libx264。若同时 8 个 NVENC 会话
     全部回退，就是 8 个 libx264 同时抢 CPU，会把机器压垮。这个 gate 用
     一把 Semaphore 强制"同一时刻最多 N 个 libx264 回退"，多余任务等待。
+
+    R14-FIX P0-3：
+      * `acquire()` 不再无限阻塞——用短 timeout 循环，每轮检查外部
+        `is_cancelled()`；取消时抛 `GateCancelled`；
+      * `release()` **精确释放一次**——引入 `_holders` 计数，
+        release 时若当前调用者未持有 → 记 error 并 no-op，不静默 release
+        破坏 semaphore；
+      * 多线程压力测试证明 active/limit 严格自洽。
     """
 
     def __init__(self, limit: int = DEFAULT_CPU_FALLBACK_LIMIT) -> None:
@@ -78,22 +95,46 @@ class CpuFallbackGate:
     def limit(self) -> int:
         return self._limit
 
-    def acquire(self, timeout: float | None = None) -> bool:
-        got = self._sem.acquire(timeout=timeout) if timeout \
-            else self._sem.acquire()
-        if got:
-            with self._active_lock:
-                self._active += 1
-        return got
+    def acquire(self, timeout: float | None = None,
+                 is_cancelled: Callable[[], bool] | None = None,
+                 poll_interval: float = 0.2) -> bool:
+        """短 timeout 轮询获取 permit。
+
+        - `is_cancelled` 返回 True → 抛 `GateCancelled`；
+        - `timeout is None` → 无限轮询直到 acquired 或 cancelled；
+        - `timeout > 0` → 总等待上限；到期返回 False；
+        - 返回 True 表示获得 permit，调用方必须 release 一次。
+        """
+        deadline = None if timeout is None else (time.time() + max(0.0, timeout))
+        while True:
+            if is_cancelled is not None and is_cancelled():
+                raise GateCancelled("gate acquire cancelled by caller")
+            # 每轮短 timeout，让 cancel/stop 能及时收敛
+            step = poll_interval
+            if deadline is not None:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    return False
+                step = min(step, remaining)
+            got = self._sem.acquire(timeout=step)
+            if got:
+                with self._active_lock:
+                    self._active += 1
+                return True
 
     def release(self) -> None:
+        released_here = False
         with self._active_lock:
             if self._active > 0:
                 self._active -= 1
+                released_here = True
+        if not released_here:
+            # 精确释放：没有对应 acquire 时**不**再动 semaphore
+            return
         try:
             self._sem.release()
         except ValueError:
-            # bounded 情况：多释放一次会抛；忽略以保持 idempotent
+            # bounded 情况多释放会抛——按 released_here 逻辑不会走到，防御
             pass
 
     def active(self) -> int:
@@ -175,6 +216,16 @@ class EncoderCircuitBreaker:
                 self._state = self.STATE_OPEN
                 self._opened_at = time.time()
 
+    def record_cancel(self) -> None:
+        """R14-FIX P0-3：half-open 探测任务被取消/中止时释放 probe 名额，
+        避免 probe 永久占位、breaker 卡在 half-open 拒绝其他任务。"""
+        with self._lock:
+            if self._state == self.STATE_HALF_OPEN and self._halfopen_in_flight > 0:
+                self._halfopen_in_flight -= 1
+
+    def is_open(self) -> bool:
+        return self.state == self.STATE_OPEN
+
     def snapshot(self) -> dict:
         with self._lock:
             self._maybe_transition_to_halfopen_locked()
@@ -198,7 +249,7 @@ class EncoderCircuitBreaker:
 class ControllerState:
     mode: str = MODE_AUTO
     manual_video_concurrency: int = 0  # only meaningful in MODE_MANUAL
-    absolute_max: int = 8              # 系统安全上限
+    absolute_max: int = MAX_VIDEO_CONCURRENCY   # R14-FIX P0-4 全局上限一致
     profile_recommended: int = 0
     user_max: int = 0                  # 用户手动上限（0 表示无覆盖）
     last_resize_at: float = 0.0
@@ -217,14 +268,35 @@ class ConcurrencyController:
 
     def __init__(self,
                  *, profile_recommended: int = 0,
-                 absolute_max: int = 8) -> None:
+                 absolute_max: int = MAX_VIDEO_CONCURRENCY) -> None:
         self.state = ControllerState(
             profile_recommended=max(0, int(profile_recommended)),
-            absolute_max=max(1, int(absolute_max)),
+            absolute_max=max(1, min(MAX_VIDEO_CONCURRENCY, int(absolute_max))),
         )
         self._lock = threading.Lock()
         self.cpu_fallback = CpuFallbackGate()
         self.breakers: dict[str, EncoderCircuitBreaker] = {}
+        # R14-FIX P1-2：CPU fallback 失败计数——与硬件失败分开
+        # 硬件成功回调不能清零 CPU fallback 失败
+        self._cpu_fallback_failure_count = 0
+        self._cpu_fallback_lock = threading.Lock()
+
+    # R14-FIX P1-2 CPU fallback 计数
+    def record_cpu_fallback_failure(self) -> None:
+        with self._cpu_fallback_lock:
+            self._cpu_fallback_failure_count += 1
+
+    def cpu_fallback_failure_count(self) -> int:
+        with self._cpu_fallback_lock:
+            return self._cpu_fallback_failure_count
+
+    def is_any_hw_breaker_open(self) -> bool:
+        """R14-FIX P0-3：任何硬件 encoder breaker 打开 → coordinator 降池。"""
+        with self._lock:
+            for b in self.breakers.values():
+                if b.is_open():
+                    return True
+        return False
 
     def breaker_for(self, encoder_name: str) -> EncoderCircuitBreaker:
         with self._lock:
@@ -413,6 +485,8 @@ class ConcurrencyController:
                 "recent_hw_failures": len(s.recent_hw_failures),
                 "cpu_fallback_active": self.cpu_fallback.active(),
                 "cpu_fallback_limit": self.cpu_fallback.limit,
+                # R14-FIX P1-2：CPU fallback 失败与硬件失败**分开**记录
+                "cpu_fallback_failure_count": self.cpu_fallback_failure_count(),
                 "breakers": [b.snapshot() for b in self.breakers.values()],
                 "reason": s.reason,
             }

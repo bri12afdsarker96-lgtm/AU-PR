@@ -102,7 +102,7 @@
   </div>
   <div class="row" style="margin-top:8px">
     <label>全局 TTS 并发 <input type="number" id="ttsConc" min="1" max="16" value="4" style="width:70px"></label>
-    <label>全局视频并发 <input type="number" id="videoConc" min="1" max="8" value="0" placeholder="自动" style="width:70px"></label>
+    <label>全局视频并发 <input type="number" id="videoConc" min="1" max="16" value="0" placeholder="自动" style="width:70px"></label>
     <button id="btnResizePools" class="secondary" title="立即调整正在跑的 worker 数">应用并发</button>
     <label>硬件编码
       <select id="encoderPref">
@@ -158,8 +158,8 @@
         <option value="cpu_safe">CPU 安全模式</option>
       </select>
     </label>
-    <label>手动并发 <input type="number" id="gpuManual" min="1" max="8" value="1" style="width:60px"></label>
-    <label>用户上限 <input type="number" id="gpuUserMax" min="0" max="8" value="0" title="0 = 不设上限" style="width:60px"></label>
+    <label>手动并发 <input type="number" id="gpuManual" min="1" max="16" value="1" style="width:60px"></label>
+    <label>用户上限 <input type="number" id="gpuUserMax" min="0" max="16" value="0" title="0 = 不设上限" style="width:60px"></label>
     <button id="btnGpuSetMode" class="secondary">应用模式</button>
     <button id="btnGpuApplyProfile" class="secondary" title="按 profile.recommended_concurrency 设置视频池">应用推荐并发</button>
   </div>

@@ -22,7 +22,10 @@ from pathlib import Path
 from typing import Iterable
 
 from .circuit_breaker import CircuitBreaker, classify_http_error, compute_backoff
-from .concurrency_controller import ConcurrencyController, MODE_AUTO
+from .concurrency_controller import (
+    ConcurrencyController, MAX_TTS_CONCURRENCY, MAX_VIDEO_CONCURRENCY,
+    MODE_AUTO, MODE_CPU_SAFE, MODE_MANUAL,
+)
 from . import ffmpeg_pipeline as vp
 from .ffmpeg_pipeline import VideoCancelled, VideoError
 from .hw_encoder import EncoderProbe, default_video_concurrency, resolve_encoder
@@ -85,6 +88,9 @@ class SchedulerMetrics:
     http_5xx_count: int = 0
     retry_count: int = 0
     hw_fallback_count: int = 0
+    # R14-FIX P1-2：ffmpeg 成功但 DB/marker 提交失败——
+    # **单独**计数，绝不能算作完整的 physical_video 成功
+    physical_render_succeeded_commit_failed: int = 0
 
     def record_success(self, tts_seconds: float, video_seconds: float) -> None:
         self.finished_times.append(time.time())
@@ -106,6 +112,11 @@ class SchedulerMetrics:
         if len(self.physical_tts_finished_times) > 1000:
             del self.physical_tts_finished_times[:-1000]
 
+    def record_render_committed_failure(self) -> None:
+        """R14-FIX P1-2：ffmpeg 成功但 DB/marker 提交失败——单列计数，
+        不计入 physical_video_finished_times，也不计入 logical 完成。"""
+        self.physical_render_succeeded_commit_failed += 1
+
     def recent_rate(self, window_seconds: float) -> float:
         cutoff = time.time() - window_seconds
         count = sum(1 for t in self.finished_times if t >= cutoff)
@@ -117,9 +128,18 @@ class SchedulerMetrics:
         count = sum(1 for t in self.physical_video_finished_times if t >= cutoff)
         return count / (window_seconds / 60.0)
 
+    def recent_physical_tts_rate(self, window_seconds: float) -> float:
+        """R14-FIX P1-2：物理 TTS 速率（条/分钟）——与 video 分开。"""
+        cutoff = time.time() - window_seconds
+        count = sum(1 for t in self.physical_tts_finished_times if t >= cutoff)
+        return count / (window_seconds / 60.0)
+
     def recent_physical_video_per_hour(self, window_seconds: float = 3600.0) -> float:
         """物理视频渲染 → 每小时条数。"""
         return self.recent_physical_video_rate(window_seconds) * 60.0
+
+    def recent_physical_tts_per_hour(self, window_seconds: float = 3600.0) -> float:
+        return self.recent_physical_tts_rate(window_seconds) * 60.0
 
     def avg(self, samples: list[float], last_n: int = 100) -> float:
         if not samples:
@@ -182,8 +202,24 @@ class Scheduler:
         # 会重算目标。ConcurrencyController 只做决策，实际 spawn 仍由 scheduler。
         self.controller = ConcurrencyController(
             profile_recommended=self.config.video_concurrency or 0,
-            absolute_max=8,
+            absolute_max=MAX_VIDEO_CONCURRENCY,
         )
+        # R14-FIX P0-1：coordinator 后台线程，周期读运行时状态并调用
+        # controller.decide()；apply=True 时**真调 resize_pools(video=target)**。
+        # 由 scheduler start/stop 严格管理生命周期；重启只有一个 coordinator。
+        self._coordinator_thread: threading.Thread | None = None
+        self._coordinator_stop = threading.Event()
+        self._coordinator_interval = 1.0   # seconds
+        self._coordinator_events: list[dict] = []   # (old, target, reason, time)
+        self._coordinator_events_lock = threading.Lock()
+        # R14-FIX P0-6：benchmark 独占门；进入独占态时 scheduler 全局 pause，
+        # 结束后按 `_pause_prev_state` 恢复用户此前的暂停状态（避免误 resume）。
+        self._benchmark_exclusive = threading.Event()
+        self._pause_prev_state: bool | None = None
+        self._benchmark_lock = threading.Lock()
+        # R14-FIX P0-2：CPU_SAFE 强制 libx264；保留用户冻结的编码器偏好，
+        # 退出 CPU_SAFE 后恢复。
+        self._encoder_override: str | None = None
 
     # -------------------- 生命周期 --------------------
 
@@ -211,30 +247,38 @@ class Scheduler:
                     pass
                 self._reload_paused_from_db()
                 self._started_at = time.time()
-                for _ in range(max(1, min(16, self.config.tts_concurrency))):
+                for _ in range(max(1, min(MAX_TTS_CONCURRENCY,
+                                            self.config.tts_concurrency))):
                     self._spawn_worker("tts")
                 video_count = self.config.video_concurrency or default_video_concurrency()
-                for _ in range(max(1, min(8, video_count))):
+                for _ in range(max(1, min(MAX_VIDEO_CONCURRENCY, video_count))):
                     self._spawn_worker("video")
+                # R14-FIX P0-1 启动 coordinator（重启只能一个）
+                self._start_coordinator_locked()
                 return
             # R12-5：只有一池全死时补齐——不忽略缺失池
             if not alive_tts:
                 self._tts_workers = [w for w in self._tts_workers
                                       if w.thread.is_alive()]
-                for _ in range(max(1, min(16, self.config.tts_concurrency))):
+                for _ in range(max(1, min(MAX_TTS_CONCURRENCY,
+                                            self.config.tts_concurrency))):
                     self._spawn_worker("tts")
             if not alive_video:
                 self._video_workers = [w for w in self._video_workers
                                         if w.thread.is_alive()]
                 video_count = self.config.video_concurrency or default_video_concurrency()
-                for _ in range(max(1, min(8, video_count))):
+                for _ in range(max(1, min(MAX_VIDEO_CONCURRENCY, video_count))):
                     self._spawn_worker("video")
+            # R14-FIX P0-1：补池路径下也保证 coordinator 存活
+            self._start_coordinator_locked()
 
     def stop(self, wait_seconds: float = 5.0) -> bool:
         """安全停止：返回是否全部退出。存活线程**保留在跟踪列表里**——
         禁止在 join 超时后清空后新建"第二套 scheduler"。"""
         with self._lifecycle_lock:
             self._stop.set()
+            # R14-FIX P0-1：先停 coordinator，防止 join worker 时它再触发 resize
+            self._stop_coordinator_locked(wait_seconds=min(2.0, wait_seconds))
             for w in self._tts_workers + self._video_workers:
                 w.stop_event.set()
             with self._cond:
@@ -291,13 +335,20 @@ class Scheduler:
                 "video_alive": sum(1 for w in self._video_workers if w.thread.is_alive()),
             }
             if tts is not None:
-                new_tts = max(1, min(16, int(tts)))
+                new_tts = max(1, min(MAX_TTS_CONCURRENCY, int(tts)))
                 self.config.tts_concurrency = new_tts
                 self._resize_kind("tts", new_tts, wait_seconds)
             if video is not None:
-                new_v = max(1, min(8, int(video)))
+                # R14-FIX P0-4 上限统一到 MAX_VIDEO_CONCURRENCY(16)
+                new_v = max(1, min(MAX_VIDEO_CONCURRENCY, int(video)))
                 self.config.video_concurrency = new_v
                 self._resize_kind("video", new_v, wait_seconds)
+                # R14-FIX P0-1：外部显式 resize 也要更新 controller 的
+                # last_effective_concurrency 和 last_resize_at，让 coordinator
+                # 的冷却时间（RESIZE_MIN_INTERVAL_S）保护用户手动设定；
+                # 否则 coordinator 会在无 backlog 时立即把用户 3 缩到 1。
+                self.controller.state.last_effective_concurrency = new_v
+                self.controller.state.last_resize_at = time.time()
             after = {
                 "tts": len(self._tts_workers),
                 "video": len(self._video_workers),
@@ -354,6 +405,191 @@ class Scheduler:
         deficit = max(0, target - len(serving))
         for _ in range(deficit):
             self._spawn_worker(kind)
+
+    # -------------------- R14-FIX P0-1 生产 coordinator --------------------
+
+    def _start_coordinator_locked(self) -> None:
+        """要求持有 self._lifecycle_lock。启动 coordinator 线程；若已存在则复用。"""
+        t = self._coordinator_thread
+        if t is not None and t.is_alive():
+            return
+        self._coordinator_stop = threading.Event()
+        t = threading.Thread(target=self._coordinator_loop,
+                              name="bulk-coordinator", daemon=True)
+        self._coordinator_thread = t
+        t.start()
+
+    def _stop_coordinator_locked(self, wait_seconds: float = 2.0) -> None:
+        """要求持有 self._lifecycle_lock。停 coordinator；join 超时不静默丢弃。"""
+        self._coordinator_stop.set()
+        t = self._coordinator_thread
+        if t is not None:
+            t.join(timeout=wait_seconds)
+        # 只有真死才清引用；重启只能有一个 coordinator
+        if t is not None and not t.is_alive():
+            self._coordinator_thread = None
+
+    def _current_output_dirs(self) -> list[str]:
+        """收集"活跃批次"输出目录——用于磁盘空间背压。"""
+        try:
+            batches = self.store.list_batches(limit=20)
+        except Exception:  # noqa: BLE001
+            return []
+        seen: set[str] = set()
+        for b in batches:
+            p = (b.get("params") or {}).get("output_dir") or b.get("output_dir")
+            if p:
+                seen.add(str(p))
+        return list(seen)
+
+    def _min_output_free_gb(self) -> float:
+        """最活跃输出目录中的最小剩余 GB。取不到 → 返回大数（不阻挡决策）。"""
+        import shutil as _sh
+        dirs = self._current_output_dirs()
+        best = 1024.0 * 1024.0   # ~1 PB
+        if not dirs:
+            return best
+        for d in dirs:
+            try:
+                du = _sh.disk_usage(d)
+                gb = du.free / 1024 / 1024 / 1024
+                if gb < best:
+                    best = gb
+            except OSError:
+                continue
+        return best
+
+    def _recent_physical_throughput(self) -> float:
+        """近 5 分钟物理视频渲染 rate（条/分钟）——供 hysteresis 判断。"""
+        with self._metrics_lock:
+            return self.metrics.recent_physical_video_rate(300.0)
+
+    def _coordinator_loop(self) -> None:
+        """周期读取运行时状态 → decide → 需要变更时真调 resize_pools。
+
+        绝不在这里 join 视频 worker 自己——本线程独立于 worker 池，
+        `resize_pools` 内部 join 的是 draining worker，与 coordinator 无关。
+        """
+        while not self._coordinator_stop.is_set() and not self._stop.is_set():
+            try:
+                # benchmark 独占态：暂不做 autoscale（外部会真 pause+resize）
+                if self._benchmark_exclusive.is_set():
+                    self._coordinator_stop.wait(self._coordinator_interval)
+                    continue
+                try:
+                    counts = self.store.count_by_status(None)
+                except Exception:  # noqa: BLE001
+                    counts = {}
+                backlog = int(counts.get("tts_done", 0))
+                video_running = int(counts.get("video_running", 0))
+                free_gb = self._min_output_free_gb()
+                tp = self._recent_physical_throughput()
+                # controller 用当前视频 serving 数
+                with self._lifecycle_lock:
+                    serving = sum(1 for w in self._video_workers
+                                    if w.thread.is_alive() and not w.draining)
+                # 让 controller 知道当前 last_effective 至少等于 serving
+                if self.controller.state.last_effective_concurrency == 0:
+                    self.controller.state.last_effective_concurrency = serving
+                target, apply, reason = self.controller.decide(
+                    tts_done_backlog=backlog,
+                    video_running=video_running,
+                    output_free_gb=free_gb,
+                    recent_throughput=tp,
+                    encoder_name="",   # 汇总层面看，coordinator 不针对具体 encoder
+                )
+                # R14-FIX P0-3：任何硬件 breaker 打开 → 独立降到 1
+                if self.controller.is_any_hw_breaker_open() and target > 1:
+                    target = 1
+                    apply = True
+                    reason = (reason or "") + " | 有 encoder breaker 打开 → 降到 1"
+                if apply and target != serving:
+                    old = serving
+                    try:
+                        self.resize_pools(video=target, wait_seconds=0.5)
+                    except Exception as exc:  # noqa: BLE001
+                        reason = f"{reason} | resize 异常：{exc}"
+                    with self._coordinator_events_lock:
+                        self._coordinator_events.append({
+                            "old": old, "target": target,
+                            "reason": reason, "time": time.time(),
+                        })
+                        if len(self._coordinator_events) > 200:
+                            del self._coordinator_events[:-200]
+            except Exception:  # noqa: BLE001
+                pass
+            self._coordinator_stop.wait(self._coordinator_interval)
+
+    def coordinator_events(self) -> list[dict]:
+        """UI/测试可读——最近的 resize 决策事件历史。"""
+        with self._coordinator_events_lock:
+            return list(self._coordinator_events)
+
+    # -------------------- R14-FIX P0-6 benchmark 独占 --------------------
+
+    def enter_benchmark_exclusive(self, *, wait_seconds: float = 30.0,
+                                     cancel_event: threading.Event | None = None
+                                     ) -> bool:
+        """进入 benchmark 独占态：
+        - 暂停新任务领取；
+        - 等 tts_running + video_running 收敛到 0（超时或 cancel_event → False）；
+        - 结束/失败/取消由 leave_benchmark_exclusive 恢复。
+
+        并发调用第二个 → 立即返回 False（同时只允许一个 benchmark）。
+        """
+        with self._benchmark_lock:
+            if self._benchmark_exclusive.is_set():
+                return False
+            self._pause_prev_state = self._pause.is_set()
+            self._pause.set()
+            self._benchmark_exclusive.set()
+        deadline = time.time() + max(0.1, wait_seconds)
+        while time.time() < deadline:
+            if cancel_event is not None and cancel_event.is_set():
+                self.leave_benchmark_exclusive()
+                return False
+            try:
+                counts = self.store.count_by_status(None)
+                running = int(counts.get("tts_running", 0)) \
+                    + int(counts.get("video_running", 0))
+            except Exception:  # noqa: BLE001
+                running = 0
+            if running == 0:
+                return True
+            time.sleep(0.1)
+        # 超时：撤销独占
+        self.leave_benchmark_exclusive()
+        return False
+
+    def leave_benchmark_exclusive(self) -> None:
+        """恢复 benchmark 前的暂停状态。绝不把用户原本暂停的队列误 resume。"""
+        with self._benchmark_lock:
+            was_set = self._benchmark_exclusive.is_set()
+            self._benchmark_exclusive.clear()
+            if not was_set:
+                return
+            prev = self._pause_prev_state
+            self._pause_prev_state = None
+            if prev is False:
+                self._pause.clear()
+                with self._cond:
+                    self._cond.notify_all()
+            # prev is True → 保留 pause 状态，不 resume
+
+    def is_benchmark_exclusive(self) -> bool:
+        return self._benchmark_exclusive.is_set()
+
+    # -------------------- R14-FIX P0-2 编码器 override --------------------
+
+    def set_encoder_override(self, encoder: str | None) -> None:
+        """CPU_SAFE 时置 'libx264'；退出时置 None。
+        `_process_video` 会尊重此 override。"""
+        if encoder is not None and encoder != "libx264":
+            raise ValueError("encoder_override 只允许 libx264 或 None")
+        self._encoder_override = encoder
+
+    def encoder_override(self) -> str | None:
+        return self._encoder_override
 
     # -------------------- 恢复辅助 --------------------
 
@@ -854,7 +1090,18 @@ class Scheduler:
             probe = vp.ffprobe_video(row.input_video)
             self.store.update(row.task_id, video_duration=probe.duration,
                               concat_duration=probe.duration * 2)
-            encoder = self._get_encoder(encoder_pref)
+            # R14-FIX P0-2：CPU_SAFE / 手动 override 时**强制 libx264**——
+            # 只 resize worker 数不够，`_process_video` 传给 render_single 的
+            # encoder 也必须是 CPU 路径，否则任务的 encoder_preference=auto
+            # 仍会选 NVENC/QSV/AMF。退出 CPU_SAFE 后自然回到任务冻结的
+            # encoder_preference，因为 override 仅在启用期间被查询。
+            if self.encoder_override() == "libx264":
+                encoder = EncoderProbe(
+                    "cpu", "libx264", ["-preset", preset], True,
+                    "CPU_SAFE override",
+                )
+            else:
+                encoder = self._get_encoder(encoder_pref)
             # R14-4：把 controller 的 gate/breaker/callback 挂到 render_single
             breaker = self.controller.breaker_for(encoder.encoder) \
                 if encoder.encoder != "libx264" else None
@@ -879,6 +1126,7 @@ class Scheduler:
                 fallback_gate=self.controller.cpu_fallback,
                 hw_failure_cb=self.controller.record_hardware_failure,
                 hw_success_cb=self.controller.record_hardware_success,
+                cpu_fallback_failure_cb=self.controller.record_cpu_fallback_failure,
                 breaker=breaker,
             )
         except VideoCancelled:
@@ -911,8 +1159,10 @@ class Scheduler:
         # R12-4：**正式文件已落地** → 先切 output_committed，DB 未写 completed 也能恢复
         marker_moved = self.store.mark_output_committed(row.task_id, result.output_path)
         if not marker_moved:
-            # 状态不是 video_running（例如被取消）→ 不能写 completed；
-            # 已落文件由恢复逻辑按 marker 认领或清理
+            # R14-FIX P1-2：ffmpeg 成功但 DB 未推进（状态不是 video_running，
+            # 比如被取消）→ 单列 physical_render_succeeded_commit_failed
+            with self._metrics_lock:
+                self.metrics.record_render_committed_failure()
             vp.cleanup_staging(staging)
             self._converge_cancelled_if_flagged(row)
             self._cancel_flag_pop(row.task_id)
@@ -945,9 +1195,13 @@ class Scheduler:
         with self._metrics_lock:
             # R12-11：**只**记录视频阶段耗时；TTS 耗时在 _process_tts 里记
             self.metrics.record_success(0, elapsed)
-            # R14-5 物理视频：本条真正跑了 ffmpeg 渲染，
-            # follower 不能计入 physical_video（它们只是复制/link）
-            self.metrics.record_physical_video()
+            if ok:
+                # R14-FIX P1-2：只有 leader 成功提交才算 physical_video；
+                # DB 未推进 / 期望状态不符 → 走上面 commit_failed 分支，
+                # 不计入 physical_video_finished_times
+                self.metrics.record_physical_video()
+            else:
+                self.metrics.record_render_committed_failure()
 
     # -------------------- 辅助 --------------------
 
@@ -1005,12 +1259,16 @@ class Scheduler:
             tts_samples = len(self.metrics.tts_times)
             video_samples = len(self.metrics.video_times)
             # R14-5 物理指标（拆开 logical vs physical）
+            # R14-FIX P1-2：物理 tts 与 video 各自用**自己**的 rate 方法
             phys_v_1min = self.metrics.recent_physical_video_rate(60)
             phys_v_60min = self.metrics.recent_physical_video_rate(3600)
             phys_v_per_hour = self.metrics.recent_physical_video_per_hour(3600)
-            phys_t_60min = self.metrics.recent_physical_video_rate(3600) # reuse compute
+            phys_t_1min = self.metrics.recent_physical_tts_rate(60)
+            phys_t_60min = self.metrics.recent_physical_tts_rate(3600)
+            phys_t_per_hour = self.metrics.recent_physical_tts_per_hour(3600)
             phys_video_completed = len(self.metrics.physical_video_finished_times)
             phys_tts_completed = len(self.metrics.physical_tts_finished_times)
+            commit_failed = self.metrics.physical_render_succeeded_commit_failed
             m = {
                 "http_429_count": self.metrics.http_429_count,
                 "http_5xx_count": self.metrics.http_5xx_count,
@@ -1038,6 +1296,12 @@ class Scheduler:
                 "physical_video_rate_60min": round(phys_v_60min, 2),
                 "physical_video_per_hour": round(phys_v_per_hour, 2),
                 "physical_video_projected_per_day": round(phys_v_per_hour * 24, 0),
+                # R14-FIX P1-2 tts 与 video 各自 rate
+                "physical_tts_rate_1min": round(phys_t_1min, 2),
+                "physical_tts_rate_60min": round(phys_t_60min, 2),
+                "physical_tts_per_hour": round(phys_t_per_hour, 2),
+                # R14-FIX P1-2 ffmpeg 成功但 DB/marker 提交失败：单列
+                "physical_render_succeeded_commit_failed": commit_failed,
             }
         with self._active_lock:
             active_tts = self._active_tts
@@ -1080,6 +1344,10 @@ class Scheduler:
             "note_24h": "24h 数字为按当前实测速度推算，仅供参考",
             # R14-4：并发/背压/断路 controller 状态
             "controller": self.controller.snapshot(),
+            # R14-FIX P0-1 coordinator resize 事件历史
+            "coordinator_recent_events": self.coordinator_events()[-10:],
+            "benchmark_exclusive": self.is_benchmark_exclusive(),
+            "encoder_override": self.encoder_override() or "",
             # R14 诚实性文案（供 UI 显示，防止误读为承诺）
             "capability_disclaimer": (
                 "该数字来自当前样本短时测试，不等于真实 24 小时产能承诺。"
