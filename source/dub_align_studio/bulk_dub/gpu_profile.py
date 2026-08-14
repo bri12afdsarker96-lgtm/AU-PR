@@ -81,6 +81,9 @@ class LadderRunResult:
     projected_renders_per_hour: float
     projected_renders_per_day: float
     is_recommendable: bool
+    # R14-FIX2 P1-2：**明确的硬件错误计数**——_classify_stderr("hw") 命中数。
+    # 之前 hw_fallbacks 恒为 0，导致 hw_failures_total 恒为 0。
+    hardware_errors: int = 0
     notes: str = ""
 
 
@@ -88,13 +91,17 @@ class LadderRunResult:
 class DeviceCapability:
     """R14 设备能力档案——**指纹变化即失效**。"""
     schema: str = PROFILE_SCHEMA
-    device_fingerprint: str = ""      # sha256(OS + ffmpeg_version + encoder + gpu + driver)
+    device_fingerprint: str = ""      # sha256(OS + ffmpeg_version + encoder + gpu + driver + encoder_preference)
     os_name: str = ""
     os_release: str = ""
     ffmpeg_path: str = ""
     ffmpeg_version: str = ""
     encoder_family: str = ""          # nvidia / intel / amd / cpu
     encoder_name: str = ""            # h264_nvenc / h264_qsv / h264_amf / libx264
+    # R14-FIX2 P1-5：**保存测试时使用的 encoder_preference**——apply 时按
+    # 相同 family/name 探测；否则显式 CPU/NVIDIA/Intel/AMD 的 profile 会被
+    # 用"auto"重探到的结果错误比较。
+    encoder_preference: str = "auto"
     gpu_adapter: str = ""             # 尽力取；拿不到写空
     driver_version: str = ""
     sample_video_path: str = ""
@@ -198,11 +205,15 @@ def probe_gpu_metadata(family: str) -> tuple[str, str]:
 
 def compute_fingerprint(*, os_name: str, ffmpeg_version: str,
                          encoder_name: str, gpu_adapter: str,
-                         driver_version: str) -> str:
+                         driver_version: str,
+                         encoder_preference: str = "auto") -> str:
+    """R14-FIX2 P1-5：encoder_preference 纳入指纹——显式 CPU 与 auto→CPU
+    落在**不同**指纹上，避免旧显式 CPU profile 在有 GPU 的机上被误认可用。"""
     import hashlib
     material = "|".join([
         os_name or "", ffmpeg_version or "", encoder_name or "",
         gpu_adapter or "", driver_version or "",
+        encoder_preference or "auto",
     ])
     return hashlib.sha256(material.encode("utf-8", "replace")).hexdigest()[:32]
 
@@ -227,11 +238,13 @@ def detect_capability_metadata(ffmpeg: str, encoder_preference: str = "auto",
         os_name=os_name, ffmpeg_version=fv,
         encoder_name=probe.encoder, gpu_adapter=adapter,
         driver_version=driver,
+        encoder_preference=encoder_preference or "auto",
     )
     cap = DeviceCapability(
         device_fingerprint=fp, os_name=os_name, os_release=os_release,
         ffmpeg_path=ffmpeg, ffmpeg_version=fv,
         encoder_family=family, encoder_name=probe.encoder,
+        encoder_preference=encoder_preference or "auto",
         gpu_adapter=adapter, driver_version=driver,
     )
     if sample_path is not None:
@@ -655,6 +668,8 @@ def run_one_ladder_step(ctx: _BenchmarkContext, concurrency: int,
         projected_renders_per_hour=round(projected_per_hour, 2),
         projected_renders_per_day=round(projected_per_hour * 24, 0),
         is_recommendable=is_recommendable,
+        # R14-FIX2 P1-2：真正记录硬件错误命中数
+        hardware_errors=hw_hits,
         notes=notes,
     )
 
@@ -699,7 +714,7 @@ def run_benchmark(*, ffmpeg: str, sample_video: str | Path,
                     preset: str = "medium", crf: int = 20,
                     ladder: Iterable[int] = DEFAULT_LADDER,
                     warmup_rounds: int = 1,
-                    measured_rounds: int = 2,
+                    measured_rounds: int = 3,
                     per_job_timeout: float = 300.0,
                     progress_cb: Callable[[dict], None] | None = None,
                     cancel_event: threading.Event | None = None,
@@ -778,10 +793,22 @@ def run_benchmark(*, ffmpeg: str, sample_video: str | Path,
                 if progress_cb:
                     progress_cb({"phase": "measure", "concurrency": c,
                                    "result": asdict(r)})
-            # 取中位数（按 projected_renders_per_hour 排序）
+            # R14-FIX2 P1-1：**真中位数**——按 projected_renders_per_hour 排序
+            # 后按 statistics.median 语义取中间元素（奇数 = 中位；
+            # 偶数 = 使用较低那半的最大值以保守化推荐，绝不采用最快异常轮）
             assert measured, "at least one measured round"
+            import statistics as _st
             ordered = sorted(measured, key=lambda x: x.projected_renders_per_hour)
-            median = ordered[len(ordered) // 2]
+            n = len(ordered)
+            if n % 2 == 1:
+                median = ordered[n // 2]
+            else:
+                # 偶数轮：取较低的中间值（保守），避免异常快轮被采用
+                median = ordered[(n // 2) - 1]
+            # 同时 sanity check 数字（保留原语义）
+            _median_rate = _st.median(
+                [x.projected_renders_per_hour for x in measured]
+            )
             # is_recommendable = 所有测量轮都通过 才算稳定档
             all_stable = all(x.is_recommendable for x in measured)
             median = LadderRunResult(
@@ -798,12 +825,14 @@ def run_benchmark(*, ffmpeg: str, sample_video: str | Path,
                 projected_renders_per_hour=median.projected_renders_per_hour,
                 projected_renders_per_day=median.projected_renders_per_day,
                 is_recommendable=all_stable,
-                notes=median.notes + (" | median" if len(measured) > 1 else ""),
+                hardware_errors=median.hardware_errors,
+                notes=median.notes + (f" | median(n={n})" if n > 1 else ""),
             )
             results.append(median)
             # 累计错误计数（对所有测量轮求和）
             for r in measured:
-                cap.hw_failures_total += r.hw_fallbacks
+                # R14-FIX2 P1-2：累加真正的 hardware_errors，而不是恒 0 的 hw_fallbacks
+                cap.hw_failures_total += r.hardware_errors
                 cap.session_limit_errors_total += r.session_limit_errors
                 cap.oom_errors_total += r.oom_errors
             if not all_stable:

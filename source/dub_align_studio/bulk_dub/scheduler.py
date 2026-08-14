@@ -274,25 +274,45 @@ class Scheduler:
 
     def stop(self, wait_seconds: float = 5.0) -> bool:
         """安全停止：返回是否全部退出。存活线程**保留在跟踪列表里**——
-        禁止在 join 超时后清空后新建"第二套 scheduler"。"""
+        禁止在 join 超时后清空后新建"第二套 scheduler"。
+
+        R14-FIX2 P0-3：**两阶段停止**——锁内发信号并抓 thread 引用；
+        释放锁后 join；再进锁清引用。杜绝 stop 持锁等 coordinator，
+        而 coordinator 也在等同一把锁（走 resize_pools）导致的自死锁。
+        """
+        # 阶段 A：锁内发送 stop 信号 + 抓取所有线程引用（不 join）
         with self._lifecycle_lock:
             self._stop.set()
-            # R14-FIX P0-1：先停 coordinator，防止 join worker 时它再触发 resize
-            self._stop_coordinator_locked(wait_seconds=min(2.0, wait_seconds))
+            self._coordinator_stop.set()
+            coord_thread = self._coordinator_thread
             for w in self._tts_workers + self._video_workers:
                 w.stop_event.set()
-            with self._cond:
-                self._cond.notify_all()
-            deadline = time.time() + wait_seconds
-            for w in self._tts_workers + self._video_workers:
-                remaining = max(0.05, deadline - time.time())
-                w.thread.join(remaining)
-            all_gone = all(not w.thread.is_alive()
-                            for w in self._tts_workers + self._video_workers)
-            if all_gone:
+            worker_threads = [w.thread for w in
+                              (self._tts_workers + self._video_workers)]
+        with self._cond:
+            self._cond.notify_all()
+
+        # 阶段 B：锁外 join——coordinator 若正在等 lifecycle_lock（做 resize），
+        # 现在可以拿到锁完成一轮然后见到 _coordinator_stop / _stop 后退出
+        deadline = time.time() + wait_seconds
+        coord_budget = min(2.0, wait_seconds)
+        if coord_thread is not None:
+            coord_thread.join(timeout=coord_budget)
+        for t in worker_threads:
+            remaining = max(0.05, deadline - time.time())
+            t.join(remaining)
+
+        # 阶段 C：锁内再核对状态并清理
+        with self._lifecycle_lock:
+            all_workers_gone = all(not w.thread.is_alive()
+                                    for w in self._tts_workers + self._video_workers)
+            coord_gone = (coord_thread is None or not coord_thread.is_alive())
+            if all_workers_gone:
                 self._tts_workers = []
                 self._video_workers = []
-            return all_gone
+            if coord_gone and self._coordinator_thread is coord_thread:
+                self._coordinator_thread = None
+            return all_workers_gone and coord_gone
 
     def notify(self) -> None:
         with self._cond:
@@ -343,12 +363,13 @@ class Scheduler:
                 new_v = max(1, min(MAX_VIDEO_CONCURRENCY, int(video)))
                 self.config.video_concurrency = new_v
                 self._resize_kind("video", new_v, wait_seconds)
-                # R14-FIX P0-1：外部显式 resize 也要更新 controller 的
-                # last_effective_concurrency 和 last_resize_at，让 coordinator
-                # 的冷却时间（RESIZE_MIN_INTERVAL_S）保护用户手动设定；
-                # 否则 coordinator 会在无 backlog 时立即把用户 3 缩到 1。
-                self.controller.state.last_effective_concurrency = new_v
-                self.controller.state.last_resize_at = time.time()
+                # R14-FIX2 P1-4：走统一入口 note_resize_applied——不再直接改
+                # controller.state.*。让 coordinator 冷却保护用户手动设定。
+                effective_after = sum(
+                    1 for w in self._video_workers
+                    if w.thread.is_alive() and not w.draining
+                )
+                self.controller.note_resize_applied(effective_after or new_v)
             after = {
                 "tts": len(self._tts_workers),
                 "video": len(self._video_workers),
@@ -409,10 +430,23 @@ class Scheduler:
     # -------------------- R14-FIX P0-1 生产 coordinator --------------------
 
     def _start_coordinator_locked(self) -> None:
-        """要求持有 self._lifecycle_lock。启动 coordinator 线程；若已存在则复用。"""
+        """要求持有 self._lifecycle_lock。启动 coordinator 线程。
+
+        R14-FIX2 P0-3：若旧线程仍活着但已收到 stop 信号 → 不复用
+        （它注定即将退出），join 一小段后另起新线程；
+        任何时刻**最多一个活 coordinator**。
+        """
         t = self._coordinator_thread
-        if t is not None and t.is_alive():
+        if t is not None and t.is_alive() and not self._coordinator_stop.is_set():
             return
+        if t is not None and t.is_alive():
+            # 已收到 stop：给它极短窗口自然退出，避免出现两个 coordinator
+            t.join(timeout=1.0)
+            if t.is_alive():
+                # 极端情况：join 超时；不启新的，避免真的两个 coordinator
+                # 后续 start 会再次尝试
+                return
+        self._coordinator_thread = None
         self._coordinator_stop = threading.Event()
         t = threading.Thread(target=self._coordinator_loop,
                               name="bulk-coordinator", daemon=True)
@@ -420,7 +454,12 @@ class Scheduler:
         t.start()
 
     def _stop_coordinator_locked(self, wait_seconds: float = 2.0) -> None:
-        """要求持有 self._lifecycle_lock。停 coordinator；join 超时不静默丢弃。"""
+        """要求持有 self._lifecycle_lock。停 coordinator；join 超时不静默丢弃。
+
+        **注意**：本方法只在锁内设置 stop 信号并尝试 join——`stop()` 已改为
+        两阶段停止（锁外 join），此方法仅供仍需要"关掉 coordinator 但不
+        关整个 scheduler"的少数场景。
+        """
         self._coordinator_stop.set()
         t = self._coordinator_thread
         if t is not None:
@@ -469,6 +508,9 @@ class Scheduler:
 
         绝不在这里 join 视频 worker 自己——本线程独立于 worker 池，
         `resize_pools` 内部 join 的是 draining worker，与 coordinator 无关。
+
+        R14-FIX2 P1-4：resize 之后必须调 `note_resize_applied` / `_failed`；
+        禁止本线程直接修改 controller.state.*。
         """
         while not self._coordinator_stop.is_set() and not self._stop.is_set():
             try:
@@ -488,9 +530,10 @@ class Scheduler:
                 with self._lifecycle_lock:
                     serving = sum(1 for w in self._video_workers
                                     if w.thread.is_alive() and not w.draining)
-                # 让 controller 知道当前 last_effective 至少等于 serving
-                if self.controller.state.last_effective_concurrency == 0:
-                    self.controller.state.last_effective_concurrency = serving
+                # 让 controller 知道当前 last_effective 至少等于 serving——
+                # bootstrap 观察不动 last_resize_at，避免虚假冷却窗口
+                if self.controller.state.last_effective_concurrency == 0 and serving > 0:
+                    self.controller.note_observed_serving(serving)
                 target, apply, reason = self.controller.decide(
                     tts_done_backlog=backlog,
                     video_running=video_running,
@@ -498,21 +541,36 @@ class Scheduler:
                     recent_throughput=tp,
                     encoder_name="",   # 汇总层面看，coordinator 不针对具体 encoder
                 )
-                # R14-FIX P0-3：任何硬件 breaker 打开 → 独立降到 1
-                if self.controller.is_any_hw_breaker_open() and target > 1:
+                # R14-FIX2 P0-6：任何硬件 breaker OPEN 或 HALF_OPEN → 降到 1
+                # HALF_OPEN 期间也不允许恢复满池：只允许 breaker.allow() 放行
+                # 的那 1 个探测任务；其他 worker 会走 libx264/等待
+                if self.controller.is_any_hw_breaker_degraded() and target > 1:
                     target = 1
                     apply = True
-                    reason = (reason or "") + " | 有 encoder breaker 打开 → 降到 1"
+                    reason = (reason or "") + " | 有 encoder breaker degraded → 降到 1"
                 if apply and target != serving:
                     old = serving
+                    resize_ok = False
                     try:
                         self.resize_pools(video=target, wait_seconds=0.5)
+                        resize_ok = True
                     except Exception as exc:  # noqa: BLE001
                         reason = f"{reason} | resize 异常：{exc}"
+                    # R14-FIX2 P1-4：resize 真的成功后再更新 last_effective
+                    if resize_ok:
+                        with self._lifecycle_lock:
+                            applied = sum(
+                                1 for w in self._video_workers
+                                if w.thread.is_alive() and not w.draining
+                            )
+                        self.controller.note_resize_applied(applied or target)
+                    else:
+                        self.controller.note_resize_failed(target, reason)
                     with self._coordinator_events_lock:
                         self._coordinator_events.append({
                             "old": old, "target": target,
                             "reason": reason, "time": time.time(),
+                            "resize_ok": resize_ok,
                         })
                         if len(self._coordinator_events) > 200:
                             del self._coordinator_events[:-200]
@@ -548,12 +606,15 @@ class Scheduler:
             if cancel_event is not None and cancel_event.is_set():
                 self.leave_benchmark_exclusive()
                 return False
+            # R14-FIX2 P0-1：count_by_status 抛异常必须 **fail closed**——
+                # 不能按 running=0 放行 benchmark 抢显卡/磁盘
             try:
                 counts = self.store.count_by_status(None)
-                running = int(counts.get("tts_running", 0)) \
-                    + int(counts.get("video_running", 0))
             except Exception:  # noqa: BLE001
-                running = 0
+                self.leave_benchmark_exclusive()
+                raise
+            running = int(counts.get("tts_running", 0)) \
+                + int(counts.get("video_running", 0))
             if running == 0:
                 return True
             time.sleep(0.1)
@@ -1188,18 +1249,19 @@ class Scheduler:
         )
         vp.cleanup_staging(staging)
         self._cancel_flag_pop(row.task_id)
-        if ok and follower_affected:
-            with self._metrics_lock:
-                for _ in range(follower_affected):
-                    self.metrics.record_success(0, 0)
+        # R14-FIX2 P1-3：**只有** finalize_leader_success 真的 ok=True 才算：
+        #   - record_success（logical finished / video_times）
+        #   - record_physical_video
+        #   - follower record_success（follower 秒完成也要 leader 落库成功）
+        # ok=False → 只记 physical_render_succeeded_commit_failed 一列，
+        # 不增加任何 logical/physical 成功计数
         with self._metrics_lock:
-            # R12-11：**只**记录视频阶段耗时；TTS 耗时在 _process_tts 里记
-            self.metrics.record_success(0, elapsed)
             if ok:
-                # R14-FIX P1-2：只有 leader 成功提交才算 physical_video；
-                # DB 未推进 / 期望状态不符 → 走上面 commit_failed 分支，
-                # 不计入 physical_video_finished_times
+                self.metrics.record_success(0, elapsed)
                 self.metrics.record_physical_video()
+                if follower_affected:
+                    for _ in range(follower_affected):
+                        self.metrics.record_success(0, 0)
             else:
                 self.metrics.record_render_committed_failure()
 

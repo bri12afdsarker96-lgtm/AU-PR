@@ -86,6 +86,16 @@ class BulkDubService:
         }
         # R14-2 已加载/写盘的 profile；None 表示未加载
         self._gpu_profile: gpu_profile.DeviceCapability | None = gpu_profile.load_profile()
+        # R14-FIX2 P1-6：mode/user_max/manual_video/profile_fingerprint 状态
+        # 只加载**一次**；后续 apply/set_mode 只写内存并 save_state。
+        # 每次 _ensure_scheduler_for_controller() 重读并覆盖是错的——会把
+        # UI 刚设的模式立刻还原。
+        self._persistent_state: dict | None = None
+        try:
+            self._persistent_state = gpu_profile.load_state()
+        except Exception:  # noqa: BLE001
+            self._persistent_state = None
+        self._state_applied_to_scheduler = False
 
     def _ensure_scheduler(self) -> Scheduler:
         with self._scheduler_lock:
@@ -101,14 +111,72 @@ class BulkDubService:
         with self._scheduler_lock:
             return self._scheduler is not None
 
-    def stop(self) -> bool:
+    def stop(self, wait_seconds: float = 5.0) -> bool:
+        """R14-FIX2 P0-2 服务退出必须收走 benchmark：
+          1) 先 cancel benchmark；
+          2) **不持** _benchmark_lock 有界等待 benchmark 线程退出（避免自锁：
+             benchmark finally 需要能进入 _benchmark_lock 更新状态）；
+          3) terminate 所有已启动的 FFmpeg 子进程并 wait 收尸；
+          4) benchmark finally 会退出 exclusive、按 pause_prev 恢复；
+          5) 再 stop scheduler。任一步没在时限内完成 → 返回 False。
+          6) 从不持 _benchmark_lock 等 benchmark 线程。
+        """
+        # 1) 触发 benchmark cancel
+        with self._benchmark_lock:
+            bench_thread = self._benchmark_thread
+            if self._benchmark_state.get("running"):
+                self._benchmark_cancel.set()
+
+        deadline = time.time() + max(0.5, float(wait_seconds))
+
+        # 3) 立刻 terminate 登记在册的所有子进程（ffmpeg/ffprobe）——
+        # benchmark 线程会看到 cancel_event 或 subprocess 退出后自己收敛
+        killed_procs: list = []
+        try:
+            from integrated_workbench.proc import _ACTIVE, _ACTIVE_LOCK
+            with _ACTIVE_LOCK:
+                procs = list(_ACTIVE)
+            for p in procs:
+                try:
+                    if p.poll() is None:
+                        p.terminate()
+                        killed_procs.append(p)
+                except Exception:  # noqa: BLE001
+                    pass
+            # 短窗口等 terminate 生效；到期 kill
+            grace_deadline = time.time() + 3.0
+            for p in list(killed_procs):
+                remaining = max(0.05, grace_deadline - time.time())
+                try:
+                    p.wait(timeout=remaining)
+                except Exception:  # noqa: BLE001
+                    try:
+                        p.kill()
+                        p.wait(timeout=2.0)
+                    except Exception:  # noqa: BLE001
+                        pass
+        except Exception:  # noqa: BLE001
+            pass
+
+        # 2) 锁外 join benchmark 线程（bench_thread.finally 会 leave_exclusive）
+        benchmark_gone = True
+        if bench_thread is not None and bench_thread.is_alive():
+            remaining = max(0.5, deadline - time.time())
+            bench_thread.join(timeout=remaining)
+            benchmark_gone = not bench_thread.is_alive()
+
+        # 5) 再停 scheduler
         with self._scheduler_lock:
-            if self._scheduler is None:
-                return True
-            ok = self._scheduler.stop(3.0)
-            if ok:
-                self._scheduler = None
-            return ok
+            sched = self._scheduler
+        sched_gone = True
+        if sched is not None:
+            sched_wait = max(0.5, deadline - time.time())
+            sched_gone = sched.stop(sched_wait)
+            if sched_gone:
+                with self._scheduler_lock:
+                    if self._scheduler is sched:
+                        self._scheduler = None
+        return bool(benchmark_gone and sched_gone)
 
     def resize_pools(self, *, tts: int | None = None,
                      video: int | None = None) -> dict:
@@ -579,37 +647,111 @@ class BulkDubService:
         R14-FIX P0-5：scheduler 启动时**只自动加载有效 profile**——
         重探当前指纹与 profile 记录不匹配时不 push profile_recommended，
         controller 保持默认（config.video_concurrency）；UI 会显示"profile 已失效"。
-        另外恢复持久化的 mode / user_max / manual_video。
+
+        R14-FIX2 P1-6：mode/user_max/manual_video 状态**只在 service init
+        时读一次**（存于 self._persistent_state），此处只在**首次**推给
+        scheduler；后续调用 apply/set_mode 只写内存并 save_state，不再
+        每次都重新 load_state 覆盖 UI 刚设置的模式。
         """
         sched = self._ensure_scheduler()
         prof = self._gpu_profile
         if prof is not None:
             try:
                 ffmpeg = studio_settings.ffmpeg_tool("ffmpeg")
-                fresh = gpu_profile.detect_capability_metadata(ffmpeg)
+                # P1-5：按 profile 记录的 encoder_preference 探测，不是硬编码 auto
+                pref = getattr(prof, "encoder_preference", None) or "auto"
+                fresh = gpu_profile.detect_capability_metadata(
+                    ffmpeg, encoder_preference=pref,
+                )
                 if fresh.device_fingerprint == prof.device_fingerprint:
                     sched.controller.set_profile_recommended(
                         int(prof.recommended_concurrency or 0)
                     )
             except Exception:  # noqa: BLE001
                 pass
-        # 恢复持久化 mode/user_max/manual_video
-        try:
-            st = gpu_profile.load_state() or {}
-        except Exception:  # noqa: BLE001
-            st = {}
-        if st:
-            mode = st.get("mode") or MODE_AUTO
-            manual = int(st.get("manual_video") or 0) or None
-            user_max = int(st.get("user_max") or 0)
-            try:
-                sched.controller.set_mode(mode, manual_video=manual)
-            except Exception:  # noqa: BLE001
-                pass
-            sched.controller.set_user_max(user_max)
-            if mode == MODE_CPU_SAFE:
-                sched.set_encoder_override("libx264")
+        # R14-FIX2 P1-6：state 只加载一次（在 __init__）；这里只在首次
+        # 推给 scheduler。后续 UI/API 已经写过内存的 mode 不会被这里
+        # 无脑覆盖掉。
+        if not self._state_applied_to_scheduler:
+            st = self._persistent_state or {}
+            if st:
+                mode = st.get("mode") or MODE_AUTO
+                manual = int(st.get("manual_video") or 0) or None
+                user_max = int(st.get("user_max") or 0)
+                try:
+                    sched.controller.set_mode(mode, manual_video=manual)
+                except Exception:  # noqa: BLE001
+                    pass
+                sched.controller.set_user_max(user_max)
+                if mode == MODE_CPU_SAFE:
+                    sched.set_encoder_override("libx264")
+                else:
+                    sched.set_encoder_override(None)
+            self._state_applied_to_scheduler = True
         return sched
+
+    def _apply_profile_and_mode(self, sched: Scheduler, *,
+                                 mode: str, target_video: int | None,
+                                 manual_video: int | None = None,
+                                 user_max: int | None = None) -> dict:
+        """R14-FIX2 P0-4 内部统一入口：**同一处**更新 mode + encoder_override +
+        resize；resize 失败必须体现在返回值里，不能仍宣称"应用成功"。
+
+        返回：{
+          mode, encoder_override, requested_video, applied_video,
+          resize_ok, resize_error, controller
+        }
+        """
+        # 1) 更新 mode + encoder_override（CPU_SAFE 打开 libx264；其他清除）
+        sched.controller.set_mode(mode, manual_video=manual_video)
+        if user_max is not None:
+            sched.controller.set_user_max(int(user_max))
+        if mode == MODE_CPU_SAFE:
+            sched.set_encoder_override("libx264")
+        else:
+            # P0-4：切换到 AUTO / MANUAL 时**必须**清 encoder_override
+            sched.set_encoder_override(None)
+        # 2) resize（可选）
+        resize_ok = True
+        resize_error = ""
+        applied_video = None
+        if target_video is not None:
+            try:
+                r = sched.resize_pools(video=int(target_video))
+                applied_video = int(r.get("after", {}).get("video_alive")
+                                     or target_video)
+            except Exception as exc:  # noqa: BLE001
+                resize_ok = False
+                resize_error = str(exc)[:400]
+        # 3) 计算 serving 实际值
+        snap = sched.snapshot()
+        return {
+            "mode": mode,
+            "encoder_override": sched.encoder_override() or "",
+            "requested_video": target_video,
+            "applied_video": applied_video,
+            "video_serving": int(snap.get("video_alive") or 0),
+            "resize_ok": resize_ok,
+            "resize_error": resize_error,
+            "controller": sched.controller.snapshot(),
+        }
+
+    def _persist_state(self, *, mode: str, sched: Scheduler,
+                        profile_fp: str = "") -> tuple[bool, str]:
+        """R14-FIX2 P1-6：save_state 失败必须**可见**——API 至少返回
+        persisted=false 和 warning。返回 (ok, warning)。"""
+        payload = {
+            "mode": mode,
+            "user_max": sched.controller.state.user_max,
+            "manual_video": sched.controller.state.manual_video_concurrency,
+            "profile_fingerprint": profile_fp,
+        }
+        try:
+            gpu_profile.save_state(payload)
+            self._persistent_state = payload
+            return True, ""
+        except Exception as exc:  # noqa: BLE001
+            return False, f"gpu_state 落盘失败：{exc}"[:200]
 
     def gpu_capability(self) -> dict:
         """返回当前设备能力档案。若未做基准 → 返回骨架元数据（sample=空）。"""
@@ -688,12 +830,21 @@ class BulkDubService:
             audio_seconds = max(1.0, float(v_probe.duration) * 2.0)
         except Exception as exc:  # noqa: BLE001
             raise ValidationError(f"代表样本视频不可读：{exc}")
+
+        # R14-FIX2 P0-1：**始终**独占——无论 scheduler 是否已存在，
+        # 都必须创建/取得唯一 scheduler，并成功进入 benchmark exclusive
+        # 之后才启动后台线程。原来"scheduler 未创建就跳过独占"是错误的。
+        sched_ref = self._ensure_scheduler()
+
+        # 原子进入 benchmark_running + benchmark_exclusive；任一步失败必须
+        # 恢复 pause 原状。第二个 benchmark 必须拒绝。
         with self._benchmark_lock:
             if self._benchmark_state.get("running"):
                 raise ValidationError("已有基准在运行，请先取消或等待完成")
+            # 只在真正准备启动线程前才置 running=True，避免异常泄漏"running"
             self._benchmark_cancel = threading.Event()
-            self._benchmark_state = {
-                "running": True,
+            pending_state = {
+                "running": False,   # 只有独占成功才置 True
                 "phase": "prepare",
                 "concurrency_now": 0,
                 "results": [],
@@ -704,27 +855,41 @@ class BulkDubService:
                 "audio_seconds": audio_seconds,
                 "exclusive": False,
             }
+            self._benchmark_state = pending_state
 
-        # R14-FIX P0-6：进入独占态（仅当 scheduler 已存在）；否则跳过
-        exclusive_ok = True
-        sched_ref = self._scheduler
-        if sched_ref is not None:
+        # R14-FIX2 P0-1：进入独占——store 抛异常 fail closed（enter_benchmark
+        # _exclusive 会先 leave_exclusive 再 raise）；准备阶段任何异常都必须
+        # 保证 pause 原状不被误 set。
+        exclusive_ok = False
+        try:
             exclusive_ok = sched_ref.enter_benchmark_exclusive(
                 wait_seconds=exclusive_wait_seconds,
                 cancel_event=self._benchmark_cancel,
             )
-            if not exclusive_ok:
-                with self._benchmark_lock:
-                    self._benchmark_state["running"] = False
-                    self._benchmark_state["phase"] = "rejected"
-                    self._benchmark_state["error"] = (
-                        "等待生产池收敛超时或有另一个 benchmark 在运行；"
-                        "请先手动暂停并等待任务完成后再试"
-                    )
-                    self._benchmark_state["finished_at"] = time.time()
-                raise ValidationError(self._benchmark_state["error"])
+        except Exception as exc:  # noqa: BLE001
+            # store 异常 / 其他准备异常 — leave 已经在 enter 里做过
             with self._benchmark_lock:
-                self._benchmark_state["exclusive"] = True
+                self._benchmark_state["phase"] = "error"
+                self._benchmark_state["error"] = f"benchmark 准备失败：{exc}"[:400]
+                self._benchmark_state["finished_at"] = time.time()
+                self._benchmark_state["running"] = False
+            raise ValidationError(self._benchmark_state["error"])
+
+        if not exclusive_ok:
+            with self._benchmark_lock:
+                self._benchmark_state["phase"] = "rejected"
+                self._benchmark_state["error"] = (
+                    "等待生产池收敛超时或有另一个 benchmark 在运行；"
+                    "请先手动暂停并等待任务完成后再试"
+                )
+                self._benchmark_state["finished_at"] = time.time()
+                self._benchmark_state["running"] = False
+            raise ValidationError(self._benchmark_state["error"])
+
+        # 成功独占——正式置 running=True
+        with self._benchmark_lock:
+            self._benchmark_state["running"] = True
+            self._benchmark_state["exclusive"] = True
 
         def _bg() -> None:
             ffmpeg = studio_settings.ffmpeg_tool("ffmpeg")
@@ -754,9 +919,12 @@ class BulkDubService:
                     preset=preset, crf=crf,
                     ladder=list(ladder) if ladder else gpu_profile.DEFAULT_LADDER,
                     warmup_rounds=1, per_job_timeout=300.0,
-                    measured_rounds=2,   # R14-FIX P1-1 至少 2 轮正式测量
+                    # R14-FIX2 P1-1：warmup 1 + 正式测量 **3** 轮 → 取真中位数
+                    measured_rounds=3,
                     progress_cb=_cb, cancel_event=self._benchmark_cancel,
                 )
+                # R14-FIX2 P1-5：encoder_preference 落库到 profile
+                cap.encoder_preference = encoder_preference or "auto"
                 gpu_profile.save_profile(cap)
                 self._gpu_profile = cap
                 with self._benchmark_lock:
@@ -780,8 +948,7 @@ class BulkDubService:
                     try: silent.unlink()
                     except OSError: pass
                 # 无论结果如何，都退出独占态；这里正确恢复用户此前的暂停状态
-                if sched_ref is not None:
-                    sched_ref.leave_benchmark_exclusive()
+                sched_ref.leave_benchmark_exclusive()
 
         t = threading.Thread(target=_bg, name="gpu-benchmark", daemon=True)
         with self._benchmark_lock:
@@ -794,14 +961,22 @@ class BulkDubService:
     def apply_gpu_profile(self) -> dict:
         """R14-FIX P0-5：应用 profile 前**必须重探当前指纹**——
         OS/FFmpeg/编码器/GPU/驱动 任一变化 → 拒绝应用，要求重新测试。
-        R14-FIX P0-6：benchmark 独占期禁止 apply。"""
+        R14-FIX P0-6：benchmark 独占期禁止 apply。
+        R14-FIX2 P0-4：切到 AUTO 必须**清 encoder_override**——统一走
+        `_apply_profile_and_mode`。
+        R14-FIX2 P1-5：按 profile 保存的 encoder_preference 探测，不硬编码 auto。
+        R14-FIX2 P1-6：save_state 失败在返回值中可见（persisted=false + warning）。
+        """
         if self._gpu_profile is None:
             raise ValidationError("尚无 profile，请先运行显卡性能测试")
         if self._scheduler is not None and self._scheduler.is_benchmark_exclusive():
             raise ValidationError("benchmark 独占运行中，禁止 apply profile")
         ffmpeg = studio_settings.ffmpeg_tool("ffmpeg")
+        pref = getattr(self._gpu_profile, "encoder_preference", None) or "auto"
         try:
-            fresh = gpu_profile.detect_capability_metadata(ffmpeg)
+            fresh = gpu_profile.detect_capability_metadata(
+                ffmpeg, encoder_preference=pref,
+            )
         except Exception as exc:  # noqa: BLE001
             raise ValidationError(f"当前设备指纹探测失败：{exc}")
         if fresh.device_fingerprint != self._gpu_profile.device_fingerprint:
@@ -813,23 +988,26 @@ class BulkDubService:
         sched = self._ensure_scheduler_for_controller()
         rec = int(self._gpu_profile.recommended_concurrency or 1)
         sched.controller.set_profile_recommended(rec)
-        sched.controller.set_mode(MODE_AUTO)
-        # 直接对齐视频池（不等 controller.decide 的下一次事件）
-        try:
-            r = sched.resize_pools(video=rec)
-        except Exception as exc:  # noqa: BLE001
-            r = {"error": str(exc)}
-        # R14-FIX P0-5 持久化：mode/user_max/fingerprint 写盘，重启恢复
-        try:
-            gpu_profile.save_state({
-                "mode": MODE_AUTO,
-                "user_max": sched.controller.state.user_max,
-                "profile_fingerprint": self._gpu_profile.device_fingerprint,
-            })
-        except Exception:  # noqa: BLE001
-            pass
-        return {"applied_video_concurrency": rec, "resize": r,
-                 "controller": sched.controller.snapshot()}
+        # 统一 apply：mode=AUTO + 清 encoder_override + resize=rec
+        result = self._apply_profile_and_mode(
+            sched, mode=MODE_AUTO, target_video=rec,
+        )
+        # resize 失败不能仍返回"应用成功"
+        persisted, warning = self._persist_state(
+            mode=MODE_AUTO, sched=sched,
+            profile_fp=self._gpu_profile.device_fingerprint,
+        )
+        return {
+            "applied_video_concurrency": rec,
+            "applied": result,
+            "resize_ok": result["resize_ok"],
+            "resize_error": result["resize_error"],
+            "encoder_override": result["encoder_override"],
+            "video_serving": result["video_serving"],
+            "persisted": persisted,
+            "persist_warning": warning,
+            "controller": result["controller"],
+        }
 
     def set_concurrency_mode(self, mode: str, *,
                               manual_video: int | None = None,
@@ -840,37 +1018,32 @@ class BulkDubService:
         # R14-FIX P0-6：benchmark 独占期禁止改模式
         if sched.is_benchmark_exclusive():
             raise ValidationError("benchmark 独占运行中，禁止切换模式")
-        sched.controller.set_mode(mode, manual_video=manual_video)
-        if user_max is not None:
-            sched.controller.set_user_max(int(user_max))
-        # MANUAL / CPU_SAFE 立即应用
-        # R14-FIX P0-2：CPU_SAFE 必须**同时**打开 encoder_override='libx264'——
-        # 只 resize worker 数不够；退出 CPU_SAFE 时清 override。
+
+        # R14-FIX2 P0-4 统一入口：mode + encoder_override + resize 在同一处
+        target_video: int | None = None
         if mode == MODE_CPU_SAFE:
-            sched.set_encoder_override("libx264")
-            try: sched.resize_pools(video=2)
-            except Exception:  # noqa: BLE001
-                pass
-        else:
-            sched.set_encoder_override(None)
-        if mode == MODE_MANUAL and manual_video is not None:
-            try:
-                from .concurrency_controller import MAX_VIDEO_CONCURRENCY as _MVC
-                sched.resize_pools(video=max(1, min(_MVC, int(manual_video))))
-            except Exception:  # noqa: BLE001
-                pass
-        # R14-FIX P0-5 持久化状态
-        try:
-            fp = self._gpu_profile.device_fingerprint if self._gpu_profile else ""
-            gpu_profile.save_state({
-                "mode": mode,
-                "user_max": sched.controller.state.user_max,
-                "manual_video": sched.controller.state.manual_video_concurrency,
-                "profile_fingerprint": fp,
-            })
-        except Exception:  # noqa: BLE001
-            pass
-        return {"mode": mode, "controller": sched.controller.snapshot()}
+            target_video = 2
+        elif mode == MODE_MANUAL and manual_video is not None:
+            from .concurrency_controller import MAX_VIDEO_CONCURRENCY as _MVC
+            target_video = max(1, min(_MVC, int(manual_video)))
+        result = self._apply_profile_and_mode(
+            sched, mode=mode, target_video=target_video,
+            manual_video=manual_video, user_max=user_max,
+        )
+        fp = self._gpu_profile.device_fingerprint if self._gpu_profile else ""
+        persisted, warning = self._persist_state(mode=mode, sched=sched,
+                                                   profile_fp=fp)
+        return {
+            "mode": mode,
+            "applied": result,
+            "resize_ok": result["resize_ok"],
+            "resize_error": result["resize_error"],
+            "encoder_override": result["encoder_override"],
+            "video_serving": result["video_serving"],
+            "persisted": persisted,
+            "persist_warning": warning,
+            "controller": result["controller"],
+        }
 
     def probe_sample(self, *, voice_id: str = DEFAULT_VOICE_ID,
                      speed: float = DEFAULT_SPEED,

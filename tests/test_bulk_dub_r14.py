@@ -321,10 +321,14 @@ def test_r14_controller_hardware_failure_halves():
 
 
 def test_r14_controller_cooldown_prevents_thrashing():
+    """R14-FIX2 P1-4：decide() 只出计划、绝不预写；调用方 resize 成功后
+    调 note_resize_applied 才进入冷却。测试反映新契约。"""
     c = ConcurrencyController(profile_recommended=4)
-    # 首次
-    c.decide(tts_done_backlog=10, video_running=0,
-              output_free_gb=100, recent_throughput=0)
+    # 首次决策 → apply=True；调用方 resize 后必须 note_resize_applied
+    target, apply, _ = c.decide(tts_done_backlog=10, video_running=0,
+                                  output_free_gb=100, recent_throughput=0)
+    assert apply is True
+    c.note_resize_applied(target)
     # 立即再决策：处于冷却
     _, apply, _ = c.decide(tts_done_backlog=10, video_running=0,
                              output_free_gb=100, recent_throughput=0)

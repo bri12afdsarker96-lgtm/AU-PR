@@ -352,8 +352,20 @@ def render_single(*, input_video: str | Path, tts_audio: str | Path,
             return cancel_flag is not None and cancel_flag.is_set()
         except Exception:  # noqa: BLE001
             return False
+    # R14-FIX2 P0-5 契约：两次尝试**共享**同一份 timeout 预算——primary
+    # 已消耗的时间会从 fallback 的可用时间里扣除；不足 30s 则不再 fallback。
+    budget_started = time.time()
+    total_budget = float(timeout)
     try:
         for attempt_pass in ("primary", "fallback"):
+            attempt_budget = max(
+                1.0, total_budget - (time.time() - budget_started)
+            )
+            if attempt_pass == "fallback" and attempt_budget < 30.0:
+                raise VideoError(
+                    f"CPU fallback 无法在剩余 {attempt_budget:.1f}s 内完成，"
+                    "本条视为硬件失败"
+                )
             # R14-4：若当前 encoder 已经是 libx264（一开始就是 CPU 或已经因 breaker/回退切了 CPU）
             # → 必须先在 CpuFallbackGate 上获得名额，防止 CPU fallback 风暴
             if fallback_gate is not None and used_encoder.encoder == "libx264" \
@@ -392,18 +404,39 @@ def render_single(*, input_video: str | Path, tts_audio: str | Path,
                 "-movflags", "+faststart",
                 str(tmp_out),
             ]
+            attempt_started = time.time()
+            # R14-FIX2 P0-5：硬件 timeout 是 **硬件失败**（不是取消）——
+            # 分开处理 VideoCancelled 与 VideoError；后者若发生在硬件路径上
+            # 必须 record_failure；libx264 fallback 也走独立 cpu_fallback_cb。
             try:
                 code, err_tail = _run_ffmpeg_cancellable(
-                    cmd, cancel_flag=cancel_flag, timeout=timeout,
+                    cmd, cancel_flag=cancel_flag, timeout=attempt_budget,
                 )
-            except (VideoCancelled, VideoError):
+            except VideoCancelled:
                 _safe_unlink(tmp_out)
-                # R14-FIX P0-3：half-open 探测被取消时归还 probe 名额，
-                # 避免 breaker 永久卡在 half-open 拒绝其他任务
+                # 用户 cancel（不是 timeout）：half-open probe 归还 probe 名额
                 if breaker is not None and used_encoder.encoder != "libx264":
                     try: breaker.record_cancel()
                     except Exception:  # noqa: BLE001
                         pass
+                raise
+            except VideoError:
+                _safe_unlink(tmp_out)
+                # timeout / 未预期 ffmpeg 错误：**硬件路径当硬件失败处理**
+                if used_encoder.encoder != "libx264":
+                    if breaker is not None:
+                        try: breaker.record_failure()
+                        except Exception:  # noqa: BLE001
+                            pass
+                    if hw_failure_cb is not None:
+                        try: hw_failure_cb(used_encoder.encoder)
+                        except Exception:  # noqa: BLE001
+                            pass
+                else:
+                    if cpu_fallback_failure_cb is not None:
+                        try: cpu_fallback_failure_cb()
+                        except Exception:  # noqa: BLE001
+                            pass
                 raise
 
             if code == 0 and tmp_out.is_file() and tmp_out.stat().st_size >= 1024:

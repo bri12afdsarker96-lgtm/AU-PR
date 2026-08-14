@@ -226,6 +226,11 @@ class EncoderCircuitBreaker:
     def is_open(self) -> bool:
         return self.state == self.STATE_OPEN
 
+    def is_degraded(self) -> bool:
+        """R14-FIX2 P0-6：OPEN 或 HALF_OPEN 都视为硬件退化——
+        HALF_OPEN 期间只允许 1 个探测；池不能保持满并发。"""
+        return self.state in (self.STATE_OPEN, self.STATE_HALF_OPEN)
+
     def snapshot(self) -> dict:
         with self._lock:
             self._maybe_transition_to_halfopen_locked()
@@ -298,6 +303,40 @@ class ConcurrencyController:
                     return True
         return False
 
+    def is_any_hw_breaker_degraded(self) -> bool:
+        """R14-FIX2 P0-6：任何硬件 encoder breaker OPEN 或 HALF_OPEN —— 池必须
+        保持安全并发（推荐 1）。HALF_OPEN 期间也不允许恢复满池，
+        只有 CLOSED 才能按冷却/滞回恢复并发。"""
+        with self._lock:
+            for b in self.breakers.values():
+                if b.is_degraded():
+                    return True
+        return False
+
+    def note_resize_applied(self, applied: int) -> None:
+        """R14-FIX2 P1-4：由 scheduler 在 **resize 真的成功之后** 调用，
+        统一在这里更新 last_effective_concurrency / last_resize_at；
+        decide() 只出计划、绝不预写。"""
+        with self._lock:
+            self.state.last_effective_concurrency = max(1, int(applied))
+            self.state.last_resize_at = time.time()
+
+    def note_observed_serving(self, serving: int) -> None:
+        """R14-FIX2 P1-4：coordinator/snapshot 观察到"当前 serving 数"但**尚未
+        主动 resize** 时，只对齐 last_effective_concurrency，**不**改
+        last_resize_at——避免虚假冷却窗口阻止首次真实决策。"""
+        with self._lock:
+            if serving > 0 and self.state.last_effective_concurrency == 0:
+                self.state.last_effective_concurrency = int(serving)
+
+    def note_resize_failed(self, target: int, reason: str = "") -> None:
+        """R14-FIX2 P1-4：resize 失败——保留真实 serving，不改 last_effective；
+        清零 last_resize_at，允许下一周期立即重试。"""
+        with self._lock:
+            self.state.last_resize_at = 0.0
+            if reason:
+                self.state.reason = f"resize 失败：{reason}"
+
     def breaker_for(self, encoder_name: str) -> EncoderCircuitBreaker:
         with self._lock:
             b = self.breakers.get(encoder_name)
@@ -351,11 +390,11 @@ class ConcurrencyController:
                  output_free_gb: float,
                  recent_throughput: float,
                  encoder_name: str = "") -> tuple[int, bool, str]:
-        """返回 (target, apply, reason)。
+        """返回 (target, apply, reason)——**只做决策，不落状态**。
 
-        - target: 建议的视频池 worker 数；
-        - apply: 是否满足冷却时间可立即应用（False → 调用方应等一下再问）；
-        - reason: 决策理由（供 UI/日志）。
+        R14-FIX2 P1-4：last_effective_concurrency / last_resize_at 只能由
+        `note_resize_applied()` / `note_resize_failed()` 在 resize 真的完成
+        后更新。decide() 不再"先写效应再返回"，避免 resize 失败仍认为已生效。
         """
         now = time.time()
         with self._lock:
@@ -370,10 +409,8 @@ class ConcurrencyController:
                 cooled = (now - s.last_resize_at) >= RESIZE_MIN_INTERVAL_S \
                     or s.last_effective_concurrency == 0
                 reason = f"MANUAL：{target}"
+                s.reason = reason
                 if cooled and target != s.last_effective_concurrency:
-                    s.last_resize_at = now
-                    s.last_effective_concurrency = target
-                    s.reason = reason
                     return target, True, reason
                 return target, False, reason
 
@@ -383,10 +420,8 @@ class ConcurrencyController:
                 cooled = (now - s.last_resize_at) >= RESIZE_MIN_INTERVAL_S \
                     or s.last_effective_concurrency == 0
                 reason = "CPU_SAFE：libx264 低并发（≤2）"
+                s.reason = reason
                 if cooled and target != s.last_effective_concurrency:
-                    s.last_resize_at = now
-                    s.last_effective_concurrency = target
-                    s.reason = reason
                     return target, True, reason
                 return target, False, reason
 
@@ -404,10 +439,8 @@ class ConcurrencyController:
                     target = 1
                     cooled = (now - s.last_resize_at) >= RESIZE_MIN_INTERVAL_S
                     reason = f"AUTO：{encoder_name} breaker 打开，降到 1"
+                    s.reason = reason
                     if cooled and target != s.last_effective_concurrency:
-                        s.last_resize_at = now
-                        s.last_effective_concurrency = target
-                        s.reason = reason
                         return target, True, reason
                     return target, False, reason
 
@@ -419,10 +452,8 @@ class ConcurrencyController:
                 target = max(1, s.last_effective_concurrency // 2 or 1)
                 cooled = (now - s.last_resize_at) >= RESIZE_MIN_INTERVAL_S
                 reason = f"AUTO：近 {int(FAILURE_WINDOW_S)}s 硬件失败 {hw_fail_rate} 次，减半"
+                s.reason = reason
                 if cooled and target != s.last_effective_concurrency:
-                    s.last_resize_at = now
-                    s.last_effective_concurrency = target
-                    s.reason = reason
                     return target, True, reason
                 return target, False, reason
 
@@ -432,6 +463,7 @@ class ConcurrencyController:
                     base_recommended > s.last_effective_concurrency:
                 target = s.last_effective_concurrency
                 reason = f"AUTO：输出目录仅剩 {output_free_gb:.1f} GB，不放大"
+                s.reason = reason
                 return target, False, reason
 
             # CPU fallback 饱和：不放大
@@ -440,6 +472,7 @@ class ConcurrencyController:
                     base_recommended > s.last_effective_concurrency:
                 target = s.last_effective_concurrency
                 reason = "AUTO：CPU fallback 饱和，不放大"
+                s.reason = reason
                 return target, False, reason
 
             # 无 backlog → 不主动放大（保守）
@@ -458,13 +491,15 @@ class ConcurrencyController:
             cooled = (now - s.last_resize_at) >= RESIZE_MIN_INTERVAL_S \
                 or s.last_effective_concurrency == 0
             if not cooled:
-                return target, False, "AUTO：冷却中"
+                s.reason = "AUTO：冷却中"
+                return target, False, s.reason
             if target == s.last_effective_concurrency and \
                     s.last_effective_concurrency > 0:
                 # 无变化——不需要下发
-                return target, False, "AUTO：无需调整"
-            s.last_resize_at = now
-            s.last_effective_concurrency = target
+                s.reason = "AUTO：无需调整"
+                return target, False, s.reason
+            # R14-FIX2 P1-4：仅记录本次决策使用的吞吐信号，供下次滞回参考；
+            # last_effective / last_resize_at 由 note_resize_applied 更新
             s.last_throughput_signal = recent_throughput
             reason = (f"AUTO：backlog={tts_done_backlog}，"
                        f"recommended={base_recommended}，选 {target}")
