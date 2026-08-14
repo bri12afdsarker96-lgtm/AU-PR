@@ -67,3 +67,7 @@ source/dub_align_studio/_build_info.py
 # 发布压缩包（带版本号）
 发布包/
 *.zip
+
+# Cython 打包临时（源码备份 + 计数文件）
+.licensing_src_backup/
+_cython_count.tmp

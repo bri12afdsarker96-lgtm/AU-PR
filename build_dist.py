@@ -93,34 +93,113 @@ def clean_dist() -> None:
     DIST_ROOT.mkdir(parents=True, exist_ok=True)
 
 
-def cython_compile_licensing() -> None:
-    """Cython 编译 licensing/*.py → 原地生成 .pyd/.so，然后**删掉 .py 源码**。
+_LICENSING_BACKUP = HERE / ".licensing_src_backup"
 
-    Cython 编译**要求**装了 setuptools + C 编译器：
-      - Windows: MSVC Build Tools（用 pip install setuptools cython）
+
+def backup_licensing_sources() -> None:
+    """Cython 会**删掉 source/licensing/*.py**（git 工作树里的源码！）。
+    编译前必须先备份，打包完 restore 回来，否则仓库源码被销毁。"""
+    lic_dir = SOURCE_DIR / "licensing"
+    if _LICENSING_BACKUP.exists():
+        shutil.rmtree(_LICENSING_BACKUP, ignore_errors=True)
+    _LICENSING_BACKUP.mkdir(parents=True, exist_ok=True)
+    for py in lic_dir.glob("*.py"):
+        shutil.copy2(py, _LICENSING_BACKUP / py.name)
+    _log(f"[OK] 已备份 licensing/*.py → {_LICENSING_BACKUP.name}（打包后自动恢复）")
+
+
+def restore_licensing_sources() -> None:
+    """把备份的 licensing/*.py 恢复回工作树，并清掉 Cython 产物（.pyd/.c/.so）。
+    保证仓库回到打包前的干净状态。"""
+    if not _LICENSING_BACKUP.exists():
+        _log("[!] 无 licensing 源码备份，跳过恢复（若源码丢失请 git checkout）")
+        return
+    lic_dir = SOURCE_DIR / "licensing"
+    # 先删 Cython 产物
+    for pat in ("*.pyd", "*.so", "*.c"):
+        for f in lic_dir.glob(pat):
+            try:
+                f.unlink()
+            except OSError:
+                pass
+    # 恢复 .py
+    n = 0
+    for py in _LICENSING_BACKUP.glob("*.py"):
+        shutil.copy2(py, lic_dir / py.name)
+        n += 1
+    shutil.rmtree(_LICENSING_BACKUP, ignore_errors=True)
+    _log(f"[OK] 已恢复 {n} 个 licensing/*.py 源码，清理 Cython 产物")
+
+
+def cython_compile_licensing() -> int:
+    """Cython 编译 licensing/*.py → 原地 .pyd/.so，**编译成功后删掉对应 .py 源码**。
+
+    为什么必须删 .py：
+      若同目录同时存在 client.py 和 client.pyd，PyInstaller 会把 .py 也打成
+      .pyc 进 PYZ，冻结运行时 PYZ importer 可能先命中 .pyc → .pyd 白编译。
+      删掉 .py 后 PyInstaller 只见 .pyd → 打成二进制扩展 → 运行时只能加载 .pyd
+      （无源码可反编译）。
+
+    健壮性：
+      - 逐个模块编译，单个失败只让那个模块退回 .py，不影响其他模块
+      - 清理 .c 中间产物 + build/ 临时目录（.c 等价源码，绝不能留）
+
+    要求：setuptools + C 编译器
+      - Windows: MSVC Build Tools（Visual C++ 14.x）
       - Linux/macOS: gcc/clang
+
+    返回：成功编译成 .pyd/.so 的模块数。
     """
     lic_dir = SOURCE_DIR / "licensing"
-    py_files = sorted(lic_dir.glob("*.py"))
-    py_files = [p for p in py_files if p.name != "__init__.py"]  # 保留 __init__
+    # __init__.py 作为包入口，编成扩展较脆弱（包 init 语义），保留为源码；
+    # 真正含密钥/HMAC/RASP/加密逻辑的是下面这些子模块，全部编成 .pyd。
+    py_files = [p for p in sorted(lic_dir.glob("*.py")) if p.name != "__init__.py"]
     if not py_files:
         _log("licensing/ 无 .py 需要编译")
-        return
+        return 0
     try:
-        import Cython.Build.Cythonize as _cy  # noqa: F401, PLC0415
+        import Cython  # noqa: F401, PLC0415
     except ImportError:
-        _log("⚠ 未安装 cython，跳过（发行强度会下降）。pip install cython")
-        return
-    _log(f"Cython 编译 {len(py_files)} 个 licensing 模块…")
-    cmd = [
-        sys.executable, "-m", "Cython.Build.Cythonize",
-        "-i",           # inplace 生成 .so/.pyd
-        "-3",           # Python 3
-    ] + [str(p) for p in py_files]
-    r = subprocess.run(cmd, cwd=str(HERE))
-    if r.returncode != 0:
-        raise RuntimeError(f"Cython 编译失败 exit={r.returncode}")
-    _log("Cython OK（licensing/*.pyd 已生成）")
+        _log("[!] 未安装 cython，跳过（licensing 只有 .pyc，可反编译）。pip install cython")
+        return 0
+
+    is_win = platform.system() == "Windows"
+    ext = ".pyd" if is_win else ".so"
+    compiled = 0
+    failed: list[str] = []
+    for py in py_files:
+        _log(f"Cython 编译 {py.name} …")
+        cmd = [sys.executable, "-m", "Cython.Build.Cythonize",
+               "-i", "-3", str(py)]
+        r = subprocess.run(cmd, cwd=str(HERE))
+        # 检查是否真产出了扩展模块（stem.*.pyd 或 stem.pyd）
+        produced = list(lic_dir.glob(f"{py.stem}*{ext}"))
+        if r.returncode == 0 and produced:
+            # 删源码 .py（关键！否则 PyInstaller 会打 .pyc 盖过 .pyd）
+            try:
+                py.unlink()
+            except OSError:
+                pass
+            compiled += 1
+        else:
+            failed.append(py.name)
+            _log(f"[!] {py.name} 编译失败（exit={r.returncode}）→ 该模块保留 .py")
+
+    # 清理 .c 中间产物（等价源码）+ Cython build/ 临时目录
+    for c in lic_dir.glob("*.c"):
+        try:
+            c.unlink()
+        except OSError:
+            pass
+    _bt = HERE / "build"
+    if _bt.exists():
+        shutil.rmtree(_bt, ignore_errors=True)
+
+    if compiled:
+        _log(f"[OK] Cython 编译成功 {compiled}/{len(py_files)} 个 licensing 模块 → {ext}")
+    if failed:
+        _log(f"[!] 未编译（保留 .py）：{', '.join(failed)}")
+    return compiled
 
 
 def _find_icon() -> Path | None:

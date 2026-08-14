@@ -18,6 +18,12 @@ REM ============================================================
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
+REM 自愈：若上次打包中途崩溃、留下 licensing 源码备份，先恢复（避免源码被 Cython 删后丢失）
+if exist ".licensing_src_backup\" (
+    echo [自愈] 检测到上次残留的 licensing 源码备份，先恢复...
+    python -c "import sys; sys.path.insert(0, '.'); from build_dist import restore_licensing_sources; restore_licensing_sources()" 2>nul
+)
+
 REM 新 spec（含激活码 + RASP + 完整数据 + 图标）优先
 set "SPEC_NEW=installer\dub_align_studio_lite.spec"
 REM 老 spec（无激活码，仅兼容旧流程）兜底
@@ -85,14 +91,35 @@ if errorlevel 1 (
 )
 python -c "import Cython" 2>nul
 if not errorlevel 1 (
-    python -c "import sys; sys.path.insert(0, '.'); from build_dist import cython_compile_licensing; cython_compile_licensing()"
-    if errorlevel 1 (
-        echo   [!] Cython 编译失败——继续但 licensing 只有 .pyc 弱保护
+    REM 备份 licensing 源码（Cython 会删工作树里的 .py，打包后恢复）
+    python -c "import sys; sys.path.insert(0, '.'); from build_dist import backup_licensing_sources; backup_licensing_sources()"
+    REM 编译并把成功个数写到临时文件，供后面判断 MSVC 是否就绪
+    python -c "import sys; sys.path.insert(0, '.'); from build_dist import cython_compile_licensing; n=cython_compile_licensing(); open('_cython_count.tmp','w').write(str(n))"
+    set /p CYN=<_cython_count.tmp
+    del _cython_count.tmp 2>nul
+    if "!CYN!"=="0" (
+        echo.
+        echo   [X] Cython 已装但**一个 .pyd 都没编出来** —— 几乎肯定是缺 MSVC C 编译器。
+        echo       你选了方案 A（真 .pyd 混淆），必须装：
+        echo         1^) 下载 Visual Studio Build Tools:
+        echo            https://visualstudio.microsoft.com/visual-cpp-build-tools/
+        echo         2^) 安装时只勾「使用 C++ 的桌面开发」里的
+        echo            - MSVC v14x 生成工具
+        echo            - Windows 10/11 SDK
+        echo         3^) 装完重开 cmd，重跑本脚本
+        echo.
+        set /p GOON="   仍要继续打包吗？（licensing 会退回 .pyc 弱保护）Y=继续 N=中止: "
+        if /i "!GOON!" NEQ "Y" (
+            echo   已中止。装好 MSVC 后重跑。
+            pause
+            exit /b 9
+        )
     ) else (
-        echo   [OK] licensing/*.pyd 已生成
+        echo   [OK] Cython 编译成功 !CYN! 个 licensing 模块 -^> .pyd（源码已删，无源码可反）
     )
 ) else (
     echo   [!] 无 Cython，跳过（licensing 只有 .pyc；可用但反编译难度低）
+    echo       你选了方案 A：python -m pip install cython  再重跑
 )
 
 REM ---------- Step 2  pyinstaller ----------
@@ -228,6 +255,8 @@ echo   [OK] 打包完成
 echo ============================================================
 REM 清理 source/_build_info.py（保持仓库干净，密钥不入库）
 python -c "import sys; sys.path.insert(0, '.'); from build_dist import cleanup_build_info; cleanup_build_info()"
+REM 恢复 licensing/*.py 源码 + 清 Cython 产物（工作树回到打包前状态）
+python -c "import sys; sys.path.insert(0, '.'); from build_dist import restore_licensing_sources; restore_licensing_sources()"
 
 echo   产物：dist\安装器\setup_水星配音对齐工作室_v0.7.71_lite.exe
 echo.
