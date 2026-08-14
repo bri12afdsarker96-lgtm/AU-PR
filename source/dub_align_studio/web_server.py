@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import tempfile
 import threading
 import time
@@ -916,6 +917,68 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
 
 
 # ------------------------------------------------------------------ HTTP
+from . import licensing as _licensing_pkg
+
+
+# 允许在未激活状态下访问的**白名单前缀**：
+#   * 首页 HTML / 静态 JS/CSS —— 让登录页能加载
+#   * /api/license/* —— 激活流本身
+#   * favicon / 组件静态 —— 页面基础资源
+# 其他所有 /api/* 都强制经 license gate。
+_LICENSE_PUBLIC_ROUTES = frozenset({
+    "/", "/index.html", "/favicon.ico",
+    "/api/license/status", "/api/license/activate",
+    "/api/license/logout", "/api/license/deactivate",
+})
+
+
+def _license_gate_check(route: str) -> bool:
+    """路由是否允许在**未激活**状态下访问。True = 放行；False = 拦截并返回 403。"""
+    if route in _LICENSE_PUBLIC_ROUTES:
+        return True
+    if route.startswith("/api/license/"):
+        return True
+    # 主界面的非 API 静态资源（web/ 下）也放行，让登录页能用
+    if not route.startswith("/api/"):
+        return True
+    return False
+
+
+def _license_gate_enabled() -> bool:
+    """License gate 是否启用。
+    - 生产打包：**默认启用**（授权服务器上线后应该 ON）
+    - 测试 / 开发：设 env `DUB_ALIGN_LICENSE_DISABLE=1` 可关掉
+
+    为了不打断已有 260 项 pytest 测试与本地开发，MVP 阶段默认 **DISABLED**；
+    等打包脚本明确 set env 才开启。
+    """
+    disable = os.environ.get("DUB_ALIGN_LICENSE_DISABLE", "").strip().lower()
+    if disable in ("1", "true", "yes", "on"):
+        return False
+    enable = os.environ.get("DUB_ALIGN_LICENSE_REQUIRED", "").strip().lower()
+    if enable in ("1", "true", "yes", "on"):
+        return True
+    # 未显式配置 → 默认 **不强制**（保持兼容；打包时改这行为 True 或设 env）
+    return False
+
+
+def _license_gate_active() -> bool:
+    try:
+        return _licensing_pkg.get_manager().is_active()
+    except Exception:  # noqa: BLE001
+        # licensing 子系统本身崩了 → **fail closed**，不允许通过
+        return False
+
+
+def _license_should_block(route: str) -> bool:
+    """真正的 gate 决策：既要 gate 启用，又要路由非公开，且当前未激活。"""
+    if not _license_gate_enabled():
+        return False
+    if _license_gate_check(route):
+        return False
+    return not _license_gate_active()
+
+
 class _Handler(BaseHTTPRequestHandler):
     # R12-9：显式 HTTP/1.1——CSV chunked / Range 206 都需要 1.1
     protocol_version = "HTTP/1.1"
@@ -931,8 +994,102 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    # ---------------------------------------------------------------- License
+    def _license_state_json(self) -> dict:
+        """公开状态：不返回激活码明文，只返回够 UI 展示的字段。"""
+        try:
+            st = _licensing_pkg.get_manager().state()
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "activated": False, "active": False, "last_error": str(exc)[:200],
+            }
+        gate_enabled = _license_gate_enabled()
+        # UI 判 `active`：
+        #  - gate 未启用（开发/测试）→ 恒 true，UI 直接进主界面
+        #  - gate 启用 → 走 licensing 子系统真实判定
+        ui_active = True if not gate_enabled else _license_gate_active()
+        return {
+            "activated": st.activated,
+            "active": ui_active,
+            "gate_enabled": gate_enabled,
+            "expire_at": st.expire_at,
+            "server_time": st.server_time,
+            "heartbeat_interval": st.heartbeat_interval,
+            "last_action": st.last_action,
+            "last_error": st.last_error,
+            "device_name": _licensing_pkg.get_manager()._device,
+            "app_id": _licensing_pkg.APP_ID,
+            "app_version": _licensing_pkg.APP_VERSION,
+            "server": _licensing_pkg.get_manager().config.server,
+            # 只返回激活码前后 4 位便于用户确认，不泄露全码
+            "code_hint": (
+                (st.code[:4] + "…" + st.code[-4:])
+                if len(st.code) >= 10 else ("已设置" if st.code else "")
+            ),
+        }
+
+    def _handle_license_activate(self, body: bytes) -> None:
+        try:
+            payload = json.loads(body.decode("utf-8", "ignore")) if body else {}
+        except json.JSONDecodeError:
+            payload = {}
+        code = str(payload.get("code") or "").strip()
+        if not code:
+            self._json({"error": "请填写激活码"}, 400)
+            return
+        try:
+            mgr = _licensing_pkg.get_manager()
+            r = mgr.activate(code)
+        except _licensing_pkg.LicenseDenied as exc:
+            self._json({"error": str(exc),
+                         "detail": exc.detail or str(exc),
+                         "status": exc.http_status}, 403)
+            return
+        except _licensing_pkg.NetworkError as exc:
+            self._json({"error": str(exc)}, 502)
+            return
+        except _licensing_pkg.LicensingError as exc:
+            self._json({"error": str(exc),
+                         "status": getattr(exc, "http_status", 500)}, 500)
+            return
+        self._json({
+            "success": True, "message": r.message,
+            "expire_at": r.expire_at,
+            "state": self._license_state_json(),
+        })
+
+    def _handle_license_logout(self) -> None:
+        try:
+            _licensing_pkg.get_manager().logout()
+        except Exception as exc:  # noqa: BLE001
+            self._json({"error": str(exc)}, 500)
+            return
+        self._json({"success": True, "state": self._license_state_json()})
+
+    def _handle_license_deactivate(self) -> None:
+        """完全清本地激活状态（回到未激活）。"""
+        try:
+            _licensing_pkg.get_manager().deactivate()
+        except Exception as exc:  # noqa: BLE001
+            self._json({"error": str(exc)}, 500)
+            return
+        self._json({"success": True, "state": self._license_state_json()})
+
     def do_GET(self) -> None:
         route = urlparse(self.path).path
+        # ==================== License gate ====================
+        if route == "/api/license/status":
+            self._json(self._license_state_json())
+            return
+        if _license_should_block(route):
+            st = self._license_state_json()
+            self._json({
+                "error": "license_required",
+                "message": "请先输入激活码激活软件。",
+                "state": st,
+            }, 403)
+            return
+        # ======================================================
         if route in {"/", "/index.html"}:
             body = _INDEX.read_bytes()
             self.send_response(200)
@@ -1345,6 +1502,29 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         route = parsed.path
+
+        # ==================== License 路由 & gate ====================
+        if route == "/api/license/activate":
+            length = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(length) if length > 0 else b""
+            self._handle_license_activate(body)
+            return
+        if route == "/api/license/logout":
+            self._handle_license_logout()
+            return
+        if route == "/api/license/deactivate":
+            self._handle_license_deactivate()
+            return
+        # 其他 POST 都强制 gate
+        if _license_should_block(route):
+            self._json({
+                "error": "license_required",
+                "message": "请先输入激活码激活软件。",
+                "state": self._license_state_json(),
+            }, 403)
+            return
+        # ============================================================
+
         # R12-8：真"在文件管理器中打开"——只允许打开当前存在的 batch 输出目录
         if route == "/api/bulk_dub/open_output_dir":
             self._handle_open_output_dir(parsed)
@@ -1730,6 +1910,14 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:
         route = urlparse(self.path).path
+        # License gate（DELETE 全走 gate；无 license 的公开 DELETE）
+        if _license_should_block(route):
+            self._json({
+                "error": "license_required",
+                "message": "请先输入激活码激活软件。",
+                "state": self._license_state_json(),
+            }, 403)
+            return
         if route.startswith("/api/clones/"):
             name = Path(unquote(route.rsplit("/", 1)[-1])).name  # 只允许文件名，防目录穿越
             target = studio_settings.clones_dir() / name
@@ -1987,6 +2175,15 @@ def _state_payload() -> dict:
 
 
 def serve(port: int = DEFAULT_PORT, open_browser: bool = True) -> ThreadingHTTPServer:
+    # 授权：启动时若本地已有激活状态，尝试静默 start（拿新的 session_token
+    # 并启动心跳线程）；网络失败/授权失效都不阻塞 server 启动 —— 用户会
+    # 看到"未激活"页面并被引导重新输入激活码。
+    try:
+        mgr = _licensing_pkg.get_manager()
+        mgr.start_from_saved()
+    except Exception:  # noqa: BLE001
+        pass
+
     server = None
     last_error: OSError | None = None
     for candidate in range(port, port + 20):  # 端口被占自动顺延，避免双击闪退
