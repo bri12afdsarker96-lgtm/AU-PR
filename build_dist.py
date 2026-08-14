@@ -18,9 +18,15 @@
         - __pycache__ / *.pyc  中间产物
         - .env  .venv  venv  virtualenv
         - 任何 requirements-dev.txt / pyproject.toml 等 metadata
-    6. 生成启动脚本 `启动软件.bat`（含 DUB_ALIGN_LICENSE_REQUIRED=1）
-    7. 计算 exe SHA-256 → 落到 `integrity.hash`（供 RASP 完整性自检）
-    8. 打印发行清单摘要（列出根目录所有文件 + 大小）
+    6. --with-ffmpeg：把 ffmpeg.exe / ffprobe.exe 一起塞进发行包
+        （用户机器不用再自己装环境；配合 Inno Setup 安装器一键就能跑）
+        搜索优先级：
+            ./tools/ffmpeg/ffmpeg.exe    （项目内自带的裁剪版，最省）
+            ./tools/ffmpeg/bin/ffmpeg.exe
+            PATH 中的 ffmpeg（系统装的完整版，兜底）
+    7. 生成启动脚本 `启动软件.bat`（含 DUB_ALIGN_LICENSE_REQUIRED=1）
+    8. 计算 exe SHA-256 → 落到 `integrity.hash`（供 RASP 完整性自检）
+    9. 打印发行清单摘要（列出根目录所有文件 + 大小）
 
 强制排除的敏感文件（**发行包里绝不能出现**）：
     * 任何 .py、.pyc（用户/破解者不能拿到源码）
@@ -193,21 +199,70 @@ def scrub_sensitive(root: Path) -> int:
     return n
 
 
+def _find_ffmpeg_binary(name: str) -> Path | None:
+    """按优先级搜 ffmpeg.exe/ffprobe.exe：项目自带 → PATH → None。
+
+    Windows 上 name 应带 .exe；其它平台可省。
+    返回 Path 或 None（None 表示找不到；调用方自己决定 warn / raise）。
+    """
+    is_win = platform.system() == "Windows"
+    stem = name.removesuffix(".exe")
+    fname = f"{stem}.exe" if is_win else stem
+    # 1) 项目自带
+    for candidate in (
+        HERE / "tools" / "ffmpeg" / fname,
+        HERE / "tools" / "ffmpeg" / "bin" / fname,
+    ):
+        if candidate.exists():
+            return candidate
+    # 2) PATH 兜底
+    found = shutil.which(fname) or shutil.which(name)
+    if found:
+        return Path(found)
+    return None
+
+
+def bundle_ffmpeg(dist_dir: Path) -> int:
+    """把 ffmpeg / ffprobe 拷进发行目录。返回拷贝的文件数。
+
+    找不到时不 raise（保持向后兼容 --skip-ffmpeg 老流程），只 warn；
+    调用方（--with-ffmpeg 显式指定）需检查返回值决定是否退出。
+    """
+    is_win = platform.system() == "Windows"
+    names = ("ffmpeg.exe", "ffprobe.exe") if is_win else ("ffmpeg", "ffprobe")
+    n = 0
+    for name in names:
+        src = _find_ffmpeg_binary(name)
+        if src is None:
+            _log(f"⚠ 未找到 {name}（既不在 ./tools/ffmpeg/ 也不在 PATH）")
+            continue
+        dst = dist_dir / name
+        shutil.copy2(src, dst)
+        try:
+            sz_mb = dst.stat().st_size / 1024 / 1024
+            _log(f"内嵌 {name}  <-  {src}  ({sz_mb:.1f} MB)")
+        except OSError:
+            _log(f"内嵌 {name}  <-  {src}")
+        n += 1
+    return n
+
+
 def write_launcher_bat(dist_dir: Path, exe_name: str) -> None:
     """生成 `启动软件.bat` 强制启用 license gate。"""
     if platform.system() != "Windows":
         return
     bat = dist_dir / "启动软件.bat"
+    # Chinese chars in REM 注释 → 必须用 GBK（Windows cmd 默认 codepage）
     lines = [
         "@echo off",
         "REM 强制启用激活码 gate（发行版必须）",
         "set DUB_ALIGN_LICENSE_REQUIRED=1",
-        "REM 强制启用 RASP strict 模式（检测调试器/frida/vm → 退出）",
+        "REM 强制启用 RASP strict 模式（调试器/frida/vm 检测到就退出）",
         "set DUB_ALIGN_RASP_STRICT=1",
         "cd /d \"%~dp0\"",
         f"start \"\" \"%~dp0{exe_name}\"",
     ]
-    bat.write_text("\r\n".join(lines) + "\r\n", encoding="ascii")
+    bat.write_text("\r\n".join(lines) + "\r\n", encoding="gbk")
     _log(f"生成 {bat.name}")
 
 
@@ -242,13 +297,17 @@ def dist_manifest(dist_dir: Path) -> None:
 
 
 def main() -> int:
+    global DIST_ROOT
     ap = argparse.ArgumentParser()
     ap.add_argument("--skip-cython", action="store_true")
     ap.add_argument("--skip-nuitka", action="store_true")
     ap.add_argument("--out", default=str(DIST_ROOT))
+    ap.add_argument("--with-ffmpeg", action="store_true",
+                    help="内嵌 ffmpeg.exe/ffprobe.exe（用户机器不用装环境）")
+    ap.add_argument("--require-ffmpeg", action="store_true",
+                    help="配合 --with-ffmpeg：找不到 ffmpeg 时直接失败（CI 打包用）")
     args = ap.parse_args()
 
-    global DIST_ROOT
     DIST_ROOT = Path(args.out).resolve()
 
     _log(f"项目根：{HERE}")
@@ -271,6 +330,14 @@ def main() -> int:
 
     exe_name = "水星配音对齐工作室.exe" if platform.system() == "Windows" \
         else "dub_align_studio"
+
+    if args.with_ffmpeg:
+        n = bundle_ffmpeg(DIST_ROOT)
+        expected = 2   # ffmpeg + ffprobe
+        if n < expected and args.require_ffmpeg:
+            _log(f"❌ --require-ffmpeg：只拷进 {n}/{expected} 个，构建终止")
+            return 3
+
     write_launcher_bat(DIST_ROOT, exe_name)
     write_integrity_hash(DIST_ROOT, exe_name)
 
