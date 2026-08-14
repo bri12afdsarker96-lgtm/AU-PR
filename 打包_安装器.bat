@@ -1,45 +1,44 @@
 @echo off
 REM ============================================================
-REM  ä¸€é”®æ‰“åŒ… Â· æ°´æ˜Ÿé…éŸ³å¯¹é½å·¥ä½œå®¤ Â· è½»é‡äº‘é…ç‰ˆåŒ… â†’ exe å®‰è£…å™¨
+REM  Ò»¼ü´ò°ü ¡¤ Ë®ĞÇÅäÒô¶ÔÆë¹¤×÷ÊÒ ¡¤ ÇáÁ¿ÔÆÅä°æ°ü -> exe °²×°Æ÷
 REM
-REM  æµç¨‹ï¼š
+REM  Á÷³Ì£º
 REM    Step 1  build_dist.py --with-ffmpeg
-REM            â†’ dist\è½»é‡äº‘é…ç‰ˆåŒ…\  ï¼ˆNuitka + Cython ç¼–è¯‘ + ffmpeg å†…åµŒ + æ•æ„Ÿæ¸…æ‰«ï¼‰
+REM            -> dist\ÇáÁ¿ÔÆÅä°æ°ü\  £¨Nuitka + Cython ±àÒë + ffmpeg ÄÚÇ¶ + Ãô¸ĞÇåÉ¨£©
 REM    Step 2  Inno Setup 6 ISCC.exe installer.iss
-REM            â†’ dist\å®‰è£…å™¨\setup_æ°´æ˜Ÿé…éŸ³å¯¹é½å·¥ä½œå®¤_v0.7.71_lite.exe
+REM            -> dist\°²×°Æ÷\setup_Ë®ĞÇÅäÒô¶ÔÆë¹¤×÷ÊÒ_v0.7.71_lite.exe
 REM
-REM  äº§ç‰©ï¼šä¸€ä¸ª setup_xxx.exeï¼ŒåŒå‡»å°±è£…ï¼Œç”¨æˆ·æœºå™¨æ— éœ€ä»»ä½• python/ffmpeg ç¯å¢ƒ
+REM  ²úÎï£ºÒ»¸ö setup_xxx.exe£¬Ë«»÷¾Í×°£¬ÓÃ»§»úÆ÷ÎŞĞèÈÎºÎ python/ffmpeg »·¾³
 REM ============================================================
 
 setlocal enabledelayedexpansion
-chcp 65001 >nul
 cd /d "%~dp0"
 
 echo.
 echo ============================================================
-echo   Step 1/2  Nuitka + Cython + ffmpeg æ‰“åŒ…ï¼ˆbuild_dist.pyï¼‰
+echo   Step 1/2  Nuitka + Cython + ffmpeg ´ò°ü£¨build_dist.py£©
 echo ============================================================
 python build_dist.py --with-ffmpeg --require-ffmpeg
 if errorlevel 1 (
     echo.
-    echo [X] build_dist.py å¤±è´¥ï¼ˆexit=%errorlevel%ï¼‰ï¼Œåœæ­¢æ‰“åŒ…
-    echo    - æ—  ffmpegï¼šè¯·æŠŠ ffmpeg.exe/ffprobe.exe æ”¾åˆ° tools\ffmpeg\
-    echo    - æ—  nuitka/cythonï¼špip install nuitka cython
+    echo [X] build_dist.py Ê§°Ü£¨exit=%errorlevel%£©£¬Í£Ö¹´ò°ü
+    echo    - ÎŞ ffmpeg£ºÇë°Ñ ffmpeg.exe/ffprobe.exe ·Åµ½ tools\ffmpeg\
+    echo    - ÎŞ nuitka/cython£ºpip install nuitka cython
     pause
     exit /b %errorlevel%
 )
 
 echo.
 echo ============================================================
-echo   Step 2/2  Inno Setup 6 ç¼–è¯‘ï¼ˆinstaller.issï¼‰
+echo   Step 2/2  Inno Setup 6 ±àÒë£¨installer.iss£©
 echo ============================================================
 set "ISCC=C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 if not exist "%ISCC%" (
     set "ISCC=C:\Program Files\Inno Setup 6\ISCC.exe"
 )
 if not exist "%ISCC%" (
-    echo [X] æœªæ‰¾åˆ° Inno Setup 6 ISCC.exe
-    echo     ä¸‹è½½å®‰è£…ï¼šhttps://jrsoftware.org/isdl.php
+    echo [X] Î´ÕÒµ½ Inno Setup 6 ISCC.exe
+    echo     ÏÂÔØ°²×°£ºhttps://jrsoftware.org/isdl.php
     pause
     exit /b 2
 )
@@ -47,17 +46,17 @@ if not exist "%ISCC%" (
 "%ISCC%" installer.iss
 if errorlevel 1 (
     echo.
-    echo [X] Inno Setup ç¼–è¯‘å¤±è´¥ï¼ˆexit=%errorlevel%ï¼‰
+    echo [X] Inno Setup ±àÒëÊ§°Ü£¨exit=%errorlevel%£©
     pause
     exit /b %errorlevel%
 )
 
 echo.
 echo ============================================================
-echo   âœ… æ‰“åŒ…å®Œæˆ
+echo   [OK] ´ò°üÍê³É
 echo ============================================================
-echo   äº§ç‰©ï¼šdist\å®‰è£…å™¨\setup_æ°´æ˜Ÿé…éŸ³å¯¹é½å·¥ä½œå®¤_v0.7.71_lite.exe
-echo   æŠŠè¿™ä¸€ä¸ª exe å‘ç»™ç”¨æˆ·å³å¯ï¼Œæ— éœ€åˆ«çš„ä¸œè¥¿
+echo   ²úÎï£ºdist\°²×°Æ÷\setup_Ë®ĞÇÅäÒô¶ÔÆë¹¤×÷ÊÒ_v0.7.71_lite.exe
+echo   °ÑÕâÒ»¸ö exe ·¢¸øÓÃ»§¼´¿É£¬ÎŞĞè±ğµÄ¶«Î÷
 echo.
 pause
 exit /b 0
