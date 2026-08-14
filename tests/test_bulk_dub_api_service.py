@@ -187,3 +187,45 @@ def test_23_24_25_api_carries_voice_and_speed(tmp_path):
     assert handled and status == 200
     assert "audio_path" in json.loads(body)
     svc.stop()
+
+
+def test_delete_task_only_terminal(tmp_path):
+    """删除只对终态任务生效：completed/cancelled 可删，waiting/running 不可删。"""
+    from dub_align_studio.bulk_dub.store import (
+        STATUS_CANCELLED, STATUS_PENDING, STATUS_VIDEO_RUNNING,
+    )
+    store = TaskStore(tmp_path / "q.sqlite3")
+    b = store.create_batch("t", "/o", {})
+    rows = [dict(excel_row=i, input_video=f"/v/{i}.mp4", text="t", fingerprint=f"fp{i}",
+                 voice_id="v", voice_name="V", speed=1.25, keep_original_audio=False,
+                 params_snapshot={}) for i in (2, 3, 4)]
+    ids = store.bulk_insert(b, rows)
+    store.update(ids[0], status=STATUS_COMPLETED, output_path="/o/a.mp4",
+                 final_duration=10, tts_duration=8, video_duration=5)
+    store.update(ids[1], status=STATUS_CANCELLED)
+    store.update(ids[2], status=STATUS_VIDEO_RUNNING)   # 活动态
+
+    assert store.delete_task(ids[0]) is True   # completed → 删得掉
+    assert store.delete_task(ids[1]) is True   # cancelled → 删得掉
+    assert store.delete_task(ids[2]) is False  # running → 拒绝
+    assert store.get(ids[0]) is None
+    assert store.get(ids[1]) is None
+    assert store.get(ids[2]) is not None       # 仍在
+
+
+def test_clear_batch_cancels_and_deletes(tmp_path):
+    """clear_batch：取消 waiting + 删除所有终态。"""
+    from dub_align_studio.bulk_dub.store import STATUS_CANCELLED
+    svc = _mk_service(tmp_path)
+    store = svc.store
+    b = store.create_batch("t", "/o", {})
+    rows = [dict(excel_row=i, input_video=f"/v/{i}.mp4", text="t", fingerprint=f"fp{i}",
+                 voice_id="v", voice_name="V", speed=1.25, keep_original_audio=False,
+                 params_snapshot={}) for i in (2, 3)]
+    ids = store.bulk_insert(b, rows)
+    store.update(ids[0], status=STATUS_COMPLETED, output_path="/o/a.mp4",
+                 final_duration=10, tts_duration=8, video_duration=5)
+    store.update(ids[1], status=STATUS_CANCELLED)
+    res = svc.clear_batch(b)
+    assert res["deleted"] == 2      # 两条终态都删掉
+    assert store.get(ids[0]) is None and store.get(ids[1]) is None

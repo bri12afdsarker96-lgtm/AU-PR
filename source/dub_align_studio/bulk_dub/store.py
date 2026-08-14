@@ -252,6 +252,36 @@ class TaskStore:
         finally:
             conn.close()
 
+    # ---------------------------------------------------------------- 删除
+    # 终态任务才允许物理删除（无正在跑的 worker，安全）。
+    # 活动态（pending/validating/tts_running/tts_done/video_running/retry_wait/
+    # waiting_dependency/cancelling）不删——必须先取消收敛，否则会与 worker 撞刀。
+    _DELETABLE_STATUSES = (
+        STATUS_COMPLETED, STATUS_FAILED, STATUS_CANCELLED,
+        STATUS_INTERRUPTED, STATUS_OUTPUT_COMMITTED,
+    )
+
+    def delete_task(self, task_id: str) -> bool:
+        """删除单个**终态**任务。非终态返回 False（应先取消）。"""
+        placeholders = ",".join("?" * len(self._DELETABLE_STATUSES))
+        with self._connect() as conn:
+            cur = conn.execute(
+                f"DELETE FROM tasks WHERE task_id=? AND status IN ({placeholders})",
+                (task_id, *self._DELETABLE_STATUSES),
+            )
+            return cur.rowcount > 0
+
+    def delete_finished_in_batch(self, batch_id: str) -> int:
+        """删除某批次里所有**终态**任务（completed/failed/cancelled/...）。
+        返回删除条数。活动态任务保留不动。"""
+        placeholders = ",".join("?" * len(self._DELETABLE_STATUSES))
+        with self._connect() as conn:
+            cur = conn.execute(
+                f"DELETE FROM tasks WHERE batch_id=? AND status IN ({placeholders})",
+                (batch_id, *self._DELETABLE_STATUSES),
+            )
+            return cur.rowcount
+
     # ---------------------------------------------------------------- 批次
 
     def create_batch(self, label: str, output_dir: str, params: dict) -> str:

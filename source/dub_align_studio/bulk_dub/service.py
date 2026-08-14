@@ -535,6 +535,23 @@ class BulkDubService:
             raise ValidationError(f"batch_id 不存在：{batch_id}")
         return self._ensure_scheduler().cancel_all_waiting(batch_id)
 
+    def delete_task(self, task_id: str) -> bool:
+        """删除单个终态任务（completed/failed/cancelled/...）。
+        非终态返回 False（前端应先「取消」再删）。"""
+        if self.store.get(task_id) is None:
+            raise ValidationError(f"task_id 不存在：{task_id}")
+        return self.store.delete_task(task_id)
+
+    def clear_batch(self, batch_id: str) -> dict:
+        """批量「取消 + 删除」：先取消所有等待中的任务（→ cancelled），
+        再物理删除本批次所有终态任务（含刚取消的）。返回 {cancelled, deleted}。
+        活动态（正在跑）的任务会被转 cancelling，不会立刻删除——收敛后再点一次即可清掉。"""
+        if not self.store.get_batch(batch_id):
+            raise ValidationError(f"batch_id 不存在：{batch_id}")
+        cancelled = self._ensure_scheduler().cancel_all_waiting(batch_id)
+        deleted = self.store.delete_finished_in_batch(batch_id)
+        return {"cancelled": cancelled, "deleted": deleted}
+
     def retry_failed(self, batch_id: str, only_retryable: bool = False) -> int:
         if not self.store.get_batch(batch_id):
             raise ValidationError(f"batch_id 不存在：{batch_id}")

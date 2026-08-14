@@ -120,6 +120,7 @@
     <button id="btnPauseBatch" class="warn">暂停当前批次</button>
     <button id="btnResumeBatch" class="secondary">恢复当前批次</button>
     <button id="btnCancelWait" class="danger">取消等待任务</button>
+    <button id="btnClearBatch" class="danger">清空本批（取消+删除）</button>
     <button id="btnRetryFail" class="secondary">重试失败项</button>
     <button id="btnRetryRetryable" class="secondary">仅重试可重试错误</button>
     <button id="btnCSV" class="secondary">导出结果 CSV</button>
@@ -430,7 +431,7 @@ function renderTasks(tasks) {
     if (t.stage) stageBits.push(escapeHtml(t.stage));
     if (t.error_type) stageBits.push("<b>" + escapeHtml(t.error_type) + "</b>");
     if (warnTip) stageBits.push('<span title="' + escapeHtml(warnTip) + '">⚠ ' + t.warnings.length + '</span>');
-    tr.innerHTML =
+    let html =
       "<td>" + t.excel_row + "</td>" +
       "<td title=\"" + escapeHtml(t.input_video) + "\">" +
       escapeHtml((t.input_video.split(/[/\\]/).pop()) || t.input_video) + "</td>" +
@@ -442,9 +443,16 @@ function renderTasks(tasks) {
       "<td title=\"" + escapeHtml(t.output_path) + "\">" +
       escapeHtml(((t.output_path || "").split(/[/\\]/).pop()) || "-") + "</td>" +
       "<td>" + durText + "</td>" +
-      "<td>" + t.attempts + "</td>" +
-      "<td><button class=\"danger\" data-cancel=\"" + t.task_id + "\" " +
-      (t.status === 'completed' ? 'disabled' : '') + ">取消</button></td>";
+      "<td>" + t.attempts + "</td>";
+    // 终态任务（completed/failed/cancelled/interrupted/output_committed）→「删除」按钮
+    // 活动态（等待/正在跑）→「取消」按钮。这样按钮永远对当前状态有效。
+    var TERMINAL = ["completed","failed","cancelled","interrupted","output_committed"];
+    if (TERMINAL.indexOf(t.status) >= 0) {
+      html += "<td><button class=\"secondary\" data-delete=\"" + t.task_id + "\">删除</button></td>";
+    } else {
+      html += "<td><button class=\"danger\" data-cancel=\"" + t.task_id + "\">取消</button></td>";
+    }
+    tr.innerHTML = html;
     tb.appendChild(tr);
   }
   tb.querySelectorAll("[data-cancel]").forEach(b => {
@@ -452,6 +460,14 @@ function renderTasks(tasks) {
       try {
         await api("POST", "/api/bulk_dub/cancel_task?task_id=" + b.dataset.cancel);
       } catch (e) { state.msg("取消失败：" + e.message, "err-msg"); }
+      refreshTasks();
+    };
+  });
+  tb.querySelectorAll("[data-delete]").forEach(b => {
+    b.onclick = async () => {
+      try {
+        await api("POST", "/api/bulk_dub/delete_task?task_id=" + b.dataset.delete);
+      } catch (e) { state.msg("删除失败：" + e.message, "err-msg"); }
       refreshTasks();
     };
   });
@@ -631,6 +647,15 @@ $("btnCancelWait").onclick = async () => {
     const j = await api("POST", "/api/bulk_dub/cancel_waiting?batch_id=" + state.currentBatch);
     state.msg("取消了 " + j.cancelled + " 条等待任务");
   } catch (e) { state.msg("取消失败：" + e.message, "err-msg"); }
+  refreshTasks();
+};
+$("btnClearBatch").onclick = async () => {
+  if (!state.currentBatch) return state.msg("请先选择或创建批次", "err-msg");
+  if (!confirm("将取消本批次所有等待任务，并删除所有已结束（完成/失败/已取消）的任务。\n正在运行的任务会转为取消中，收敛后再点一次可清掉。确定？")) return;
+  try {
+    const j = await api("POST", "/api/bulk_dub/clear_batch?batch_id=" + state.currentBatch);
+    state.msg("已取消 " + (j.cancelled || 0) + " 条、删除 " + (j.deleted || 0) + " 条", "ok-msg");
+  } catch (e) { state.msg("清空失败：" + e.message, "err-msg"); }
   refreshTasks();
 };
 $("btnRetryFail").onclick = async () => {

@@ -275,6 +275,26 @@ def dispatch_post(path: str, query: dict[str, str], body: bytes,
             return True, *_json_response({"error": str(exc)}, 404)
         return True, *_json_response({"cancelled": n})
 
+    if route == "/delete_task":
+        task_id = query.get("task_id") or _read_json(body).get("task_id") or ""
+        if not _safe_task_id(task_id):
+            return True, *_json_response({"error": "非法 task_id"}, 400)
+        try:
+            ok = svc.delete_task(task_id)
+        except ValidationError as exc:
+            return True, *_json_response({"error": str(exc)}, 404)
+        return True, *_json_response({"deleted": ok})
+
+    if route == "/clear_batch":
+        batch_id = query.get("batch_id") or _read_json(body).get("batch_id") or ""
+        if not _safe_batch_id(batch_id):
+            return True, *_json_response({"error": "非法 batch_id"}, 400)
+        try:
+            res = svc.clear_batch(batch_id)
+        except ValidationError as exc:
+            return True, *_json_response({"error": str(exc)}, 404)
+        return True, *_json_response(res)
+
     if route == "/retry_failed":
         batch_id = query.get("batch_id") or _read_json(body).get("batch_id") or ""
         if not _safe_batch_id(batch_id):
