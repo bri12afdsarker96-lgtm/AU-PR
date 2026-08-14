@@ -55,12 +55,18 @@ echo.
 echo ============================================================
 echo   Step 2/4  PyInstaller 编译（可能 3-10 分钟）
 echo ============================================================
-where pyinstaller >nul 2>&1
+REM 不依赖 PATH 里的 pyinstaller.exe（Scripts\ 常不在 PATH），
+REM 直接用当前 python 的 -m PyInstaller，pyinstaller 只要 pip install 过就行。
+python -m PyInstaller --version >nul 2>&1
 if errorlevel 1 (
-    echo   [X] 未装 pyinstaller: pip install pyinstaller
+    echo   [X] 当前 python 没装 pyinstaller
+    echo       修复：python -m pip install pyinstaller
+    echo       当前 python:
+    where python
     pause
     exit /b 2
 )
+for /f "delims=" %%v in ('python -m PyInstaller --version 2^>nul') do echo   [OK] pyinstaller %%v
 
 REM 清 dist 里的老产物免得残留
 if exist "%PYI_DIST%\" (
@@ -68,7 +74,7 @@ if exist "%PYI_DIST%\" (
     rmdir /S /Q "%PYI_DIST%"
 )
 
-pyinstaller --clean --noconfirm "%SPEC%"
+python -m PyInstaller --clean --noconfirm "%SPEC%"
 if errorlevel 1 (
     echo   [X] pyinstaller 失败（exit=%errorlevel%）
     pause
