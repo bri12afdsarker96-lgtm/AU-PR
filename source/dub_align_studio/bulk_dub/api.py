@@ -19,7 +19,7 @@ from .excel_reader import (
 from .service import (
     DEFAULT_SPEED, DEFAULT_VOICE_ID, BulkDubService, ValidationError, get_service,
 )
-from .store import is_safe_id
+from .store import ALL_STATUSES, is_safe_id
 
 
 API_PREFIX = "/api/bulk_dub"
@@ -58,8 +58,11 @@ def dispatch_get(path: str, query: dict[str, str],
 
     if route == "/summary":
         batch_id = query.get("batch_id") or None
-        if batch_id and not _safe_batch_id(batch_id):
-            return True, *_json_response({"error": "非法 batch_id"}, 400)
+        if batch_id:
+            if not _safe_batch_id(batch_id):
+                return True, *_json_response({"error": "非法 batch_id"}, 400)
+            if not svc.store.batch_exists(batch_id):
+                return True, *_json_response({"error": f"batch 不存在：{batch_id}"}, 404)
         return True, *_json_response(svc.summary(batch_id))
 
     if route == "/batches":
@@ -71,9 +74,14 @@ def dispatch_get(path: str, query: dict[str, str],
 
     if route == "/tasks":
         batch_id = query.get("batch_id") or None
-        if batch_id and not _safe_batch_id(batch_id):
-            return True, *_json_response({"error": "非法 batch_id"}, 400)
+        if batch_id:
+            if not _safe_batch_id(batch_id):
+                return True, *_json_response({"error": "非法 batch_id"}, 400)
+            if not svc.store.batch_exists(batch_id):
+                return True, *_json_response({"error": f"batch 不存在：{batch_id}"}, 404)
         status = query.get("status") or None
+        if status and status not in ALL_STATUSES:
+            return True, *_json_response({"error": f"未知 status：{status}"}, 400)
         excel_row = None
         if query.get("excel_row"):
             try:
@@ -96,7 +104,6 @@ def dispatch_get(path: str, query: dict[str, str],
         })
 
     if route == "/changes":
-        # R11-5 复合游标；兼容旧 since=浮点 参数（转成 cursor="since|"）
         cursor = query.get("cursor")
         if cursor is None and query.get("since"):
             try:
@@ -105,8 +112,11 @@ def dispatch_get(path: str, query: dict[str, str],
             except ValueError:
                 return True, *_json_response({"error": "非法 since"}, 400)
         batch_id = query.get("batch_id") or None
-        if batch_id and not _safe_batch_id(batch_id):
-            return True, *_json_response({"error": "非法 batch_id"}, 400)
+        if batch_id:
+            if not _safe_batch_id(batch_id):
+                return True, *_json_response({"error": "非法 batch_id"}, 400)
+            if not svc.store.batch_exists(batch_id):
+                return True, *_json_response({"error": f"batch 不存在：{batch_id}"}, 404)
         try:
             limit = max(1, min(500, int(query.get("limit") or 500)))
         except ValueError:
@@ -122,9 +132,11 @@ def dispatch_get(path: str, query: dict[str, str],
     if route == "/csv":
         # CSV 由 web_server 直接流式发送——这里只做参数校验
         batch_id = query.get("batch_id") or None
-        if batch_id and not _safe_batch_id(batch_id):
-            return True, *_json_response({"error": "非法 batch_id"}, 400)
-        # 返回一个 sentinel 让 web_server 知道要走流式路径
+        if batch_id:
+            if not _safe_batch_id(batch_id):
+                return True, *_json_response({"error": "非法 batch_id"}, 400)
+            if not svc.store.batch_exists(batch_id):
+                return True, *_json_response({"error": f"batch 不存在：{batch_id}"}, 404)
         return True, 200, b"__STREAM_CSV__", "text/csv; charset=utf-8"
 
     return True, *_json_response({"error": "not found"}, 404)
@@ -172,6 +184,8 @@ def dispatch_post(path: str, query: dict[str, str], body: bytes,
             video_c = int(query.get("video_concurrency") or 0)
         except ValueError as exc:
             return True, *_json_response({"error": f"参数不是数字：{exc}"}, 400)
+        # R12-12：HTTP 层**不接受** require_endpoint——生产始终要求 Endpoint。
+        # 测试通过 svc._skip_endpoint_check=True 或直接注入 Mock backend 跳过。
         try:
             result = svc.start_batch(
                 source_bytes=xlsx,
@@ -186,7 +200,6 @@ def dispatch_post(path: str, query: dict[str, str], body: bytes,
                 video_concurrency=video_c,
                 encoder_preference=query.get("encoder_preference") or "auto",
                 check_exists=str(query.get("check_exists", "1")) not in ("0", "false", "False"),
-                require_endpoint=str(query.get("require_endpoint", "1")) not in ("0", "false", "False"),
             )
         except ExcelSizeError as exc:
             return True, *_json_response({"error": str(exc)}, 413)

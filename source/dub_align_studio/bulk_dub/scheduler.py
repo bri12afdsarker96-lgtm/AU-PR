@@ -28,7 +28,9 @@ from .hw_encoder import EncoderProbe, default_video_concurrency, resolve_encoder
 from .store import (
     STATUS_COMPLETED, STATUS_FAILED, STATUS_PENDING, STATUS_RETRY_WAIT,
     STATUS_TTS_DONE, STATUS_TTS_RUNNING, STATUS_VIDEO_RUNNING,
-    STATUS_CANCELLED, TaskRow, TaskStore, is_safe_id,
+    STATUS_CANCELLED, STATUS_CANCELLING, STATUS_OUTPUT_COMMITTED,
+    STATUS_WAITING_DEPENDENCY,
+    TaskRow, TaskStore, is_safe_id,
 )
 
 
@@ -91,11 +93,15 @@ class SchedulerMetrics:
 
 @dataclass
 class _WorkerRec:
-    """单个 worker 的状态。每个 worker 有独立 stop event，供 resize_pools 用。"""
+    """单个 worker 的状态。每个 worker 有独立 stop event，供 resize_pools 用。
+
+    R12-5：draining=True 表示已发出 stop 请求；这类 worker **不计入 serving 数**。
+    """
     thread: threading.Thread
     stop_event: threading.Event
     kind: str        # "tts" or "video"
     active: bool = False
+    draining: bool = False
 
 
 class Scheduler:
@@ -139,27 +145,40 @@ class Scheduler:
 
     def start(self) -> None:
         with self._lifecycle_lock:
-            # 已有存活线程 → 不重启，直接返回（防止创建第二套 scheduler）
-            alive_any = any(w.thread.is_alive()
-                             for w in self._tts_workers + self._video_workers)
-            if alive_any:
+            # R12-5：**分池**判断——TTS 全死时补 TTS；视频全死时补视频
+            alive_tts = any(w.thread.is_alive() for w in self._tts_workers)
+            alive_video = any(w.thread.is_alive() for w in self._video_workers)
+            if not alive_tts and not alive_video:
+                # 两池都无：正常首启
+                self._tts_workers = []
+                self._video_workers = []
+                self._stop.clear()
+                # 恢复运行中任务 + 加载持久暂停集合
+                self.store.reap_and_recover_running(
+                    tts_wav_ok=self._tts_wav_valid,
+                    reserved_output_verifier=self._verify_reserved_output,
+                    staging_cleanup=vp.cleanup_staging,
+                )
+                self._reload_paused_from_db()
+                self._started_at = time.time()
+                for _ in range(max(1, min(16, self.config.tts_concurrency))):
+                    self._spawn_worker("tts")
+                video_count = self.config.video_concurrency or default_video_concurrency()
+                for _ in range(max(1, min(8, video_count))):
+                    self._spawn_worker("video")
                 return
-            # 清 dead 残留
-            self._tts_workers = []
-            self._video_workers = []
-            self._stop.clear()
-            # 启动恢复（含"文件已提交 DB 未提交"补记 completed）
-            self.store.reap_and_recover_running(
-                tts_wav_ok=self._tts_wav_valid,
-                reserved_output_verifier=self._verify_reserved_output,
-                staging_cleanup=vp.cleanup_staging,
-            )
-            self._started_at = time.time()
-            for _ in range(max(1, min(16, self.config.tts_concurrency))):
-                self._spawn_worker("tts")
-            video_count = self.config.video_concurrency or default_video_concurrency()
-            for _ in range(max(1, min(8, video_count))):
-                self._spawn_worker("video")
+            # R12-5：只有一池全死时补齐——不忽略缺失池
+            if not alive_tts:
+                self._tts_workers = [w for w in self._tts_workers
+                                      if w.thread.is_alive()]
+                for _ in range(max(1, min(16, self.config.tts_concurrency))):
+                    self._spawn_worker("tts")
+            if not alive_video:
+                self._video_workers = [w for w in self._video_workers
+                                        if w.thread.is_alive()]
+                video_count = self.config.video_concurrency or default_video_concurrency()
+                for _ in range(max(1, min(8, video_count))):
+                    self._spawn_worker("video")
 
     def stop(self, wait_seconds: float = 5.0) -> bool:
         """安全停止：返回是否全部退出。存活线程**保留在跟踪列表里**——
@@ -239,15 +258,17 @@ class Scheduler:
 
     def _resize_kind(self, kind: str, target: int, wait_seconds: float) -> None:
         pool = self._tts_workers if kind == "tts" else self._video_workers
-        alive_pool = [w for w in pool if w.thread.is_alive()]
-        current = len(alive_pool)
+        # R12-5：serving = 存活且未 draining
+        serving_pool = [w for w in pool if w.thread.is_alive() and not w.draining]
+        current = len(serving_pool)
         if target > current:
             for _ in range(target - current):
                 self._spawn_worker(kind)
         elif target < current:
-            # 把最新加的 worker 先停（LIFO）——它们通常闲置概率更大
-            to_stop = alive_pool[target:]
+            # 把最新加的 worker 先 drain（LIFO）——它们通常闲置概率更大
+            to_stop = serving_pool[target:]
             for w in to_stop:
+                w.draining = True
                 w.stop_event.set()
             with self._cond:
                 self._cond.notify_all()
@@ -255,13 +276,20 @@ class Scheduler:
             for w in to_stop:
                 remaining = max(0.05, deadline - time.time())
                 w.thread.join(remaining)
-            # 清理已经真的死了的（还活着的保留跟踪）
-            if kind == "tts":
-                self._tts_workers = [w for w in self._tts_workers
-                                      if w.thread.is_alive() or (w not in to_stop)]
-            else:
-                self._video_workers = [w for w in self._video_workers
-                                        if w.thread.is_alive() or (w not in to_stop)]
+            # 清 dead：还存活的 draining worker 保留跟踪，不重复计入 serving
+        self._reconcile_pool(kind)
+
+    def _reconcile_pool(self, kind: str) -> None:
+        """R12-5：清 dead worker + 若 serving < target 再补足。"""
+        target = (self.config.tts_concurrency if kind == "tts"
+                   else (self.config.video_concurrency
+                          or default_video_concurrency()))
+        pool = self._tts_workers if kind == "tts" else self._video_workers
+        pool[:] = [w for w in pool if w.thread.is_alive()]
+        serving = [w for w in pool if not w.draining]
+        deficit = max(0, target - len(serving))
+        for _ in range(deficit):
+            self._spawn_worker(kind)
 
     # -------------------- 恢复辅助 --------------------
 
@@ -333,14 +361,26 @@ class Scheduler:
         return self._pause.is_set()
 
     def pause_batch(self, batch_id: str) -> None:
+        # R12-7：持久化到 batches 表；成功后再刷内存缓存
+        self.store.set_batch_paused(batch_id, True)
         with self._batch_pause_lock:
             self._batch_paused_set.add(batch_id)
 
     def resume_batch(self, batch_id: str) -> None:
+        self.store.set_batch_paused(batch_id, False)
         with self._batch_pause_lock:
             self._batch_paused_set.discard(batch_id)
         with self._cond:
             self._cond.notify_all()
+
+    def _reload_paused_from_db(self) -> None:
+        """启动/重连时从 batches.paused 加载持久暂停集合到内存。"""
+        try:
+            ids = self.store.list_paused_batch_ids()
+        except Exception:  # noqa: BLE001
+            ids = []
+        with self._batch_pause_lock:
+            self._batch_paused_set = set(ids)
 
     def is_batch_paused(self, batch_id: str) -> bool:
         with self._batch_pause_lock:
@@ -360,25 +400,33 @@ class Scheduler:
                 flag = threading.Event()
                 self._cancel_flags[task_id] = flag
             flag.set()
-        # 未开始/等待类：立刻标 cancelled + 清 staging + 释放 reservation
-        if row.status in (STATUS_PENDING, STATUS_RETRY_WAIT, STATUS_TTS_DONE):
-            self.store.update(task_id, status=STATUS_CANCELLED,
-                              error_type="cancelled", error_detail="用户取消")
+        # R12-6：走原子接口——waiting 类立即 cancelled；running 类 → cancelling
+        changed = self.store.cancel_atomic([task_id])
+        if changed:
             self.store.release_reservation(task_id)
             vp.cleanup_staging(row.staging_dir)
+            # R12-1：若本任务是 leader，follower 也传播 cancelled
+            self.store.propagate_leader_result_atomic(
+                task_id, to_status=STATUS_CANCELLED,
+                error_type="cancelled", error_detail="leader 被取消",
+            )
         return True
 
     def cancel_all_waiting(self, batch_id: str) -> int:
-        """R11-10：等待类含 pending + retry_wait + tts_done；每条都要清 staging+reservation。"""
-        n = 0
-        for st in (STATUS_PENDING, STATUS_RETRY_WAIT, STATUS_TTS_DONE):
-            for row in self.store.list_tasks(batch_id=batch_id, status=st, limit=100000):
-                self.store.update(row.task_id, status=STATUS_CANCELLED,
-                                   error_type="cancelled", error_detail="用户批量取消")
-                self.store.release_reservation(row.task_id)
+        """R11-10+R12-6：原子取消——把 waiting 类（pending/retry_wait/tts_done/
+        waiting_dependency）转 cancelled；running 类转 cancelling。每条清 staging+reservation。"""
+        cancelled = self.store.cancel_batch_atomic(batch_id)
+        for tid in cancelled:
+            row = self.store.get(tid)
+            if row is not None:
+                self.store.release_reservation(tid)
                 vp.cleanup_staging(row.staging_dir)
-                n += 1
-        return n
+                # follower 传播
+                self.store.propagate_leader_result_atomic(
+                    tid, to_status=STATUS_CANCELLED,
+                    error_type="cancelled", error_detail="leader 被批量取消",
+                )
+        return len(cancelled)
 
     def retry_failed(self, batch_id: str, only_retryable: bool = False) -> int:
         n = 0
@@ -466,20 +514,34 @@ class Scheduler:
 
         # R5+R11-10：请求后再次检查取消——不能让 tts_done 出现在被取消任务上
         if cancel_flag.is_set():
-            self.store.update(row.task_id, status=STATUS_CANCELLED,
-                              error_type="cancelled",
-                              error_detail="TTS 请求返回后检测到取消")
+            # 尝试从 tts_running / cancelling 收敛到 cancelled
+            for from_st in (STATUS_TTS_RUNNING, STATUS_CANCELLING):
+                if self.store.try_advance_status(
+                    row.task_id, from_status=from_st, to_status=STATUS_CANCELLED,
+                    error_type="cancelled",
+                    error_detail="TTS 请求返回后检测到取消",
+                    finished_at=time.time(),
+                ):
+                    break
             self._breaker.release_probe()
-            # 清 wav 和 staging（release_probe 不清 wav；这里主动清）
             vp.cleanup_staging(str(staging))
             self._cancel_flag_pop(row.task_id)
             return
 
         self._breaker.record_success()
         elapsed = time.time() - started
-        self.store.update(row.task_id, status=STATUS_TTS_DONE,
-                          tts_duration=duration, stage="等待视频池")
+        # R12-6：**条件推进**——只有仍是 tts_running 才推进到 tts_done；被取消的直接跳过
+        advanced = self.store.try_advance_status(
+            row.task_id, from_status=STATUS_TTS_RUNNING, to_status=STATUS_TTS_DONE,
+            tts_duration=duration, stage="等待视频池",
+        )
+        if not advanced:
+            # 极端时刻被取消了：清理 wav + staging；后续 video worker 不会领取
+            vp.cleanup_staging(str(staging))
+            self._cancel_flag_pop(row.task_id)
+            return
         with self._metrics_lock:
+            # R12-11：只在 TTS 阶段记录处理耗时（不再在视频完成时重复记）
             self.metrics.tts_times.append(elapsed)
             if len(self.metrics.tts_times) > 500:
                 del self.metrics.tts_times[:-500]
@@ -621,11 +683,22 @@ class Scheduler:
                 cancel_flag=cancel_flag,
                 timeout=ffmpeg_timeout,
                 allow_hw_fallback=True,
+                task_id=row.task_id,
+                fingerprint=row.fingerprint,
             )
         except VideoCancelled:
-            self.store.update(row.task_id, status=STATUS_CANCELLED,
-                              error_type="cancelled",
-                              error_detail="视频渲染中被取消")
+            self.store.try_advance_status(
+                row.task_id, from_status=STATUS_VIDEO_RUNNING,
+                to_status=STATUS_CANCELLED,
+                error_type="cancelled", error_detail="视频渲染中被取消",
+                finished_at=time.time(),
+            )
+            self.store.try_advance_status(
+                row.task_id, from_status=STATUS_CANCELLING,
+                to_status=STATUS_CANCELLED,
+                error_type="cancelled", error_detail="视频渲染中被取消",
+                finished_at=time.time(),
+            )
             self.store.release_reservation(row.task_id)
             vp.cleanup_staging(staging)
             self._cancel_flag_pop(row.task_id)
@@ -643,12 +716,20 @@ class Scheduler:
             vp.cleanup_staging(staging)
             return
 
+        # R12-4：**正式文件已落地** → 先切 output_committed，DB 未写 completed 也能恢复
+        marker_moved = self.store.mark_output_committed(row.task_id, result.output_path)
+        if not marker_moved:
+            # 状态不是 video_running（例如被取消）→ 不能写 completed；
+            # 已落文件由恢复逻辑按 marker 认领或清理
+            vp.cleanup_staging(staging)
+            self._cancel_flag_pop(row.task_id)
+            return
+
         elapsed = time.time() - started
         if result.hw_fallback_used:
             with self._metrics_lock:
                 self.metrics.hw_fallback_count += 1
-        # R11-3 单事务完成：写 output_path + 清 reservation + 记 warnings + 编码器/时长/completed
-        self.store.complete_task_transactional(
+        ok = self.store.complete_task_transactional(
             row.task_id,
             output_path=result.output_path,
             final_duration=result.final_duration,
@@ -658,11 +739,27 @@ class Scheduler:
             encoder_used=result.encoder_used or "libx264",
             hw_fallback_used=result.hw_fallback_used,
             warnings_to_add=list(result.warnings),
+            expected_statuses=(STATUS_VIDEO_RUNNING, STATUS_OUTPUT_COMMITTED),
+            expected_reserved_path=str(reserved),
         )
         vp.cleanup_staging(staging)
         self._cancel_flag_pop(row.task_id)
+        # R12-1：leader 完成 → 广播 follower
+        if ok:
+            leader_row = self.store.get(row.task_id)
+            if leader_row is not None:
+                affected = self.store.propagate_leader_result_atomic(
+                    row.task_id, to_status=STATUS_COMPLETED,
+                    copy_output=True, leader_row=leader_row,
+                )
+                if affected:
+                    with self._metrics_lock:
+                        # follower 也算完成计入速率（真实完成条数）
+                        for _ in range(affected):
+                            self.metrics.record_success(0, 0)
         with self._metrics_lock:
-            self.metrics.record_success(row.tts_duration, elapsed)
+            # R12-11：**只**记录视频阶段耗时；TTS 耗时在 _process_tts 里记
+            self.metrics.record_success(0, elapsed)
 
     # -------------------- 辅助 --------------------
 
@@ -683,6 +780,14 @@ class Scheduler:
         self.store.update(task_id, status=STATUS_FAILED,
                           error_type=error_type, error_detail=detail,
                           finished_at=time.time(), stage="失败")
+        # R12-1：leader 失败 → follower 也传播 failed
+        try:
+            self.store.propagate_leader_result_atomic(
+                task_id, to_status=STATUS_FAILED,
+                error_type=error_type, error_detail=detail,
+            )
+        except Exception:  # noqa: BLE001
+            pass
         self._cancel_flag_pop(task_id)
 
     def _active_incr(self, kind: str, delta: int) -> None:
@@ -706,25 +811,44 @@ class Scheduler:
             recent1 = self.metrics.recent_rate(60)
             recent5 = self.metrics.recent_rate(300)
             recent60 = self.metrics.recent_rate(3600)
+            tts_samples = len(self.metrics.tts_times)
+            video_samples = len(self.metrics.video_times)
             m = {
                 "http_429_count": self.metrics.http_429_count,
                 "http_5xx_count": self.metrics.http_5xx_count,
                 "retry_count": self.metrics.retry_count,
                 "hw_fallback_count": self.metrics.hw_fallback_count,
-                "avg_tts_seconds": round(avg_tts, 2),
+                # R12-11：TTS 处理耗时（不再叠加音频时长）
+                "avg_tts_processing_seconds": round(avg_tts, 2),
                 "avg_video_seconds": round(avg_video, 2),
+                "tts_samples": tts_samples,
+                "video_samples": video_samples,
                 "recent_rate_1min": round(recent1, 2),
                 "recent_rate_5min": round(recent5, 2),
                 "recent_rate_60min": round(recent60, 2),
                 "projected_24h_estimate": round(recent60 * 60 * 24, 0) if recent60 else 0,
+                # R12-11：不足 1 小时窗口的样本视为低置信
+                "projection_confidence": ("low" if (recent60 <= 0
+                                                       or tts_samples < 20
+                                                       or video_samples < 20)
+                                              else "ok"),
             }
         with self._active_lock:
             active_tts = self._active_tts
             active_video = self._active_video
         with self._batch_pause_lock:
             batches_paused = sorted(self._batch_paused_set)
-        tts_alive = sum(1 for w in self._tts_workers if w.thread.is_alive())
-        video_alive = sum(1 for w in self._video_workers if w.thread.is_alive())
+        # R12-5：snapshot 前 reconcile；alive = serving（非 draining）
+        self._reconcile_pool("tts")
+        self._reconcile_pool("video")
+        tts_alive = sum(1 for w in self._tts_workers
+                         if w.thread.is_alive() and not w.draining)
+        video_alive = sum(1 for w in self._video_workers
+                           if w.thread.is_alive() and not w.draining)
+        tts_draining = sum(1 for w in self._tts_workers
+                            if w.thread.is_alive() and w.draining)
+        video_draining = sum(1 for w in self._video_workers
+                              if w.thread.is_alive() and w.draining)
         return {
             "started_at": self._started_at,
             "paused": self._pause.is_set(),
@@ -733,10 +857,12 @@ class Scheduler:
             # R11-1：三段数字都返回
             "tts_configured": self.config.tts_concurrency,
             "tts_alive": tts_alive,
+            "tts_draining": tts_draining,
             "tts_active": active_tts,
             "video_configured": (self.config.video_concurrency
                                   or default_video_concurrency()),
             "video_alive": video_alive,
+            "video_draining": video_draining,
             "video_active": active_video,
             # 兼容旧字段
             "tts_concurrency": tts_alive,

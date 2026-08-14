@@ -29,6 +29,7 @@ from .hw_encoder import FAMILY_PREFERENCE, default_video_concurrency, system_sum
 from .scheduler import Scheduler, SchedulerConfig, TtsBackend
 from .store import (
     ALL_STATUSES, STATUS_COMPLETED, STATUS_FAILED, STATUS_PENDING,
+    STATUS_RETRY_WAIT, STATUS_TTS_DONE, STATUS_WAITING_DEPENDENCY,
     TaskRow, TaskStore, is_safe_id,
 )
 
@@ -144,9 +145,15 @@ class BulkDubService:
             raise ValidationError(f"输出目录不可写：{exc}") from exc
         return p
 
-    @staticmethod
-    def _require_endpoint_configured() -> None:
-        """R11-6：未配置 Endpoint 时**拒绝启动**——不建大量必失败任务。"""
+    def _require_endpoint_configured(self) -> None:
+        """R11-6：未配置 Endpoint 时**拒绝启动**——不建大量必失败任务。
+
+        R12-12：MockTtsBackend 天然不需要 Endpoint（内部生成静音 WAV），此时跳过
+        校验，让内部 service 单测可以直接跑；生产用 EdgeTtsBackend 时强制校验。
+        """
+        from .edge_backend import MockTtsBackend
+        if isinstance(self.tts_backend, MockTtsBackend):
+            return
         if not (edge_tts_endpoint() or "").strip():
             raise ValidationError(
                 "Edge TTS 端点未配置。请到主页 · 工具箱 · 「免费 Edge TTS」填入 "
@@ -164,11 +171,26 @@ class BulkDubService:
                     style: str = DEFAULT_STYLE,
                     keep_original_audio: bool = False,
                     zoom_percent: int = 130,
-                    tts_concurrency: int = DEFAULT_TTS_CONCURRENCY,
-                    video_concurrency: int = 0,
                     encoder_preference: str = "auto",
                     check_exists: bool = True,
-                    require_endpoint: bool = True) -> dict:
+                    _skip_endpoint_check: bool = False,
+                    # 兼容旧位置参数（不影响生产 API；service 层内部使用）
+                    tts_concurrency: int = DEFAULT_TTS_CONCURRENCY,
+                    video_concurrency: int = 0,
+                    require_endpoint: bool | None = None) -> dict:
+        """R12-2 批次创建走**单事务**：batches + invalid + leader + follower + reuse。
+
+        R12-1 leader/follower：Excel 每条行都插一条 task 记录（保留 100% 可追溯）；
+        同一 batch + fingerprint 集合里，第一条为 leader，其余为 follower
+        （status=waiting_dependency, leader_task_id=leader）。
+        leader 成功→copy 输出到 follower；leader 失败/取消→follower 同步终态。
+
+        R12-12：`require_endpoint` 仅在 service 内部（例如测试注入 mock backend）
+        跳过。默认必查 Endpoint；API 层不再接受该参数。
+        """
+        # 兼容旧签名：若显式传 require_endpoint=False，视同 _skip_endpoint_check
+        if require_endpoint is False:
+            _skip_endpoint_check = True
         self.validate_params(
             voice_id=voice_id, speed=speed, pitch=pitch, style=style,
             zoom_percent=zoom_percent,
@@ -176,7 +198,7 @@ class BulkDubService:
             video_concurrency=video_concurrency,
             encoder_preference=encoder_preference,
         )
-        if require_endpoint:
+        if not _skip_endpoint_check:
             self._require_endpoint_configured()
         out_path = self._validate_output_dir(output_dir)
         preview = excel_reader.parse_excel(source_bytes, check_exists=check_exists)
@@ -196,12 +218,9 @@ class BulkDubService:
             output_dir=str(out_path),
             crf=20, preset="medium",
         )
-        batch_id = self.store.create_batch(label or "", str(out_path), params_snapshot)
-        self._current_batch_id = batch_id
-        self._current_frozen_params = copy.deepcopy(params_snapshot)
 
-        # R11-7 阶段 1：先算所有有效行的 fingerprint，再**一次性**批量查复用
-        rows_with_fp: list[tuple[Any, str]] = []
+        # 阶段 1：算所有有效行的 fingerprint
+        rows_valid: list[tuple[Any, str]] = []
         for r in preview.rows:
             if not r.valid:
                 continue
@@ -213,21 +232,24 @@ class BulkDubService:
                 encoder_preference=encoder_preference,
                 preset=params_snapshot["preset"], crf=params_snapshot["crf"],
             )
-            rows_with_fp.append((r, fp))
+            rows_valid.append((r, fp))
         fp_hits = self.store.find_completed_by_fingerprints(
-            {fp for _, fp in rows_with_fp}
+            {fp for _, fp in rows_valid}
         )
 
-        # R11-7 阶段 2：批内相同 fingerprint 去重（第一条走渲染或复用，其余共享）
-        seen_in_batch: dict[str, TaskRow | None] = {}
-        invalid_tasks: list[dict] = []
-        reuse_tasks: list[dict] = []
-        reuse_meta: list[dict] = []
-        add_tasks: list[dict] = []
+        # 阶段 2：为 create_batch_with_tasks 拼装每条 task dict
+        all_tasks: list[dict] = []
+        added = 0
+        reused = 0
+        invalid_n = 0
+        follower_n = 0
+        # 同批内相同 fp → 记录 leader index（在 all_tasks 列表中的下标）
+        leader_index_by_fp: dict[str, int] = {}
+        preview_index_by_row = {r.row_number: r for r in preview.rows}
 
         for r in preview.rows:
             if not r.valid:
-                invalid_tasks.append(dict(
+                all_tasks.append(dict(
                     excel_row=r.row_number, input_video=r.video_path or "",
                     text=r.text or "",
                     fingerprint="invalid:" + str(r.row_number),
@@ -237,7 +259,9 @@ class BulkDubService:
                     speed=float(speed),
                     keep_original_audio=bool(keep_original_audio),
                     params_snapshot=params_snapshot,
+                    stage="失败",
                 ))
+                invalid_n += 1
                 continue
             fp = compute_fingerprint(
                 video_path=r.video_path, text=r.text, voice_id=voice_id,
@@ -248,75 +272,56 @@ class BulkDubService:
                 preset=params_snapshot["preset"], crf=params_snapshot["crf"],
             )
             existing = fp_hits.get(fp)
-            in_batch_share = seen_in_batch.get(fp)
-            if existing and existing.output_path and Path(existing.output_path).is_file():
-                reuse_tasks.append(dict(
-                    excel_row=r.row_number, input_video=r.video_path, text=r.text,
-                    fingerprint=fp,
-                    voice_id=voice_id, voice_name=voice_name, speed=float(speed),
-                    keep_original_audio=bool(keep_original_audio),
-                    params_snapshot=params_snapshot,
-                ))
-                reuse_meta.append(dict(
-                    output_path=existing.output_path,
-                    video_duration=existing.video_duration,
-                    tts_duration=existing.tts_duration,
-                    concat_duration=existing.concat_duration,
-                    final_duration=existing.final_duration,
-                ))
-                continue
-            if in_batch_share and in_batch_share.output_path and \
-                    Path(in_batch_share.output_path).is_file():
-                # 批内相同 fp 已有产物 → 直接共享
-                reuse_tasks.append(dict(
-                    excel_row=r.row_number, input_video=r.video_path, text=r.text,
-                    fingerprint=fp,
-                    voice_id=voice_id, voice_name=voice_name, speed=float(speed),
-                    keep_original_audio=bool(keep_original_audio),
-                    params_snapshot=params_snapshot,
-                ))
-                reuse_meta.append(dict(
-                    output_path=in_batch_share.output_path,
-                    video_duration=in_batch_share.video_duration,
-                    tts_duration=in_batch_share.tts_duration,
-                    concat_duration=in_batch_share.concat_duration,
-                    final_duration=in_batch_share.final_duration,
-                ))
-                continue
-            # 首次遇到这个 fp（且外部无 completed）→ 新建任务
-            add_tasks.append(dict(
+            common = dict(
                 excel_row=r.row_number, input_video=r.video_path, text=r.text,
                 fingerprint=fp,
                 voice_id=voice_id, voice_name=voice_name, speed=float(speed),
                 keep_original_audio=bool(keep_original_audio),
                 params_snapshot=params_snapshot,
-            ))
-            # 标记：以后同 fp 的行走"批内共享"
-            seen_in_batch[fp] = None
+            )
+            # R12-1：外部指纹已完成 → 每条 Excel 行都写一条 completed 记录
+            if existing and existing.output_path and Path(existing.output_path).is_file():
+                task = dict(common,
+                             status=STATUS_COMPLETED,
+                             output_path=existing.output_path,
+                             video_duration=existing.video_duration,
+                             tts_duration=existing.tts_duration,
+                             concat_duration=existing.concat_duration,
+                             final_duration=existing.final_duration,
+                             progress=100, stage="完成（复用已有成片）")
+                all_tasks.append(task)
+                reused += 1
+                continue
+            # 批内 leader/follower
+            if fp not in leader_index_by_fp:
+                leader_index_by_fp[fp] = len(all_tasks)
+                all_tasks.append(dict(common, status=STATUS_PENDING))
+                added += 1
+            else:
+                leader_idx = leader_index_by_fp[fp]
+                all_tasks.append(dict(common,
+                                       status=STATUS_WAITING_DEPENDENCY,
+                                       leader_task_id=f"<INDEX:{leader_idx}>",
+                                       stage="等待批内 leader"))
+                follower_n += 1
 
-        # 批量落库（单事务）
-        if invalid_tasks:
-            self.store.bulk_insert(batch_id, invalid_tasks)
-        reuse_ids = self.store.bulk_insert(batch_id, reuse_tasks) if reuse_tasks else []
-        self.store.bulk_insert(batch_id, add_tasks) if add_tasks else []
-        for tid, meta in zip(reuse_ids, reuse_meta):
-            self.store.update(tid, status=STATUS_COMPLETED,
-                               output_path=meta["output_path"],
-                               video_duration=meta["video_duration"],
-                               tts_duration=meta["tts_duration"],
-                               concat_duration=meta["concat_duration"],
-                               final_duration=meta["final_duration"],
-                               progress=100, stage="完成（复用已有成片）")
+        # R12-2：单事务落地——批次+全部任务；失败自动 ROLLBACK
+        batch_id = self.store.create_batch_with_tasks(
+            label=label or "", output_dir=str(out_path),
+            params=params_snapshot, tasks=all_tasks,
+        )
+        self._current_batch_id = batch_id
+        self._current_frozen_params = copy.deepcopy(params_snapshot)
 
-        # 单例 scheduler：只 notify，不 restart
         sched = self._ensure_scheduler()
         sched.notify()
 
         return {
             "batch_id": batch_id,
-            "added": len(add_tasks),
-            "reused": len(reuse_ids),
-            "invalid": len(invalid_tasks),
+            "added": added,
+            "reused": reused,
+            "followers": follower_n,
+            "invalid": invalid_n,
             "total_rows": preview.total,
         }
 
@@ -393,11 +398,22 @@ class BulkDubService:
             output_free_gb = round(disk.free / 1024 / 1024 / 1024, 2)
         except OSError:
             output_free_gb = 0.0
+        # R12-11：分开估算 TTS 与视频阶段的 ETA
+        m = sched_snap.get("metrics", {})
+        avg_tts = float(m.get("avg_tts_processing_seconds") or 0)
+        avg_video = float(m.get("avg_video_seconds") or 0)
+        tts_alive = max(1, int(sched_snap.get("tts_alive") or 1))
+        video_alive = max(1, int(sched_snap.get("video_alive") or 1))
+        pending = counts.get(STATUS_PENDING, 0) + counts.get(STATUS_RETRY_WAIT, 0)
+        waiting_video = counts.get(STATUS_TTS_DONE, 0)
+        eta_tts = (pending * avg_tts / tts_alive) if avg_tts > 0 else 0
+        eta_video = ((pending + waiting_video) * avg_video / video_alive) if avg_video > 0 else 0
+        eta_seconds = round(max(eta_tts, eta_video))
         return {
             "counts": counts,
             "totals": {
                 "total": sum(counts.values()),
-                "waiting": counts.get(STATUS_PENDING, 0),
+                "waiting": pending,
                 "tts_running": counts.get("tts_running", 0),
                 "video_running": counts.get("video_running", 0),
                 "succeeded": counts.get(STATUS_COMPLETED, 0),
@@ -405,6 +421,16 @@ class BulkDubService:
                 "retry_wait": counts.get("retry_wait", 0),
                 "interrupted": counts.get("interrupted", 0),
                 "cancelled": counts.get("cancelled", 0),
+                "waiting_dependency": counts.get(STATUS_WAITING_DEPENDENCY, 0),
+                "output_committed": counts.get("output_committed", 0),
+                "cancelling": counts.get("cancelling", 0),
+                "tts_done": counts.get(STATUS_TTS_DONE, 0),
+            },
+            "eta": {
+                "eta_seconds": eta_seconds,
+                "eta_tts_seconds": round(eta_tts),
+                "eta_video_seconds": round(eta_video),
+                "confidence": m.get("projection_confidence", "low"),
             },
             "scheduler": sched_snap,
             "system": system_summary(),

@@ -68,7 +68,7 @@ def test_50_api_returns_expected_state_fields(tmp_path):
                 "failed", "retry_wait"):
         assert key in summary["totals"]
     for key in ("recent_rate_1min", "recent_rate_5min", "recent_rate_60min",
-                "avg_tts_seconds", "avg_video_seconds",
+                "avg_tts_processing_seconds", "avg_video_seconds",
                 "http_429_count", "http_5xx_count", "retry_count",
                 "hw_fallback_count", "projected_24h_estimate"):
         assert key in summary["scheduler"]["metrics"]
@@ -90,7 +90,7 @@ def test_50_start_via_api_needs_valid_output_dir(tmp_path):
     handled, status, body, _ = bulk_api.dispatch_post(
         "/api/bulk_dub/start",
         {"output_dir": str(tmp_path / "out"), "check_exists": "0",
-         "require_endpoint": "0"},
+         },
         xlsx, "application/octet-stream", service=svc,
     )
     assert handled and status == 200
@@ -170,7 +170,7 @@ def test_23_24_25_api_carries_voice_and_speed(tmp_path):
         "/api/bulk_dub/start",
         {"output_dir": str(tmp_path / "out"),
          "voice_id": "zh-CN-YunxiNeural", "speed": "0.9",
-         "check_exists": "0", "require_endpoint": "0"},
+         "check_exists": "0"},
         xlsx, "application/octet-stream", service=svc,
     )
     j = json.loads(body)

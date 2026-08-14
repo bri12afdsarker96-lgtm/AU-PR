@@ -48,11 +48,20 @@ STATUS_COMPLETED = "completed"
 STATUS_FAILED = "failed"
 STATUS_CANCELLED = "cancelled"
 STATUS_INTERRUPTED = "interrupted"
+# R12-1：follower 等待 leader 的中间态
+STATUS_WAITING_DEPENDENCY = "waiting_dependency"
+# R12-4：正式文件已提交但数据库尚未写 completed 的中间态（断电恢复关键）
+STATUS_OUTPUT_COMMITTED = "output_committed"
+# R12-6：worker 正在处理中的任务收到取消 → 先转成 cancelling，
+# 让 worker 稳定终态时再收敛到 cancelled；避免 pending→cancelled 之后被
+# 迟到的 tts_done 覆盖
+STATUS_CANCELLING = "cancelling"
 
 ALL_STATUSES = frozenset({
     STATUS_PENDING, STATUS_VALIDATING, STATUS_TTS_RUNNING, STATUS_TTS_DONE,
     STATUS_VIDEO_RUNNING, STATUS_RETRY_WAIT, STATUS_COMPLETED,
     STATUS_FAILED, STATUS_CANCELLED, STATUS_INTERRUPTED,
+    STATUS_WAITING_DEPENDENCY, STATUS_OUTPUT_COMMITTED, STATUS_CANCELLING,
 })
 
 # batch_id / task_id 允许字符白名单——只允许 uuid 十六进制片段。
@@ -99,6 +108,7 @@ class TaskRow:
     finished_at: float
     updated_at: float
     next_attempt_at: float
+    leader_task_id: str = ""
 
 
 _SCHEMA_V1 = """
@@ -158,6 +168,14 @@ _MIGRATION_V2 = [
     "ALTER TABLE tasks ADD COLUMN reserved_output_path TEXT NOT NULL DEFAULT ''",
 ]
 
+# v3 迁移：R12-1 leader/follower；R12-7 批次持久暂停
+_MIGRATION_V3_TASKS = [
+    "ALTER TABLE tasks ADD COLUMN leader_task_id TEXT NOT NULL DEFAULT ''",
+]
+_MIGRATION_V3_BATCHES = [
+    "ALTER TABLE batches ADD COLUMN paused INTEGER NOT NULL DEFAULT 0",
+]
+
 
 def default_db_path() -> Path:
     from .. import settings as studio_settings
@@ -197,22 +215,31 @@ class TaskStore:
                     "CREATE INDEX IF NOT EXISTS idx_tasks_next_attempt"
                     " ON tasks(status, next_attempt_at)"
                 )
+                # R12-1：leader_task_id 索引（follower 查询 & 传播）
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_tasks_leader"
+                    " ON tasks(leader_task_id) WHERE leader_task_id != ''"
+                )
             self._initialized = True
 
     def _apply_migrations(self, conn: sqlite3.Connection) -> None:
-        """v2 加列——用 PRAGMA table_info 检测已存在则跳过。幂等。"""
-        cols = {r["name"] for r in conn.execute("PRAGMA table_info(tasks)").fetchall()}
-        for stmt in _MIGRATION_V2:
-            # 提取列名做幂等判断
-            m = re.search(r"ADD COLUMN (\w+)", stmt)
-            if m and m.group(1) in cols:
-                continue
-            try:
-                conn.execute(stmt)
-            except sqlite3.OperationalError:
-                pass
+        """v2/v3 加列——用 PRAGMA table_info 检测已存在则跳过。幂等。"""
+        def _apply(table: str, stmts: list[str]) -> None:
+            cols = {r["name"] for r in conn.execute(
+                f"PRAGMA table_info({table})").fetchall()}
+            for stmt in stmts:
+                m = re.search(r"ADD COLUMN (\w+)", stmt)
+                if m and m.group(1) in cols:
+                    continue
+                try:
+                    conn.execute(stmt)
+                except sqlite3.OperationalError:
+                    pass
+        _apply("tasks", _MIGRATION_V2)
+        _apply("tasks", _MIGRATION_V3_TASKS)
+        _apply("batches", _MIGRATION_V3_BATCHES)
         conn.execute(
-            "INSERT OR REPLACE INTO schema_meta(key, value) VALUES('version', '2')"
+            "INSERT OR REPLACE INTO schema_meta(key, value) VALUES('version', '3')"
         )
 
     @contextmanager
@@ -245,6 +272,11 @@ class TaskStore:
             ).fetchone()
         if row is None:
             return None
+        # 兼容旧 schema：paused 列可能不存在
+        try:
+            paused = int(row["paused"] or 0)
+        except (IndexError, KeyError):
+            paused = 0
         return {
             "batch_id": row["batch_id"],
             "label": row["label"],
@@ -252,18 +284,45 @@ class TaskStore:
             "params": json.loads(row["params_json"] or "{}"),
             "created_at": row["created_at"],
             "frozen_at": row["frozen_at"],
+            "paused": bool(paused),
         }
+
+    def batch_exists(self, batch_id: str) -> bool:
+        if not is_safe_id(batch_id):
+            return False
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM batches WHERE batch_id=?", (batch_id,)
+            ).fetchone()
+        return row is not None
+
+    def set_batch_paused(self, batch_id: str, paused: bool) -> bool:
+        """R12-7 持久化批次暂停到 batches 表。返回是否命中。"""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE batches SET paused=? WHERE batch_id=?",
+                (1 if paused else 0, batch_id),
+            )
+            return cur.rowcount == 1
+
+    def list_paused_batch_ids(self) -> list[str]:
+        """R12-7 供 scheduler 启动/重连时读取持久暂停集合。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT batch_id FROM batches WHERE paused=1"
+            ).fetchall()
+        return [r["batch_id"] for r in rows]
 
     def list_batches(self, limit: int = 50) -> list[dict]:
         """返回批次列表——含每批次的状态统计（供页面重开时选择历史批次）。"""
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT batch_id,label,output_dir,created_at FROM batches"
+                "SELECT batch_id,label,output_dir,created_at,paused FROM batches"
                 " ORDER BY created_at DESC LIMIT ?", (int(limit),),
             ).fetchall()
             batches = [dict(r) for r in rows]
-            # 附上每批次的 counts
             for b in batches:
+                b["paused"] = bool(int(b.pop("paused", 0) or 0))
                 counts_rows = conn.execute(
                     "SELECT status, COUNT(*) AS n FROM tasks WHERE batch_id=? GROUP BY status",
                     (b["batch_id"],)
@@ -271,6 +330,150 @@ class TaskStore:
                 b["counts"] = {r["status"]: int(r["n"]) for r in counts_rows}
                 b["total"] = sum(b["counts"].values())
         return batches
+
+    # ---------------------------------------------------------------- 批次创建（单事务）
+
+    def create_batch_with_tasks(self, *, label: str, output_dir: str,
+                                  params: dict, tasks: list[dict],
+                                  paused: bool = False) -> str:
+        """R12-2 一次事务创建批次 + 所有任务（invalid/leader/follower/reuse 全在一起）。
+
+        tasks 里每条 dict 支持字段：
+            必须：excel_row, input_video, text, fingerprint,
+                  voice_id, voice_name, speed, keep_original_audio, params_snapshot
+            可选：status（默认 pending）、error_type / error_detail、
+                  leader_task_id（follower 指向 leader 的 task_id）、
+                  output_path / video_duration / tts_duration /
+                  concat_duration / final_duration / stage / progress
+        `leader_task_id="<INDEX:i>"` 时表示指向本次插入列表中第 i 条的 task_id
+        （因为 task_id 是在 create_batch_with_tasks 内生成的，先规划再解析）。
+        任一步失败 → ROLLBACK；batches/tasks 都不留半批次。
+        """
+        batch_id = uuid.uuid4().hex[:12]
+        now = time.time()
+        # 先给每条任务分配 task_id（供 leader/follower 指向）
+        task_ids: list[str] = [uuid.uuid4().hex[:16] for _ in tasks]
+
+        def _resolve_leader(spec: str) -> str:
+            if not spec:
+                return ""
+            if spec.startswith("<INDEX:"):
+                idx = int(spec[len("<INDEX:"):-1])
+                return task_ids[idx]
+            return spec
+
+        rows: list[tuple] = []
+        for tid, t in zip(task_ids, tasks):
+            status = str(t.get("status") or STATUS_PENDING)
+            leader = _resolve_leader(str(t.get("leader_task_id") or ""))
+            rows.append((
+                tid, batch_id, int(t["excel_row"]),
+                str(t["input_video"]), str(t["text"]), str(t["fingerprint"]),
+                str(t.get("output_path") or ""), "",  # reserved_output_path
+                str(t.get("stage") or ""), status,
+                0, int(t.get("progress") or 0),
+                str(t["voice_id"]), str(t["voice_name"]), float(t["speed"]),
+                1 if t.get("keep_original_audio") else 0,
+                json.dumps(t.get("params_snapshot") or {}, ensure_ascii=False),
+                str(t.get("error_type") or ""), str(t.get("error_detail") or ""),
+                float(t.get("video_duration") or 0),
+                float(t.get("tts_duration") or 0),
+                float(t.get("concat_duration") or 0),
+                float(t.get("final_duration") or 0),
+                now, 0.0,
+                float(t.get("finished_at") or (now if status == STATUS_COMPLETED else 0)),
+                now, 0.0,
+                "[]",  # warnings
+                "", 0,  # encoder_used, hw_fallback_used
+                leader,
+            ))
+        insert_sql = (
+            "INSERT INTO tasks(task_id,batch_id,excel_row,input_video,text,"
+            "fingerprint,output_path,reserved_output_path,stage,status,"
+            "attempts,progress,voice_id,voice_name,speed,keep_original_audio,"
+            "params_snapshot,error_type,error_detail,video_duration,tts_duration,"
+            "concat_duration,final_duration,created_at,started_at,finished_at,"
+            "updated_at,next_attempt_at,warnings,encoder_used,hw_fallback_used,"
+            "leader_task_id)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+        )
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(
+                    "INSERT INTO batches(batch_id,label,output_dir,params_json,"
+                    "created_at,frozen_at,paused) VALUES(?,?,?,?,?,?,?)",
+                    (batch_id, label, output_dir,
+                     json.dumps(params, ensure_ascii=False), now, now,
+                     1 if paused else 0),
+                )
+                if rows:
+                    conn.executemany(insert_sql, rows)
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        return batch_id
+
+    def get_followers(self, leader_task_id: str) -> list[TaskRow]:
+        """R12-1 leader 完成/失败/取消时用来遍历 follower 广播状态。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM tasks WHERE leader_task_id=?", (leader_task_id,)
+            ).fetchall()
+        return [_row_to_task(r) for r in rows]
+
+    def propagate_leader_result_atomic(self, leader_task_id: str, *,
+                                         to_status: str,
+                                         copy_output: bool = False,
+                                         leader_row: TaskRow | None = None,
+                                         error_type: str = "",
+                                         error_detail: str = "") -> int:
+        """R12-1 leader 达到终态时把所有 follower 事务性转到相应终态。
+
+        - to_status=STATUS_COMPLETED + copy_output=True：把 leader 的 output_path/durations
+          写到每个 waiting_dependency follower 上；
+        - to_status=STATUS_FAILED / STATUS_CANCELLED：follower 转到相同终态，
+          带上继承的 error_type/detail；不覆盖已经是终态的 follower。
+        返回真正转变的 follower 数。
+        """
+        now = time.time()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                if copy_output and leader_row is not None:
+                    cur = conn.execute(
+                        "UPDATE tasks SET status=?, output_path=?, "
+                        " video_duration=?, tts_duration=?, concat_duration=?,"
+                        " final_duration=?, encoder_used=?, hw_fallback_used=?,"
+                        " progress=100, stage='完成（跟随 leader）',"
+                        " error_type='', error_detail='',"
+                        " finished_at=?, updated_at=?"
+                        " WHERE leader_task_id=? AND status=?",
+                        (to_status, leader_row.output_path,
+                         leader_row.video_duration, leader_row.tts_duration,
+                         leader_row.concat_duration, leader_row.final_duration,
+                         leader_row.encoder_used,
+                         int(leader_row.hw_fallback_used),
+                         now, now, leader_task_id, STATUS_WAITING_DEPENDENCY),
+                    )
+                else:
+                    # 失败/取消：只影响仍在 waiting_dependency 的 follower
+                    detail = error_detail or f"leader 结束为 {to_status}"
+                    cur = conn.execute(
+                        "UPDATE tasks SET status=?, error_type=?, error_detail=?,"
+                        " stage='跟随 leader 终态', progress=0,"
+                        " finished_at=?, updated_at=?"
+                        " WHERE leader_task_id=? AND status=?",
+                        (to_status, error_type or "leader_terminated", detail,
+                         now, now, leader_task_id, STATUS_WAITING_DEPENDENCY),
+                    )
+                affected = int(cur.rowcount or 0)
+                conn.execute("COMMIT")
+                return affected
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
 
     # ---------------------------------------------------------------- 任务
 
@@ -369,6 +572,7 @@ class TaskStore:
             "hw_fallback_used",
             "video_duration", "tts_duration", "concat_duration", "final_duration",
             "started_at", "finished_at", "next_attempt_at",
+            "leader_task_id",
         }
         params_snapshot = fields.pop("params_snapshot", None)
         columns: list[str] = []
@@ -607,14 +811,24 @@ class TaskStore:
         return [_row_to_task(r) for r in rows]
 
     def iter_all(self, batch_id: str | None = None) -> Iterator[TaskRow]:
-        offset = 0
+        """R12-9：主键游标（task_id > last）分页——即使导出期间任务状态变化，也
+        绝不会 OFFSET 跳行。"""
+        last_id = ""
         while True:
-            batch = self.list_tasks(batch_id=batch_id, limit=500, offset=offset)
-            if not batch:
+            conditions = ["task_id > ?"]
+            args: list[Any] = [last_id]
+            if batch_id:
+                conditions.append("batch_id=?"); args.append(batch_id)
+            sql = ("SELECT * FROM tasks WHERE " + " AND ".join(conditions)
+                    + " ORDER BY task_id ASC LIMIT 500")
+            with self._connect() as conn:
+                rows = conn.execute(sql, args).fetchall()
+            if not rows:
                 return
-            for row in batch:
-                yield row
-            offset += len(batch)
+            for r in rows:
+                obj = _row_to_task(r)
+                yield obj
+                last_id = obj.task_id
 
     def changed_since(self, since: float, batch_id: str | None = None,
                       limit: int = 500) -> list[TaskRow]:
@@ -704,6 +918,8 @@ class TaskStore:
             "video_recovered_tts_done": 0,
             "video_recovered_pending": 0,
             "interrupted_recovered": 0,
+            "output_committed_recovered": 0,
+            "cancelling_recovered": 0,
         }
         now = time.time()
 
@@ -810,6 +1026,71 @@ class TaskStore:
                     (STATUS_PENDING, now, r["task_id"]),
                 )
                 stats["interrupted_recovered"] += 1
+
+            # R12-4 output_committed：正式文件已落地但 DB 未写 completed —— 尝试
+            # 用 marker + reserved_output_verifier 补记为 completed；文件缺失/校验
+            # 不过 → 回 pending 重跑。
+            q = "SELECT * FROM tasks WHERE status=?"
+            args = [STATUS_OUTPUT_COMMITTED]
+            if batch_id:
+                q += " AND batch_id=?"; args.append(batch_id)
+            rows = conn.execute(q, args).fetchall()
+            for r in rows:
+                row_obj = _row_to_task(r)
+                path = Path(row_obj.output_path)
+                ok = False
+                meta: dict = {}
+                if path.is_file() and reserved_output_verifier:
+                    try:
+                        ok, meta = reserved_output_verifier(row_obj, path)
+                    except Exception:  # noqa: BLE001
+                        ok, meta = False, {}
+                if ok:
+                    conn.execute(
+                        "UPDATE tasks SET status=?, reserved_output_path='',"
+                        " final_duration=?, tts_duration=?, concat_duration=?,"
+                        " video_duration=?, encoder_used=?, hw_fallback_used=?,"
+                        " progress=100, stage='完成（恢复）',"
+                        " error_type='', error_detail='',"
+                        " finished_at=?, updated_at=?"
+                        " WHERE task_id=?",
+                        (STATUS_COMPLETED,
+                         float(meta.get("final_duration") or row_obj.final_duration or 0),
+                         float(meta.get("tts_duration") or row_obj.tts_duration or 0),
+                         float(meta.get("concat_duration") or row_obj.concat_duration or 0),
+                         float(meta.get("video_duration") or row_obj.video_duration or 0),
+                         str(meta.get("encoder_used") or row_obj.encoder_used or ""),
+                         int(meta.get("hw_fallback_used") or row_obj.hw_fallback_used or 0),
+                         now, now, r["task_id"]),
+                    )
+                    _clean(row_obj)
+                    stats["output_committed_recovered"] += 1
+                else:
+                    _clean(row_obj)
+                    conn.execute(
+                        "UPDATE tasks SET status=?, output_path='',"
+                        " reserved_output_path='', staging_dir='', progress=0,"
+                        " updated_at=? WHERE task_id=?",
+                        (STATUS_PENDING, now, r["task_id"]),
+                    )
+                    stats["video_recovered_pending"] += 1
+
+            # R12-6 cancelling：中断的取消 → 直接收敛到 cancelled
+            q = "SELECT * FROM tasks WHERE status=?"
+            args = [STATUS_CANCELLING]
+            if batch_id:
+                q += " AND batch_id=?"; args.append(batch_id)
+            rows = conn.execute(q, args).fetchall()
+            for r in rows:
+                row_obj = _row_to_task(r)
+                _clean(row_obj)
+                conn.execute(
+                    "UPDATE tasks SET status=?, error_type='cancelled',"
+                    " error_detail='中断时收敛到 cancelled', finished_at=?,"
+                    " reserved_output_path='', updated_at=? WHERE task_id=?",
+                    (STATUS_CANCELLED, now, now, r["task_id"]),
+                )
+                stats["cancelling_recovered"] += 1
         return stats
 
     def complete_task_transactional(self, task_id: str, *,
@@ -820,40 +1101,199 @@ class TaskStore:
                                      video_duration: float,
                                      encoder_used: str,
                                      hw_fallback_used: bool,
-                                     warnings_to_add: list[str] | None = None) -> None:
-        """R11-3 视频完成走单个事务：写 output_path + 清 reservation + 记 warnings +
-        编码器/时长/completed 状态。避免"文件已落 / DB 未落"跨步失败面。"""
+                                     warnings_to_add: list[str] | None = None,
+                                     expected_statuses: tuple[str, ...] = (
+                                         STATUS_VIDEO_RUNNING,
+                                         STATUS_OUTPUT_COMMITTED,
+                                     ),
+                                     expected_reserved_path: str = "") -> bool:
+        """R11-3+R12-4 视频完成走单个事务。**条件更新**：只在任务处于
+        expected_statuses 时才推进到 completed；否则返回 False（比如任务已
+        cancelled/cancelling，就不能被迟到的完成写回 completed）。
+
+        - `expected_reserved_path`：非空时校验预留路径必须等于 output_path
+          （若数据库预留位与本次要提交的正式路径对不上，拒绝提交）
+        - `rowcount` == 0 时表示状态已被别处（如取消）改写；调用方要处理
+        """
         now = time.time()
         warnings_to_add = warnings_to_add or []
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
-                # 读现有 warnings 做去重合并
                 cur_row = conn.execute(
-                    "SELECT warnings FROM tasks WHERE task_id=?", (task_id,)
+                    "SELECT warnings, reserved_output_path, status FROM tasks"
+                    " WHERE task_id=?", (task_id,),
                 ).fetchone()
+                if cur_row is None:
+                    conn.execute("ROLLBACK")
+                    return False
+                if expected_reserved_path and cur_row["reserved_output_path"] \
+                        and cur_row["reserved_output_path"] != expected_reserved_path:
+                    conn.execute("ROLLBACK")
+                    return False
                 existing = json.loads((cur_row["warnings"] if cur_row else "[]") or "[]")
                 if not isinstance(existing, list):
                     existing = []
                 for w in warnings_to_add:
                     if w and w not in existing:
                         existing.append(w)
-                conn.execute(
-                    "UPDATE tasks SET status=?, output_path=?, reserved_output_path='',"
-                    " final_duration=?, tts_duration=?, concat_duration=?,"
-                    " video_duration=?, encoder_used=?, hw_fallback_used=?,"
-                    " progress=100, stage='完成', error_type='', error_detail='',"
-                    " warnings=?, finished_at=?, updated_at=? WHERE task_id=?",
-                    (STATUS_COMPLETED, output_path,
-                     float(final_duration), float(tts_duration),
-                     float(concat_duration), float(video_duration),
-                     encoder_used, 1 if hw_fallback_used else 0,
-                     json.dumps(existing, ensure_ascii=False), now, now, task_id),
-                )
+                statuses = tuple(expected_statuses)
+                q = ("UPDATE tasks SET status=?, output_path=?, reserved_output_path='',"
+                     " final_duration=?, tts_duration=?, concat_duration=?,"
+                     " video_duration=?, encoder_used=?, hw_fallback_used=?,"
+                     " progress=100, stage='完成', error_type='', error_detail='',"
+                     " warnings=?, finished_at=?, updated_at=? "
+                     f"WHERE task_id=? AND status IN ({','.join('?' * len(statuses))})")
+                args = (STATUS_COMPLETED, output_path,
+                         float(final_duration), float(tts_duration),
+                         float(concat_duration), float(video_duration),
+                         encoder_used, 1 if hw_fallback_used else 0,
+                         json.dumps(existing, ensure_ascii=False), now, now,
+                         task_id, *statuses)
+                cur = conn.execute(q, args)
+                ok = cur.rowcount == 1
+                conn.execute("COMMIT")
+                return ok
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+
+    def mark_output_committed(self, task_id: str, output_path: str) -> bool:
+        """R12-4 视频渲染 + 正式文件落地成功、但 DB 还没写 completed 之前的
+        中间态。**条件更新**：只在 video_running 才推进。"""
+        now = time.time()
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE tasks SET status=?, output_path=?, stage='文件已落地/DB 待补记',"
+                " updated_at=? WHERE task_id=? AND status=?",
+                (STATUS_OUTPUT_COMMITTED, output_path, now, task_id,
+                 STATUS_VIDEO_RUNNING),
+            )
+            return cur.rowcount == 1
+
+    def cancel_atomic(self, task_ids: list[str],
+                       *, from_terminal_statuses: tuple[str, ...] = ()) -> list[str]:
+        """R12-6 事务性取消：只把仍在等待类（pending/retry_wait/tts_done/
+        waiting_dependency）的任务原子转成 cancelled。返回真正被取消的 task_id。
+
+        对处于 tts_running/video_running 的任务，转成 cancelling（worker 会
+        在下一个稳定点自愿收敛到 cancelled，避免竞态覆盖）。
+        """
+        if not task_ids:
+            return []
+        waiting = (STATUS_PENDING, STATUS_RETRY_WAIT, STATUS_TTS_DONE,
+                    STATUS_WAITING_DEPENDENCY)
+        running = (STATUS_TTS_RUNNING, STATUS_VIDEO_RUNNING)
+        now = time.time()
+        cancelled: list[str] = []
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                placeholders = ",".join("?" * len(task_ids))
+                # waiting → cancelled
+                for tid in task_ids:
+                    cur = conn.execute(
+                        f"UPDATE tasks SET status=?, error_type='cancelled',"
+                        f" error_detail='用户批量取消', finished_at=?, updated_at=?,"
+                        f" reserved_output_path=''"
+                        f" WHERE task_id=? AND status IN "
+                        f"({','.join('?' * len(waiting))})",
+                        (STATUS_CANCELLED, now, now, tid, *waiting),
+                    )
+                    if cur.rowcount == 1:
+                        cancelled.append(tid)
+                        continue
+                    # running → cancelling
+                    cur = conn.execute(
+                        f"UPDATE tasks SET status=?, error_type='cancelled',"
+                        f" error_detail='取消中', stage='取消中', updated_at=?"
+                        f" WHERE task_id=? AND status IN "
+                        f"({','.join('?' * len(running))})",
+                        (STATUS_CANCELLING, now, tid, *running),
+                    )
+                    if cur.rowcount == 1:
+                        cancelled.append(tid)
                 conn.execute("COMMIT")
             except Exception:
                 conn.execute("ROLLBACK")
                 raise
+        return cancelled
+
+    def cancel_batch_atomic(self, batch_id: str,
+                             *, statuses: tuple[str, ...] | None = None) -> list[str]:
+        """R12-6 事务把批次里 waiting 类任务全部转为 cancelled；正在跑的转 cancelling。
+        返回真正状态发生变化的 task_id 列表。"""
+        waiting = statuses or (STATUS_PENDING, STATUS_RETRY_WAIT, STATUS_TTS_DONE,
+                                 STATUS_WAITING_DEPENDENCY)
+        running = (STATUS_TTS_RUNNING, STATUS_VIDEO_RUNNING)
+        now = time.time()
+        cancelled: list[str] = []
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                # 先查 candidate；同时把 waiting 类批量置 cancelled
+                waiting_rows = conn.execute(
+                    f"SELECT task_id FROM tasks WHERE batch_id=?"
+                    f" AND status IN ({','.join('?' * len(waiting))})",
+                    (batch_id, *waiting),
+                ).fetchall()
+                waiting_ids = [r["task_id"] for r in waiting_rows]
+                if waiting_ids:
+                    ph = ",".join("?" * len(waiting_ids))
+                    conn.execute(
+                        f"UPDATE tasks SET status=?, error_type='cancelled',"
+                        f" error_detail='用户批量取消', finished_at=?, updated_at=?,"
+                        f" reserved_output_path=''"
+                        f" WHERE task_id IN ({ph})",
+                        (STATUS_CANCELLED, now, now, *waiting_ids),
+                    )
+                    cancelled.extend(waiting_ids)
+                running_rows = conn.execute(
+                    f"SELECT task_id FROM tasks WHERE batch_id=?"
+                    f" AND status IN ({','.join('?' * len(running))})",
+                    (batch_id, *running),
+                ).fetchall()
+                running_ids = [r["task_id"] for r in running_rows]
+                if running_ids:
+                    ph = ",".join("?" * len(running_ids))
+                    conn.execute(
+                        f"UPDATE tasks SET status=?, error_type='cancelled',"
+                        f" error_detail='取消中', stage='取消中', updated_at=?"
+                        f" WHERE task_id IN ({ph})",
+                        (STATUS_CANCELLING, now, *running_ids),
+                    )
+                    cancelled.extend(running_ids)
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        return cancelled
+
+    def try_advance_status(self, task_id: str, *, from_status: str,
+                             to_status: str, **fields: Any) -> bool:
+        """R12-6 条件推进：仅当当前状态 == from_status 时才转到 to_status。
+        避免"pending→cancelled 之后被迟到的 tts_done 覆盖"。返回是否命中。"""
+        if to_status not in ALL_STATUSES or from_status not in ALL_STATUSES:
+            raise ValueError(f"未知状态：{from_status} / {to_status}")
+        # 拼装 SET 子句
+        allowed = {"stage", "attempts", "progress", "error_type", "error_detail",
+                    "tts_duration", "video_duration", "next_attempt_at",
+                    "encoder_used", "hw_fallback_used", "output_path",
+                    "reserved_output_path", "final_duration", "concat_duration",
+                    "started_at", "finished_at"}
+        sets = ["status=?", "updated_at=?"]
+        vals: list[Any] = [to_status, time.time()]
+        for k, v in fields.items():
+            if k not in allowed:
+                raise ValueError(f"try_advance_status 不允许列名 {k}")
+            sets.append(f"{k}=?")
+            vals.append(v)
+        vals.extend([task_id, from_status])
+        sql = ("UPDATE tasks SET " + ", ".join(sets) +
+                " WHERE task_id=? AND status=?")
+        with self._connect() as conn:
+            cur = conn.execute(sql, vals)
+            return cur.rowcount == 1
 
     def reap_interrupted(self, batch_id: str | None = None) -> int:
         """旧接口保留（兼容测试）：把 running 全标 interrupted。
@@ -942,4 +1382,5 @@ def _row_to_task(row: sqlite3.Row) -> TaskRow:
         finished_at=float(row["finished_at"] or 0),
         updated_at=float(row["updated_at"] or 0),
         next_attempt_at=float(_optional("next_attempt_at", 0) or 0),
+        leader_task_id=_optional("leader_task_id", "") or "",
     )

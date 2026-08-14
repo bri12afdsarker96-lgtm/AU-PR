@@ -324,7 +324,9 @@ async function tryVoice() {
     box.innerHTML = "";
     const audio = document.createElement("audio");
     audio.controls = true;
-    audio.src = "/api/bulk_dub/audio?path=" + encodeURIComponent(j.audio_path);
+    // R12-10：不再传递本机绝对路径；用 voice_id + speed 由后端定位试听 WAV
+    audio.src = "/api/bulk_dub/probe_audio?voice_id=" + encodeURIComponent($("voiceId").value)
+                + "&speed=" + $("speedRange").value;
     box.appendChild(audio);
     state.msg("试听已合成，点击 ▶ 播放", "ok-msg");
   } catch (e) { state.msg("试听失败：" + e.message, "err-msg"); }
@@ -488,28 +490,52 @@ function escapeHtml(s) {
 }
 
 /* ============= 目录浏览 modal ============= */
+// R12-8：与后端 /api/browse 契约对齐：返回 { path, parent, dirs (名字列表), files, roots }
 async function browseAt(path) {
   try {
     const q = new URLSearchParams({ path: path || "" });
     const r = await fetch("/api/browse?" + q.toString());
     const j = await r.json();
-    $("browsePath").value = j.cwd || path || "";
+    if (j.error) { state.msg("目录：" + j.error, "warn-msg"); }
+    const currentPath = j.path || path || "";
+    $("browsePath").value = currentPath;
     const list = $("browseList");
     list.innerHTML = "";
+    // 用后端返回的 path 做拼接，Windows/UNC/Linux 都行——由后端 Path/操作系统负责
     for (const d of (j.dirs || [])) {
       const div = document.createElement("div");
       div.className = "item";
       div.textContent = "📁 " + d;
-      div.onclick = () => browseAt(j.cwd + (j.cwd.endsWith("/") || j.cwd.endsWith("\\") ? "" : "/") + d);
+      div.onclick = () => browseAtChild(currentPath, d, !!j.roots);
       list.appendChild(div);
+    }
+    if (j.roots) {
+      // Windows 盘符根：dirs 已经是完整 "C:\\" 形式；点直接跳到
+      list.querySelectorAll(".item").forEach((el, i) => {
+        el.onclick = () => browseAt(j.dirs[i]);
+      });
     }
   } catch (e) { state.msg("目录读取失败：" + e.message, "err-msg"); }
 }
+function browseAtChild(parent, childName, isRoots) {
+  if (isRoots) { browseAt(childName); return; }   // 盘符自身即绝对路径
+  // 由后端做正确拼接：把 parent 传回去，让后端 Path() 自行合并
+  const q = new URLSearchParams({ path: parent + "/" + childName });
+  fetch("/api/browse?" + q.toString()).then(r => r.json()).then(j => {
+    if (j.path) browseAt(j.path);
+    else state.msg("目录：" + (j.error || "读取失败"), "err-msg");
+  });
+}
 $("btnBrowse").onclick = () => { $("browseModal").classList.add("on"); browseAt($("outputDir").value); };
-$("browseUp").onclick = () => {
+$("browseUp").onclick = async () => {
   const p = $("browsePath").value;
-  const parent = p.replace(/[\\/][^\\/]+[\\/]?$/, "") || "/";
-  browseAt(parent);
+  // 后端 /api/browse 返回 parent；用后端计算的父目录，前端不猜
+  const q = new URLSearchParams({ path: p });
+  try {
+    const r = await fetch("/api/browse?" + q.toString());
+    const j = await r.json();
+    browseAt(j.parent || "");
+  } catch (e) { state.msg("上一级失败：" + e.message, "err-msg"); }
 };
 $("browseUse").onclick = () => {
   $("outputDir").value = $("browsePath").value;
@@ -517,14 +543,13 @@ $("browseUse").onclick = () => {
 };
 $("browseCancel").onclick = () => $("browseModal").classList.remove("on");
 $("btnOpenOut").onclick = async () => {
-  // 提示：Web 后端能不能"打开目录"取决于软件是否有该 API；这里退而给出路径复制
-  const p = $("outputDir").value;
-  if (!p) return state.msg("请先设置输出目录", "err-msg");
+  // R12-8：真正调用后端受白名单保护的 open_output_dir 端点
+  if (!state.currentBatch) return state.msg("请先选择或创建批次", "err-msg");
   try {
-    await navigator.clipboard.writeText(p);
-    state.msg("输出目录路径已复制到剪贴板：" + p, "ok-msg");
+    const j = await api("POST", "/api/bulk_dub/open_output_dir?batch_id=" + state.currentBatch);
+    state.msg("已在文件管理器打开：" + (j.opened || ""), "ok-msg");
   } catch (e) {
-    state.msg("路径：" + p, "warn-msg");
+    state.msg("打开失败：" + e.message, "err-msg");
   }
 };
 

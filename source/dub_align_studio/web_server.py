@@ -917,6 +917,9 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
 
 # ------------------------------------------------------------------ HTTP
 class _Handler(BaseHTTPRequestHandler):
+    # R12-9：显式 HTTP/1.1——CSV chunked / Range 206 都需要 1.1
+    protocol_version = "HTTP/1.1"
+
     def log_message(self, *args) -> None:  # 静默访问日志
         pass
 
@@ -1088,24 +1091,49 @@ class _Handler(BaseHTTPRequestHandler):
                 self.wfile.write(body)
                 return
         # 音频白名单下发：只允许 data_root/批量带货/试听 与 输出目录下的文件
-        if route == "/api/bulk_dub/audio":
+        # R12-10：媒体访问改为按 task_id / probe token 授权——
+        # **不再**允许客户端提交任意文件绝对路径
+        if route == "/api/bulk_dub/task_output":
             from .bulk_dub import service as bulk_service
+            from .bulk_dub.store import is_safe_id as _is_safe
 
             query = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
-            raw = query.get("path") or ""
-            allowed_roots = [
-                (studio_settings.data_root() / "批量带货" / "试听").resolve(),
-            ]
-            # 追加当前批次输出目录
+            task_id = query.get("task_id") or ""
+            if not _is_safe(task_id):
+                self._json({"error": "非法 task_id"}, 400)
+                return
+            svc = bulk_service.get_service()
+            row = svc.store.get(task_id)
+            if row is None:
+                self._json({"error": "task 不存在"}, 404)
+                return
+            if not row.output_path or not Path(row.output_path).is_file():
+                self._json({"error": "该任务尚无成片文件"}, 404)
+                return
+            # 历史批次也允许访问——只用 task_id 的 output_path 白名单
+            self._serve_bulk_audio(row.output_path,
+                                    [Path(row.output_path).resolve().parent])
+            return
+        if route == "/api/bulk_dub/probe_audio":
+            from .bulk_dub import service as bulk_service
+            from .bulk_dub.service import DEFAULT_VOICE_ID, DEFAULT_SPEED, VOICE_IDS
+
+            query = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+            voice_id = query.get("voice_id") or DEFAULT_VOICE_ID
             try:
-                svc = bulk_service.get_service()
-                if svc._current_batch_id:  # noqa: SLF001
-                    b = svc.store.get_batch(svc._current_batch_id)
-                    if b and b.get("output_dir"):
-                        allowed_roots.append(Path(b["output_dir"]).resolve())
-            except Exception:  # noqa: BLE001
-                pass
-            self._serve_bulk_audio(raw, allowed_roots)
+                speed = float(query.get("speed") or DEFAULT_SPEED)
+            except ValueError:
+                self._json({"error": "非法 speed"}, 400)
+                return
+            if voice_id not in VOICE_IDS or not (0.5 <= speed <= 2.0):
+                self._json({"error": "非法 voice_id/speed"}, 400)
+                return
+            probe_root = (studio_settings.data_root() / "批量带货" / "试听").resolve()
+            wav = probe_root / f"{voice_id}_{speed:.2f}.wav"
+            if not wav.is_file():
+                self._json({"error": "试听文件不存在，请先 POST /try_voice"}, 404)
+                return
+            self._serve_bulk_audio(str(wav), [probe_root])
             return
         if route.startswith("/api/bulk_dub"):
             from .bulk_dub import api as bulk_api
@@ -1195,28 +1223,58 @@ class _Handler(BaseHTTPRequestHandler):
         ctype = {"wav": "audio/wav", "mp3": "audio/mpeg",
                   "m4a": "audio/mp4", "mp4": "video/mp4"}.get(ext, "application/octet-stream")
         file_size = candidate.stat().st_size
-        # 解析 Range
-        range_hdr = self.headers.get("Range") or ""
+        # R12-10 解析 Range —— 支持 bytes=N-M / bytes=N- / bytes=-N（后缀 N 字节）
+        range_hdr = (self.headers.get("Range") or "").strip()
         start, end = 0, file_size - 1
         status = 200
-        if range_hdr.startswith("bytes="):
+        if range_hdr:
+            if not range_hdr.lower().startswith("bytes="):
+                # 明确 416
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{file_size}")
+                self.end_headers()
+                return
+            spec = range_hdr[6:].strip()
+            if "," in spec:
+                # 多 Range 明确不支持
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{file_size}")
+                self.end_headers()
+                return
             try:
-                spec = range_hdr[6:].split(",", 1)[0].strip()
+                if "-" not in spec:
+                    raise ValueError("no dash")
                 a, b = spec.split("-", 1)
-                if a:
+                a, b = a.strip(), b.strip()
+                if not a and not b:
+                    raise ValueError("empty range")
+                if not a:  # 后缀：最后 N 字节
+                    suffix = int(b)
+                    if suffix <= 0:
+                        raise ValueError("bad suffix")
+                    if suffix >= file_size:
+                        start, end = 0, file_size - 1
+                    else:
+                        start = file_size - suffix
+                        end = file_size - 1
+                elif not b:  # 开放结尾
                     start = int(a)
-                if b:
+                    end = file_size - 1
+                else:
+                    start = int(a)
                     end = int(b)
-                if start > end or start >= file_size:
+                if start < 0 or end < 0 or start > end or start >= file_size:
                     self.send_response(416)
                     self.send_header("Content-Range", f"bytes */{file_size}")
                     self.end_headers()
                     return
                 end = min(end, file_size - 1)
                 status = 206
-            except (ValueError, IndexError):
-                start, end = 0, file_size - 1
-                status = 200
+            except ValueError:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{file_size}")
+                self.end_headers()
+                return
         length = end - start + 1
         self.send_response(status)
         self.send_header("Content-Type", ctype)
@@ -1240,9 +1298,46 @@ class _Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             return
 
+    def _handle_open_output_dir(self, parsed) -> None:
+        """R12-8：只允许打开某 batch_id 的 output_dir（已入库）——白名单守卫。"""
+        import subprocess as _sp
+        import sys as _sys
+        from .bulk_dub import service as bulk_service
+        from .bulk_dub.store import is_safe_id as _is_safe
+
+        query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+        batch_id = query.get("batch_id") or ""
+        if not _is_safe(batch_id):
+            self._json({"error": "非法 batch_id"}, 400)
+            return
+        svc = bulk_service.get_service()
+        b = svc.store.get_batch(batch_id)
+        if not b:
+            self._json({"error": "batch 不存在"}, 404)
+            return
+        out_dir = b.get("output_dir") or ""
+        if not out_dir or not Path(out_dir).is_dir():
+            self._json({"error": f"output_dir 不存在：{out_dir}"}, 404)
+            return
+        try:
+            if _sys.platform.startswith("win"):
+                _sp.Popen(["explorer", str(out_dir)])
+            elif _sys.platform == "darwin":
+                _sp.Popen(["open", str(out_dir)])
+            else:
+                _sp.Popen(["xdg-open", str(out_dir)])
+        except (OSError, FileNotFoundError) as exc:
+            self._json({"error": f"无法打开：{exc}"}, 500)
+            return
+        self._json({"opened": out_dir})
+
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         route = parsed.path
+        # R12-8：真"在文件管理器中打开"——只允许打开当前存在的 batch 输出目录
+        if route == "/api/bulk_dub/open_output_dir":
+            self._handle_open_output_dir(parsed)
+            return
         if route.startswith("/api/bulk_dub"):
             from .bulk_dub import api as bulk_api
 

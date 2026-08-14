@@ -381,12 +381,16 @@ def test_r11_6_endpoint_hot_reload(tmp_path, monkeypatch):
 
 
 def test_r11_6_start_batch_rejects_when_endpoint_unset(tmp_path, monkeypatch):
+    """R12-12：真 Edge backend + 未配置 endpoint → ValidationError。
+    Mock backend 天然不需要 endpoint（内部生成静音 WAV），本用例特意用真 Edge。
+    """
     from dub_align_studio import settings as studio_settings
+    from dub_align_studio.bulk_dub.edge_backend import EdgeTtsBackend
     monkeypatch.setattr(studio_settings, "load_settings", lambda: {"edge_tts_endpoint": ""})
     monkeypatch.delenv("EDGE_TTS_ENDPOINT", raising=False)
     svc = BulkDubService(
         store=TaskStore(tmp_path / "q.sqlite3"),
-        tts_backend=MockTtsBackend(),
+        tts_backend=EdgeTtsBackend(),
     )
     xlsx = build_minimal_xlsx([("/x.mp4", "t")])
     (tmp_path / "out").mkdir()
@@ -450,11 +454,11 @@ def test_r11_7_batch_dedup_and_batch_query(tmp_path, monkeypatch):
     r = svc.start_batch(source_bytes=xlsx, label="dedupe",
                          output_dir=str(tmp_path / "out"),
                          check_exists=True, require_endpoint=False)
-    # 外部指纹 hit：2 条"重用"复用（跨批次去重生效）；
-    # 3 条新指纹入队（"新A"×2 + "新B"×1）——批内共享只在首条完成后才对同批后续行生效，
-    # 此处首条尚未渲染，所以入队 3 条属于预期。
+    # R12-1：外部指纹 hit → 2 条"重用"直接 completed；
+    # 新指纹只有 2 个 leader（新A 首个 + 新B），另 1 条"新A"重复 → follower
     assert r["reused"] == 2, f"reused={r['reused']}"
-    assert r["added"] == 3, f"added={r['added']}"
+    assert r["added"] == 2, f"added={r['added']}"
+    assert r.get("followers", 0) == 1, f"followers={r.get('followers')}"
     svc.stop()
 
 
@@ -592,7 +596,7 @@ def test_r11_11_real_http_handler_csv_stream(tmp_path, monkeypatch):
 
 
 def test_r11_11_real_http_handler_audio_range(tmp_path, monkeypatch):
-    """真 HTTP：/api/bulk_dub/audio 支持 Range → 206 + Content-Range。"""
+    """真 HTTP：/api/bulk_dub/probe_audio 支持 Range → 206 + Content-Range。"""
     import http.client
     from dub_align_studio import settings as studio_settings
     from dub_align_studio import web_server
@@ -601,7 +605,8 @@ def test_r11_11_real_http_handler_audio_range(tmp_path, monkeypatch):
     fake = tmp_path / "data"; fake.mkdir()
     monkeypatch.setattr(studio_settings, "data_root", lambda: fake)
     (fake / "批量带货" / "试听").mkdir(parents=True)
-    wav = fake / "批量带货" / "试听" / "sample.wav"
+    # R12-10：试听文件命名为 <voice>_<speed>.wav——由 probe_audio 端点定位
+    wav = fake / "批量带货" / "试听" / "zh-CN-XiaoshuangNeural_1.25.wav"
     with wave.open(str(wav), "wb") as w:
         w.setnchannels(1); w.setsampwidth(2); w.setframerate(44100)
         w.writeframes(b"\x00\x00" * 4410)
@@ -617,9 +622,8 @@ def test_r11_11_real_http_handler_audio_range(tmp_path, monkeypatch):
     thread.start()
     try:
         conn = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
-        # Range: bytes=0-99
-        from urllib.parse import quote
-        conn.request("GET", "/api/bulk_dub/audio?path=" + quote(str(wav)),
+        conn.request("GET",
+                     "/api/bulk_dub/probe_audio?voice_id=zh-CN-XiaoshuangNeural&speed=1.25",
                      headers={"Range": "bytes=0-99"})
         resp = conn.getresponse()
         assert resp.status == 206, f"expected 206, got {resp.status}"
