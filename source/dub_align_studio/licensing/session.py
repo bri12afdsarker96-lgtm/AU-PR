@@ -5,9 +5,11 @@
 包含：code、session_token、machine_id、expire_at、last_server_time、
       heartbeat_interval、activated_at、last_action、last_check_at。
 
-**加密**：MVP 用明文 JSON。session_token 泄露后攻击者能续用心跳、
-但激活码本身与 machine_id 强绑定，换机也用不了。生产版建议改成
-DPAPI（Windows）/ keyring（跨平台）加密后再落盘 —— 参见 docs/PROTECTION.md。
+**敏感字段加密**（`code` / `session_token`）：
+    * Windows → DPAPI（CryptProtectData，绑用户账户）
+    * 其他 → xor 弱加密兜底（挡文本 grep，非专业防护）
+    * 详见 `crypto_store.py`。
+    * **前向兼容**：老版本明文写入的字段读时自动识别（无前缀即视为明文）。
 """
 
 from __future__ import annotations
@@ -18,6 +20,8 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+
+from . import crypto_store
 
 
 def default_session_file() -> Path:
@@ -56,6 +60,9 @@ class SessionStore:
         self._state = LicenseState()
         self._load()
 
+    # 敏感字段——落盘前加密；读回时解密
+    _SENSITIVE_FIELDS = ("code", "session_token")
+
     def _load(self) -> None:
         if not self.path.exists():
             return
@@ -67,7 +74,11 @@ class SessionStore:
             return
         if data.get("schema") != LicenseState.schema:
             return
-        # 只接收 LicenseState 已知字段
+        # 敏感字段解密
+        for f in self._SENSITIVE_FIELDS:
+            v = data.get(f)
+            if isinstance(v, str) and v:
+                data[f] = crypto_store.decrypt(v)
         allowed = set(LicenseState.__annotations__.keys())
         clean = {k: v for k, v in data.items() if k in allowed}
         try:
@@ -78,10 +89,15 @@ class SessionStore:
     def _save_locked(self) -> None:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
+            payload = self._state.to_dict()
+            # 敏感字段加密（保持 schema 不变；只是字符串内容被替换成密文）
+            for f in self._SENSITIVE_FIELDS:
+                v = payload.get(f)
+                if isinstance(v, str) and v:
+                    payload[f] = crypto_store.encrypt(v)
             tmp = self.path.parent / f"{self.path.name}.tmp"
             tmp.write_text(
-                json.dumps(self._state.to_dict(),
-                            ensure_ascii=False, indent=2),
+                json.dumps(payload, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
             os.replace(str(tmp), str(self.path))
