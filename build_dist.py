@@ -272,11 +272,18 @@ def bundle_ffmpeg(dist_dir: Path) -> int:
 
 
 def write_launcher_bat(dist_dir: Path, exe_name: str) -> None:
-    """生成 `启动软件.bat` 强制启用 license gate。"""
+    """生成两个启动器：
+        启动软件.bat  —— 传统 bat（会一闪 cmd 窗；开发调试用）
+        启动软件.vbs  —— VBS 静默启动器（**完全无 cmd 窗口**，用户默认走这个）
+
+    两者都会 set DUB_ALIGN_LICENSE_REQUIRED=1 + DUB_ALIGN_RASP_STRICT=1
+    才能启用激活码 gate + RASP strict。
+    """
     if platform.system() != "Windows":
         return
+
+    # ---------- 1) bat（保留，兼容命令行/调试）----------
     bat = dist_dir / "启动软件.bat"
-    # Chinese chars in REM 注释 → 必须用 GBK（Windows cmd 默认 codepage）
     lines = [
         "@echo off",
         "REM 强制启用激活码 gate（发行版必须）",
@@ -288,6 +295,28 @@ def write_launcher_bat(dist_dir: Path, exe_name: str) -> None:
     ]
     bat.write_text("\r\n".join(lines) + "\r\n", encoding="gbk")
     _log(f"生成 {bat.name}")
+
+    # ---------- 2) vbs（默认，完全无窗口）----------
+    # 原理：WshShell.Environment("Process") 设的 env 只影响本进程 + 其派生子进程
+    # 然后 shell.Run 拉起 exe（子进程），子进程继承带 env 的环境
+    # Run 的 intWindowStyle=0 → 完全隐藏窗口；bWaitOnReturn=False → 不阻塞退出
+    vbs = dist_dir / "启动软件.vbs"
+    vbs_body = (
+        "' 水星配音对齐工作室 · 静默启动器（无任何 cmd 窗口）\r\n"
+        "Option Explicit\r\n"
+        "Dim shell, fso, appDir, env, exePath\r\n"
+        "Set shell = CreateObject(\"WScript.Shell\")\r\n"
+        "Set fso = CreateObject(\"Scripting.FileSystemObject\")\r\n"
+        "appDir = fso.GetParentFolderName(WScript.ScriptFullName)\r\n"
+        "Set env = shell.Environment(\"Process\")\r\n"
+        "env(\"DUB_ALIGN_LICENSE_REQUIRED\") = \"1\"\r\n"
+        "env(\"DUB_ALIGN_RASP_STRICT\") = \"1\"\r\n"
+        "shell.CurrentDirectory = appDir\r\n"
+        f"exePath = appDir & \"\\{exe_name}\"\r\n"
+        "shell.Run \"\"\"\" & exePath & \"\"\"\", 0, False\r\n"
+    )
+    vbs.write_text(vbs_body, encoding="gbk")
+    _log(f"生成 {vbs.name}（推荐 · 完全无窗口）")
 
 
 def write_integrity_hash(dist_dir: Path, exe_name: str) -> None:
