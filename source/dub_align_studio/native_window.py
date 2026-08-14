@@ -86,6 +86,24 @@ def run_with_native_window(port: int = 8760) -> Optional[int]:
     t = threading.Thread(target=server.serve_forever, daemon=True, name="web-server")
     t.start()
 
+    # 【关键】等 server 真正进入 accept-ready 循环。否则 pywebview 抢先
+    # 请求 URL 会拿到 ERR_EMPTY_RESPONSE（socket 已 bind 但 accept 循环还没跑起来）。
+    import time
+    import urllib.error
+    import urllib.request
+    _deadline = time.monotonic() + 5.0
+    _ready = False
+    while time.monotonic() < _deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=0.4) as _resp:
+                _resp.read(1)
+            _ready = True
+            break
+        except (urllib.error.URLError, ConnectionError, OSError):
+            time.sleep(0.1)
+    if not _ready:
+        print(f"[UI] server ready wait 超时（5s）—— 仍尝试打开窗口 {url}")
+
     # 3) 主线程创建窗口 + 阻塞
     icon = _find_icon()
     try:
