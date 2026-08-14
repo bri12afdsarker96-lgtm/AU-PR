@@ -216,9 +216,76 @@ footer{border-top:1px solid var(--line);margin-top:20px;padding:22px 0 30px;
   text-align:center;font-size:11px;color:var(--faint);letter-spacing:2px}
 footer b{color:var(--muted);font-weight:600}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+/* ==================== License overlay（激活码 gate）==================== */
+#license-mask{
+  position:fixed;inset:0;z-index:99998;
+  background:rgba(0,0,0,.75);
+  backdrop-filter:blur(6px);
+  display:none;align-items:center;justify-content:center;
+}
+#license-mask.show{display:flex}
+#license-box{
+  background:var(--panel);color:var(--fg);
+  border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.4);
+  padding:32px 36px;max-width:520px;width:92%;
+  font-family:inherit;
+}
+#license-box h2{margin:0 0 12px;font-size:20px;font-weight:700;color:var(--accent)}
+#license-box .lic-sub{color:var(--muted);font-size:13px;margin-bottom:20px;line-height:1.6}
+#license-box .lic-row{margin:14px 0}
+#license-box .lic-row label{display:block;font-size:13px;color:var(--muted);margin-bottom:6px}
+#license-box input[type="text"]{
+  width:100%;padding:12px 14px;border-radius:8px;
+  border:1px solid var(--line);background:var(--bg);color:var(--fg);
+  font-family:monospace;font-size:15px;letter-spacing:1px;
+  outline:none;box-sizing:border-box;
+}
+#license-box input[type="text"]:focus{border-color:var(--accent)}
+#license-box .lic-actions{display:flex;gap:10px;margin-top:20px}
+#license-box button{
+  padding:10px 18px;border-radius:8px;border:0;font-size:14px;font-weight:600;
+  cursor:pointer;transition:opacity .15s;
+}
+#license-box button.primary{background:var(--accent);color:#fff}
+#license-box button.primary:hover{opacity:.9}
+#license-box button.ghost{background:transparent;color:var(--muted);border:1px solid var(--line)}
+#license-box button:disabled{opacity:.5;cursor:not-allowed}
+#license-box .lic-msg{
+  margin-top:14px;padding:10px 14px;border-radius:8px;font-size:13px;
+  min-height:20px;
+}
+#license-box .lic-msg.err{background:rgba(220,38,38,.12);color:#dc2626;border:1px solid rgba(220,38,38,.3)}
+#license-box .lic-msg.ok{background:rgba(34,197,94,.12);color:#16a34a;border:1px solid rgba(34,197,94,.3)}
+#license-box .lic-info{margin-top:16px;padding-top:14px;border-top:1px solid var(--line);
+  font-size:12px;color:var(--muted);line-height:1.7}
+#license-box .lic-info code{background:var(--bg);padding:1px 6px;border-radius:4px;font-size:11px}
 </style>
 </head>
 <body>
+
+<!-- ==================== 激活码 gate（未激活/到期时挡住主界面）==================== -->
+<div id="license-mask" role="dialog" aria-modal="true" aria-label="激活码">
+  <div id="license-box">
+    <h2>🔐 激活软件</h2>
+    <div class="lic-sub">首次使用或授权已到期。请输入激活码启用软件功能。</div>
+    <div class="lic-row">
+      <label for="license-code">激活码</label>
+      <input id="license-code" type="text" placeholder="DJZS-YEAR-2026-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="lic-actions">
+      <button class="primary" id="license-btn-activate">激活</button>
+      <button class="ghost" id="license-btn-refresh">刷新状态</button>
+    </div>
+    <div class="lic-msg" id="license-msg"></div>
+    <div class="lic-info">
+      <div>设备指纹（HWID）：<code id="license-hwid">—</code></div>
+      <div>软件 ID：<code id="license-app-id">—</code> · 版本：<code id="license-app-ver">—</code></div>
+      <div>授权服务器：<code id="license-server">—</code></div>
+      <div id="license-expire-line" style="display:none">当前授权到期：<code id="license-expire">—</code></div>
+    </div>
+  </div>
+</div>
 
 <header><div class="wrap">
   <div class="bar">
@@ -3093,6 +3160,113 @@ function cvTplDel(){
 function cvInit(){cvInitGrid9();cvTplList();cvSync();}
 
 renderMyColors();loadTpls();renderOverlays();loadState();loadComponents();loadSettings();loadFonts();loadClones();loadChunks();loadAssets();loadConfigs();loadCloudGpu();loadEdgeSettings();cvInit();pollAll();  /* 载入时同步任务状态：刷新不丢日志/时间轴/下载进度 */
+
+/* ==================== License gate（激活码 UI） ====================
+ * 加载时先拉 /api/license/status；未激活 → 弹出 mask 挡住主界面；
+ * 已激活 → 隐藏 mask，进入主流程；
+ * 每 60 秒轮询一次 status，如果心跳 action 变成失效（expired/banned/session_invalid 等）
+ * → 重新弹 mask，用户被"踢下线"。
+ */
+(function(){
+  const mask   = document.getElementById('license-mask');
+  const msg    = document.getElementById('license-msg');
+  const inp    = document.getElementById('license-code');
+  const btnAct = document.getElementById('license-btn-activate');
+  const btnRef = document.getElementById('license-btn-refresh');
+  const hwid   = document.getElementById('license-hwid');
+  const appId  = document.getElementById('license-app-id');
+  const appVer = document.getElementById('license-app-ver');
+  const server = document.getElementById('license-server');
+  const expLine= document.getElementById('license-expire-line');
+  const expEl  = document.getElementById('license-expire');
+
+  function setMsg(text, kind){
+    msg.textContent = text || '';
+    msg.className = 'lic-msg' + (kind ? (' ' + kind) : '');
+  }
+  function fillInfo(st){
+    hwid.textContent   = st.device_name || '—';
+    appId.textContent  = st.app_id || '—';
+    appVer.textContent = st.app_version || '—';
+    server.textContent = st.server || '—';
+    if(st.expire_at){
+      expEl.textContent = st.expire_at + ' UTC';
+      expLine.style.display = '';
+    } else {
+      expLine.style.display = 'none';
+    }
+  }
+  function showMask(){ mask.classList.add('show'); }
+  function hideMask(){ mask.classList.remove('show'); setMsg(''); }
+
+  async function fetchStatus(){
+    try{
+      const r = await fetch('/api/license/status', {cache:'no-store'});
+      const st = await r.json();
+      fillInfo(st);
+      if(st.active){
+        hideMask();
+      } else {
+        showMask();
+        if(st.last_action && st.last_action !== 'continue'){
+          const reason = {
+            expired:'授权已到期',
+            banned:'激活码被封禁或异常',
+            session_invalid:'会话失效或被踢下线',
+            device_invalid:'设备不匹配',
+            app_invalid:'激活码不属于当前软件',
+            force_update:'当前版本已禁用或需要更新',
+            network_lost:'长时间无法连接授权服务器',
+          }[st.last_action] || st.last_action;
+          setMsg(`已停用：${reason}${st.last_error ? '（' + st.last_error + '）' : ''}`, 'err');
+        } else if(st.last_error){
+          setMsg(st.last_error, 'err');
+        }
+      }
+      return st;
+    } catch(e){
+      showMask();
+      setMsg('无法读取授权状态：' + (e && e.message || e), 'err');
+      return null;
+    }
+  }
+
+  async function doActivate(){
+    const code = (inp.value || '').trim();
+    if(!code){
+      setMsg('请填写激活码', 'err');
+      return;
+    }
+    btnAct.disabled = true; setMsg('正在联系授权服务器…');
+    try{
+      const r = await fetch('/api/license/activate', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({code}),
+      });
+      const j = await r.json();
+      if(r.ok && j.success){
+        setMsg('激活成功' + (j.expire_at ? '（有效期至 ' + j.expire_at + ' UTC）' : ''), 'ok');
+        setTimeout(fetchStatus, 500);
+      } else {
+        setMsg(j.error || j.message || ('HTTP ' + r.status), 'err');
+      }
+    } catch(e){
+      setMsg('网络异常：' + (e && e.message || e), 'err');
+    } finally {
+      btnAct.disabled = false;
+    }
+  }
+
+  btnAct.addEventListener('click', doActivate);
+  btnRef.addEventListener('click', fetchStatus);
+  inp.addEventListener('keydown', (e)=>{
+    if(e.key === 'Enter'){ e.preventDefault(); doActivate(); }
+  });
+
+  fetchStatus();                     // 首次即拉
+  setInterval(fetchStatus, 60_000);  // 每分钟轮询一次，捕捉到期/被踢
+})();
 </script>
 </body>
 </html>
