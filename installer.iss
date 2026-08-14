@@ -80,9 +80,28 @@ UninstallFilesDir={app}\uninstall
 ; SignedUninstaller=yes
 
 [Languages]
-Name: "chs"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
-; 如需英文备选：
-; Name: "en";  MessagesFile: "compiler:Default.isl"
+; 三级 fallback，确保脚本总能编过：
+;   1. 项目自带 installer\ChineseSimplified.isl  （最可靠，跨机器一致）
+;   2. Inno Setup 安装目录下的 Languages\ChineseSimplified.isl（6.2+ 默认自带）
+;   3. 都没有 → 用 Default.isl（英文，Inno Setup 一定有）
+;
+; 缺中文时的修复方案（任选其一）：
+;   A. 卸载重装 https://jrsoftware.org/isdl.php 最新版，安装向导里勾 "Simplified Chinese"
+;   B. 只下语言文件：https://jrsoftware.org/files/istrans/ChineseSimplified.isl
+;      放到 C:\Program Files (x86)\Inno Setup 6\Languages\ 下
+;   C. 或者把该 .isl 拷到本项目的 installer\ 目录下（跟脚本走，不动系统）
+#define LocalChs "installer\ChineseSimplified.isl"
+#define SysChs   AddBackslash(CompilerPath) + "Languages\ChineseSimplified.isl"
+#if FileExists(LocalChs)
+  #pragma message "[Languages] 用本地：installer\ChineseSimplified.isl"
+  Name: "chs"; MessagesFile: LocalChs
+#elif FileExists(SysChs)
+  #pragma message "[Languages] 用系统：Inno Setup Languages\ChineseSimplified.isl"
+  Name: "chs"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+#else
+  #pragma message "[Languages] ChineseSimplified.isl 缺失 → 向导用英文，补齐方法看 [Languages] 上面注释"
+  Name: "en"; MessagesFile: "compiler:Default.isl"
+#endif
 
 [Tasks]
 Name: "desktopicon";  Description: "创建桌面快捷方式";   GroupDescription: "附加任务："; Flags: unchecked
