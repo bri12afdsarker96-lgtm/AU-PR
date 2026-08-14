@@ -188,12 +188,16 @@ def test_r12_2_batch_creation_single_transaction_rolls_back(tmp_path):
 # ============================================================
 
 def test_r12_3_hidden_part_and_marker_naming(tmp_path):
-    """.part 名字以点开头且带 task_id；marker 名字也以点开头。"""
+    """.part 名字以点开头且带 task_id；R13-FIX-P1-A 之后 marker 迁到目标目录
+    下的受控子目录 `.bulk_dub_markers/`（不再作为可见 sidecar 与 mp4 平铺）。"""
     target = tmp_path / "out.mp4"
     part = vp._hidden_part_path(target, "T123")
     marker = vp.marker_path_for(target)
     assert part.name.startswith(".") and "T123" in part.name and part.name.endswith(".part")
-    assert marker.name.startswith(".") and marker.name.endswith(".bulk_dub.marker.json")
+    # R13-FIX-P1-A：marker 必须落在受控子目录里，不再散落到目标目录根
+    assert marker.parent.name == ".bulk_dub_markers"
+    assert marker.parent.parent == target.parent
+    assert marker.name == "out.mp4.marker.json"
 
 
 def test_r12_3_read_marker_recognizes_ours_vs_external(tmp_path):

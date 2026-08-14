@@ -435,14 +435,35 @@ MARKER_SCHEMA_V2 = "bulk_dub_marker@v2"
 _MARKER_HASH_ALGO = "blake2b"
 
 
+MARKER_DIR_NAME = ".bulk_dub_markers"
+
+
 def marker_path_for(target: Path) -> Path:
-    """R12-3 sidecar marker 位于同目录 `.<name>.bulk_dub.marker.json`。"""
+    """R13-FIX-P1-A：marker 迁到目标目录下的受控子目录
+    `<output_dir>/.bulk_dub_markers/<name>.marker.json`，不再作为可见/散落的
+    sidecar 与每个 mp4 平铺。子目录以点开头，隐藏可读。"""
+    return target.parent / MARKER_DIR_NAME / f"{target.name}.marker.json"
+
+
+def _legacy_marker_path_for(target: Path) -> Path:
+    """R13-FIX-P1-A：兼容读取旧版本产物——旧 sidecar 位于目标同目录
+    `.<name>.bulk_dub.marker.json`。仅用于恢复读，不再新写。"""
     return target.parent / f".{target.name}.bulk_dub.marker.json"
+
+
+def read_marker_for_target(target: Path) -> dict | None:
+    """R13-FIX-P1-A：先读新受控目录 marker；找不到时兼容读旧 sidecar，
+    让老批次的成片仍能被恢复认领。"""
+    new = read_marker(marker_path_for(target))
+    if new is not None:
+        return new
+    return read_marker(_legacy_marker_path_for(target))
 
 
 def _marker_tmp_path(target: Path, task_id: str) -> Path:
     """R13-P0-3：marker 临时文件——原子提升成 marker_path_for(target) 前的中间态。"""
-    return target.parent / f".{target.name}.bulk_dub.marker.{task_id}.tmp"
+    return marker_path_for(target).parent / \
+        f"{target.name}.marker.json.tmp.{task_id}"
 
 
 def _hidden_part_path(target: Path, task_id: str) -> Path:
@@ -491,13 +512,13 @@ def _write_marker(marker: Path, *, task_id: str, batch_id: str, fingerprint: str
         "commit_stage": commit_stage,
         "written_at": time.time(),
     }
+    # R13-FIX-P1-A：确保 marker 父目录存在（新契约把 marker 收敛到
+    # `<output_dir>/.bulk_dub_markers/` 受控子目录）
+    marker.parent.mkdir(parents=True, exist_ok=True)
     if not _atomic:
         marker.write_text(_json.dumps(data, ensure_ascii=False), encoding="utf-8")
         _fsync_file(marker)
         return
-    tmp = _marker_tmp_path(marker.parent / marker.name.rsplit(".bulk_dub.marker.json", 1)[0].lstrip("."),
-                            task_id) if marker.name.startswith(".") else marker.with_suffix(marker.suffix + ".tmp")
-    # 用固定 tmp 命名规则（避免上面复杂反推）
     tmp = marker.parent / (marker.name + f".tmp.{task_id}")
     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
     try:

@@ -1490,11 +1490,15 @@ class TaskStore:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
+                # R13-FIX-P0-C：修正原 R13 代码中 `IN (?, ?, ?, ?, ?, ?, ?, ?)`
+                # 8 个占位符但只有 7 个状态值——sqlite3 抛
+                # `Incorrect number of bindings supplied`，被上层 try/except
+                # 静默吞掉，导致 finalize_leader_cancel 永远无效。
                 cur = conn.execute(
                     "UPDATE tasks SET status=?, error_type=?, error_detail=?,"
                     " stage='已取消', finished_at=?, updated_at=?,"
                     " reserved_output_path=''"
-                    " WHERE task_id=? AND status IN (?, ?, ?, ?, ?, ?, ?, ?)",
+                    " WHERE task_id=? AND status IN (?, ?, ?, ?, ?, ?, ?)",
                     (STATUS_CANCELLED, error_type, error_detail, now, now,
                      leader_task_id,
                      STATUS_CANCELLING, STATUS_PENDING, STATUS_RETRY_WAIT,

@@ -243,6 +243,9 @@ class BulkDubService:
         leader_index_by_fp: dict[str, int] = {}
         # R13-P1-6：本次 start_batch 内已复用/落地到本目录的 fp → dest_path
         _reused_fp_dest: dict[str, str] = {}
+        # R13-FIX-P1-B：跨目录 hardlink 到本 output_dir 的复用任务——需要在
+        # 批次落库后为它们写 marker，让新 task 也带 ownership metadata
+        _reused_hardlink_todo: list[tuple[int, Path, str, float]] = []
         preview_index_by_row = {r.row_number: r for r in preview.rows}
 
         for r in preview.rows:
@@ -282,6 +285,7 @@ class BulkDubService:
             # 落本批次任务归属），永不覆盖。同 fp 在本次 start_batch 内已经落地过 →
             # 直接沿用（第二次不需要再 link）。
             reused_ok = False
+            did_cross_dir_link = False
             if existing and existing.output_path and Path(existing.output_path).is_file():
                 src = Path(existing.output_path)
                 # 本次 start_batch 内已经复用过同 fp？直接沿用其 dest_path
@@ -302,6 +306,7 @@ class BulkDubService:
                             try:
                                 _os.link(src, dest_path)
                                 reused_ok = True
+                                did_cross_dir_link = True
                             except (OSError, NotImplementedError):
                                 # 无 hardlink → 复用不成立，正常走 leader/follower
                                 reused_ok = False
@@ -311,6 +316,13 @@ class BulkDubService:
                     if reused_ok:
                         _reused_fp_dest[fp] = str(dest_path)
             if reused_ok:
+                if did_cross_dir_link:
+                    # R13-FIX-P1-B：登记 (excel_row, dest_path, fp, final_duration)
+                    # 用于批次落库后写 marker
+                    _reused_hardlink_todo.append((
+                        int(r.row_number), dest_path, fp,
+                        float(existing.final_duration or 0),
+                    ))
                 task = dict(common,
                              status=STATUS_COMPLETED,
                              output_path=str(dest_path),
@@ -342,6 +354,38 @@ class BulkDubService:
         )
         self._current_batch_id = batch_id
         self._current_frozen_params = copy.deepcopy(params_snapshot)
+
+        # R13-FIX-P1-B：为跨目录 hardlink 复用的任务补写 marker（ownership）——
+        # 让新 output_dir 里的成片带上本 task/batch/fp 的 metadata，
+        # 未来任何校验/恢复都能核对身份。写失败不阻塞批次成功。
+        if _reused_hardlink_todo:
+            from . import ffmpeg_pipeline as _vp
+            id_by_row = {}
+            try:
+                for _row in self.store.list_tasks(batch_id=batch_id, limit=100000):
+                    id_by_row[int(_row.excel_row)] = _row.task_id
+            except Exception:  # noqa: BLE001
+                id_by_row = {}
+            for excel_row, dest_path, fp, final_dur in _reused_hardlink_todo:
+                tid = id_by_row.get(excel_row)
+                if not tid:
+                    continue
+                try:
+                    marker_path = _vp.marker_path_for(dest_path)
+                    hash_hex = _vp._blake2b_of_file(dest_path)
+                    _vp._write_marker(
+                        marker_path, task_id=tid, batch_id=batch_id,
+                        fingerprint=fp,
+                        target_final_seconds=final_dur,
+                        file_size=dest_path.stat().st_size,
+                        output_name=dest_path.name,
+                        encoder_used="", hw_fallback_used=False,
+                        content_hash=hash_hex,
+                        commit_stage="reused_hardlink",
+                    )
+                except Exception:  # noqa: BLE001
+                    # marker 写失败不影响任务本身（已在 DB 中 completed）
+                    pass
 
         sched = self._ensure_scheduler()
         # R13-P0-5：显式传入并发数 → 真实应用到 scheduler 池（方案 A）

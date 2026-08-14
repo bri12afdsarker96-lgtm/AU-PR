@@ -348,8 +348,8 @@ class Scheduler:
         try:
             if not path.is_file() or path.stat().st_size < 1024:
                 return False, {}
-            marker_path = vp.marker_path_for(path)
-            marker = vp.read_marker(marker_path)
+            # R13-FIX-P1-A：优先受控子目录 marker；兼容旧 sidecar
+            marker = vp.read_marker_for_target(path)
             if marker is None:
                 return False, {}
             # 严格校验 marker 归属：task_id 必须一致（外部 mp4 拷进来撞名也不认）
@@ -554,7 +554,15 @@ class Scheduler:
         started = time.time()
         cancel_flag = self._ensure_cancel_flag(row.task_id)
         if cancel_flag.is_set():
-            self.store.update(row.task_id, status=STATUS_CANCELLED)
+            # R13-FIX-P0-A：leader 早期 cancel 也必须**同事务**广播 follower；
+            # 否则 waiting_dependency follower 需等到 scheduler 重启对账才收敛
+            try:
+                self.store.finalize_leader_cancel(
+                    row.task_id, error_type="cancelled",
+                    error_detail="TTS worker 早期检测到取消",
+                )
+            except Exception:  # noqa: BLE001
+                pass
             self._breaker.release_probe()
             self._cancel_flag_pop(row.task_id)
             return
@@ -740,8 +748,16 @@ class Scheduler:
         started = time.time()
         cancel_flag = self._ensure_cancel_flag(row.task_id)
         if cancel_flag.is_set():
-            self.store.update(row.task_id, status=STATUS_CANCELLED)
-            self.store.release_reservation(row.task_id)
+            # R13-FIX-P0-B：视频 worker 早期 cancel 也必须**同事务**广播 follower
+            # （finalize_leader_cancel 会同时清 reserved_output_path，
+            # 无需再单独调 release_reservation）
+            try:
+                self.store.finalize_leader_cancel(
+                    row.task_id, error_type="cancelled",
+                    error_detail="视频 worker 早期检测到取消",
+                )
+            except Exception:  # noqa: BLE001
+                pass
             vp.cleanup_staging(row.staging_dir)
             self._cancel_flag_pop(row.task_id)
             return
@@ -804,19 +820,16 @@ class Scheduler:
                 batch_id=row.batch_id,
             )
         except VideoCancelled:
-            self.store.try_advance_status(
-                row.task_id, from_status=STATUS_VIDEO_RUNNING,
-                to_status=STATUS_CANCELLED,
-                error_type="cancelled", error_detail="视频渲染中被取消",
-                finished_at=time.time(),
-            )
-            self.store.try_advance_status(
-                row.task_id, from_status=STATUS_CANCELLING,
-                to_status=STATUS_CANCELLED,
-                error_type="cancelled", error_detail="视频渲染中被取消",
-                finished_at=time.time(),
-            )
-            self.store.release_reservation(row.task_id)
+            # R13-FIX-P0-B：VideoCancelled 也走 finalize_leader_cancel——同事务
+            # 内把 video_running/cancelling 收敛到 cancelled 并广播 follower；
+            # 不再分两次 try_advance + 漏掉 follower
+            try:
+                self.store.finalize_leader_cancel(
+                    row.task_id, error_type="cancelled",
+                    error_detail="视频渲染中被取消",
+                )
+            except Exception:  # noqa: BLE001
+                pass
             vp.cleanup_staging(staging)
             self._cancel_flag_pop(row.task_id)
             return
