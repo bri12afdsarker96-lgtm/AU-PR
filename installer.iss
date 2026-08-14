@@ -22,7 +22,11 @@
 #define AppVersion     "0.7.71"
 #define AppPublisher   "Mercury"
 #define AppExeName     "水星配音对齐工作室.exe"
-#define SourceDir      "dist\轻量云配版包"
+; SourceDir 可被命令行 /DSourceDir="..." 覆盖，用于复用旧产物：
+;   ISCC.exe /DSourceDir="轻量云配版包" installer.iss
+#ifndef SourceDir
+  #define SourceDir "dist\轻量云配版包"
+#endif
 #define OutputDir      "dist\安装器"
 #define OutputBaseName "setup_水星配音对齐工作室_v" + AppVersion + "_lite"
 
