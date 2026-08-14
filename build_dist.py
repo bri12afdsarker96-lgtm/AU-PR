@@ -202,6 +202,50 @@ def copy_nuitka_output(dist_bin_dir: Path) -> None:
             shutil.copy2(item, target)
 
 
+def verify_no_personal_data(root: Path) -> list[str]:
+    """扫发行目录，查是否有个人配置痕迹泄露。
+    命中即返回违规路径列表；打包脚本调用后若非空应中止（防止发用户 URL/激活码）。
+
+    检查项：
+      - settings.json / license.json / gpu_state.json 文件（应已被 scrub 但双保险）
+      - 任意 JSON/TXT 里出现 workers.dev（用户自建 Cloudflare Worker 域）
+      - 任意 JSON/TXT 里出现激活服务器 IP（101.201.108.8）
+    """
+    violations: list[str] = []
+    sensitive_names = {"settings.json", "license.json", "gpu_state.json",
+                       "gpu_profiles.json", "queue.sqlite3"}
+    # 内容级 patterns（防 config JSON 漏网）
+    forbidden_substrings = (b"workers.dev", b"101.201.108.8")
+    for dirpath, _, filenames in os.walk(root):
+        for name in filenames:
+            full = Path(dirpath) / name
+            # 文件名黑名单
+            if name in sensitive_names:
+                violations.append(f"文件泄漏：{full.relative_to(root)}")
+                continue
+            # 只扫描小文本文件（避免大型 dll/exe）
+            try:
+                sz = full.stat().st_size
+            except OSError:
+                continue
+            if sz > 512 * 1024:  # 512 KB 上限
+                continue
+            if full.suffix.lower() not in (".json", ".txt", ".ini", ".cfg", ".yaml", ".yml"):
+                continue
+            try:
+                data = full.read_bytes()
+            except OSError:
+                continue
+            for pat in forbidden_substrings:
+                if pat in data:
+                    violations.append(
+                        f"内容泄漏 [{pat.decode('ascii', 'ignore')}]："
+                        f"{full.relative_to(root)}",
+                    )
+                    break
+    return violations
+
+
 def scrub_sensitive(root: Path) -> int:
     """遍历发行包，按 SENSITIVE_PATTERNS 删除敏感文件。返回删除数。
 

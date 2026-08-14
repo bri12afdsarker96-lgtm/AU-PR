@@ -1214,6 +1214,30 @@ class _Handler(BaseHTTPRequestHandler):
         if route == "/api/components":
             self._json({"components": toolbox.component_statuses()})
             return
+        if route == "/api/pick_file":
+            # 原生文件选择对话框（tkinter 走 Windows 系统 dialog）——
+            # HTML <input type=file> 出于沙箱安全**拿不到完整路径**，只能拿文件名，
+            # 所以显卡加速的「代表样本」输入必须走后端 dialog 取真实路径。
+            try:
+                exts_raw = params.get("exts", ["*.mp4 *.mov *.mkv"])[0] \
+                    if isinstance(params, dict) else "*.mp4 *.mov *.mkv"
+            except Exception:  # noqa: BLE001
+                exts_raw = "*.mp4 *.mov *.mkv"
+            path = ""
+            try:
+                import tkinter as _tk
+                from tkinter import filedialog as _fd
+                _root = _tk.Tk()
+                _root.withdraw()
+                _root.wm_attributes("-topmost", 1)
+                path = _fd.askopenfilename(
+                    filetypes=[("Video", exts_raw), ("All", "*.*")],
+                )
+                _root.destroy()
+            except Exception:  # noqa: BLE001
+                path = ""
+            self._json({"path": path or ""})
+            return
         if route == "/api/path_exists":
             # 前端「代表样本」等文件输入实时校验用；只返存在性 + is_file
             # **不回显路径**（防止未激活/日志中泄露）；不含目录内容

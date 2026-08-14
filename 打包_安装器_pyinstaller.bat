@@ -181,6 +181,14 @@ if exist "%PYI_DIST%\_internal\dub_align_studio\licensing\" (
 REM 3.4  生成 启动软件.bat（含发行必需的 env）
 python -c "import sys; sys.path.insert(0, '.'); from build_dist import write_launcher_bat; from pathlib import Path; write_launcher_bat(Path(r'%PYI_DIST%'), r'%PYI_EXE%'); print('  [OK] 启动软件.bat')"
 
+REM 3.4b  个人数据泄漏保底扫描（settings.json / workers.dev / 服务器 IP）
+python -c "import sys; sys.path.insert(0, '.'); from build_dist import verify_no_personal_data; from pathlib import Path; v = verify_no_personal_data(Path(r'%PYI_DIST%'));  print('  [OK] 无个人数据泄漏') if not v else (print('  [X] 发现个人数据泄漏：'), [print('     - '+x) for x in v], exit(1))"
+if errorlevel 1 (
+    echo   [X] 个人数据检查未通过 —— 中止打包（防止把你的 Edge TTS URL / 激活码泄漏给下游用户）
+    pause
+    exit /b 8
+)
+
 REM 3.5  算 exe HMAC baseline 写到 sidecar dist/_build_hmac.dat
 REM      key 藏在 Step 1.5 生成的 _build_info.py（打进 PYZ），
 REM      sidecar 只放 HMAC 值本身，攻击者伪造需先解 PYZ 拿 key

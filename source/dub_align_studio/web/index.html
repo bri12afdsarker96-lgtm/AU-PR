@@ -1074,11 +1074,50 @@ footer b{color:var(--muted);font-weight:600}
 
     <div class="card">
       <h2>链路自检</h2>
+      <!-- 激活码有效期倒计时 -->
+      <div id="licExpireBox" style="display:none;margin-bottom:10px;padding:8px 12px;background:rgba(255,215,0,0.05);border-left:3px solid var(--gold);border-radius:4px;font-size:13px">
+        <span>授权剩余：</span><b id="licExpireCountdown" style="color:var(--gold)">—</b>
+        <span id="licExpireAt" style="color:var(--faint);font-size:12px;margin-left:8px"></span>
+      </div>
       <div class="row" style="margin-bottom:12px">
         <button class="btn line" onclick="run('probe','checklog');loadComponents()">探测组件（详细）</button>
         <button class="btn line" onclick="run('verify','checklog')">端到端渲染自检</button>
         <button class="btn line" onclick="loadComponents()">刷新状态</button>
       </div>
+      <script>
+      (function(){
+        function fmtRemain(sec){
+          if (sec <= 0) return "已过期";
+          const d = Math.floor(sec / 86400);
+          const h = Math.floor((sec % 86400) / 3600);
+          const m = Math.floor((sec % 3600) / 60);
+          if (d > 0) return d + " 天 " + h + " 时";
+          if (h > 0) return h + " 时 " + m + " 分";
+          return m + " 分";
+        }
+        async function tickExpire(){
+          try {
+            const r = await fetch("/api/license/status", {cache: "no-store"});
+            if (!r.ok) return;
+            const j = await r.json();
+            const box = document.getElementById("licExpireBox");
+            const cd = document.getElementById("licExpireCountdown");
+            const at = document.getElementById("licExpireAt");
+            if (!box || !cd) return;
+            if (!j.activated || !j.expire_at) { box.style.display = "none"; return; }
+            const expTs = Number(j.expire_at) || 0;
+            const nowTs = Math.floor(Date.now() / 1000);
+            const remain = expTs - nowTs;
+            box.style.display = "";
+            cd.textContent = fmtRemain(remain);
+            cd.style.color = remain < 3 * 86400 ? "#e57373" : "var(--gold)";
+            if (at) at.textContent = "（" + new Date(expTs * 1000).toLocaleString() + " 到期）";
+          } catch (e) {}
+        }
+        tickExpire();
+        setInterval(tickExpire, 60000);   // 每 60s 刷一次
+      })();
+      </script>
       <!-- 组件下载列表（原在左侧下方，用户要求移到这里；带 SHA256 校验 + 断点续传） -->
       <div id="compList"><p class="empty">读取中…</p></div>
       <div class="console" id="dlog" style="height:120px;margin-top:8px"><span class="dim">—— 下载/安装日志 ——</span></div>

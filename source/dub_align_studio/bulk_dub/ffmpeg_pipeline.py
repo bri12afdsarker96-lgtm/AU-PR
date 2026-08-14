@@ -180,7 +180,8 @@ class RenderResult:
 
 def build_filter_chain(*, width: int, height: int, zoom_percent: int = 130,
                        keep_original_audio: bool = False,
-                       final_seconds: float) -> tuple[list[str], list[str]]:
+                       final_seconds: float,
+                       fps: float = 0.0) -> tuple[list[str], list[str]]:
     """构造一次 ffmpeg 命令用的滤镜（video）+ 映射（audio）。
 
     scale 后强制偶数尺寸，crop 也用偶数（yuv420p 要求宽高偶数）。
@@ -204,13 +205,24 @@ def build_filter_chain(*, width: int, height: int, zoom_percent: int = 130,
     #   * v1 尾部补 `scale=OW:OH,setsar=1` —— 强制精确尺寸 + SAR=1
     #   * v0 也补 `setsar=1` —— 保证与 v1 SAR 一致
     #   * concat 后加 `format=yuv420p` —— 彻底避免 encoder 侧像素格式冲突
+    # 【黑场闪动修复】
+    #   现象：concat 边界（原视频最后一帧 → 镜像分支第一帧）出现瞬时黑帧
+    #   根因分析：
+    #     * VFR 源视频进 concat 会有帧率不匹配的边界抖动（时间戳跳变）
+    #     * hflip+scale 处理后 PTS 未重置，与 v0 分支 PTS 空间重叠 → concat 边界诡异帧
+    #     * yuv420p 转换若在最外层，会在 concat 处再做一次颜色空间换算，容易出黑帧
+    #   修法：
+    #     * [0:v] 入口先 `fps=<probe.fps>` 强制 CFR（constant frame rate）
+    #     * 两个分支尾部都 `setpts=PTS-STARTPTS` —— 各自重置 PTS，concat 内部 offset 干净
+    #     * `format=yuv420p` 移到两个分支各自内部（不再在 concat 后做，避免边界颜色转换）
+    fps_prefix = f"fps={fps:.6f}," if fps and fps > 0 else ""
     filter_lines = [
-        "[0:v]split=2[v0][v0b]",
+        f"[0:v]{fps_prefix}split=2[v0][v0b]",
         f"[v0b]hflip,scale={scaled_w}:{scaled_h},"
         f"crop={out_w}:{out_h}:(in_w-{out_w})/2:(in_h-{out_h})/2,"
-        f"scale={out_w}:{out_h},setsar=1[v1]",
-        f"[v0]setsar=1[v0s]",
-        "[v0s][v1]concat=n=2:v=1:a=0,format=yuv420p[vout]",
+        f"scale={out_w}:{out_h},setsar=1,format=yuv420p,setpts=PTS-STARTPTS[v1]",
+        f"[v0]setsar=1,format=yuv420p,setpts=PTS-STARTPTS[v0s]",
+        "[v0s][v1]concat=n=2:v=1:a=0[vout]",
     ]
     map_args: list[str] = ["-map", "[vout]"]
     if keep_original_audio:
@@ -336,6 +348,7 @@ def render_single(*, input_video: str | Path, tts_audio: str | Path,
         width=probe.width, height=probe.height,
         zoom_percent=zoom_percent, keep_original_audio=actual_keep_audio,
         final_seconds=final_seconds,
+        fps=float(getattr(probe, "fps", 0) or 0),
     )
     filter_complex = ";".join(filter_lines)
 
@@ -1017,9 +1030,9 @@ def _is_relative_to(child: Path, parent: Path) -> bool:
         return False
 
 
-def build_output_filename(input_video: str | Path, voice_short_name: str) -> str:
-    stem = Path(input_video).stem
-    return f"{stem}_{voice_short_name}_带货.mp4"
+def build_output_filename(input_video: str | Path, voice_short_name: str) -> str:  # noqa: ARG001
+    # 用户要求：输出保持原视频名，不加任何后缀（voice_short_name 保留形参兼容旧调用方）
+    return f"{Path(input_video).stem}.mp4"
 
 
 def voice_short_name(voice_name: str) -> str:

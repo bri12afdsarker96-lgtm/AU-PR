@@ -165,8 +165,7 @@
   </div>
   <div class="row" style="margin-top:6px">
     <label>代表样本 <input type="text" id="gpuSample" style="flex:1" placeholder="10s 代表性视频路径" oninput="validateGpuSample()"></label>
-    <button type="button" onclick="document.getElementById('gpuSampleFile').click()">选择文件</button>
-    <input type="file" id="gpuSampleFile" accept="video/*,.mp4,.mov,.mkv" style="display:none" onchange="if(this.files[0]){document.getElementById('gpuSample').value=this.files[0].path||this.files[0].name;validateGpuSample();}">
+    <button type="button" onclick="pickGpuSample()">选择文件</button>
     <button id="btnGpuBench">测显卡（跑基准）</button>
     <span id="gpuSampleStatus" style="font-size:12px;margin-left:4px"></span>
     <button id="btnGpuCancelBench" class="secondary">取消基准</button>
@@ -760,6 +759,20 @@ async function validateGpuSample() {
   }, 400);
 }
 document.addEventListener("DOMContentLoaded", () => setTimeout(validateGpuSample, 300));
+
+// 走后端 tkinter 原生 dialog 拿真实文件路径
+// （HTML <input type=file> 出于沙箱安全只能拿到文件名，不能拿完整路径）
+async function pickGpuSample() {
+  try {
+    const r = await api("GET", "/api/pick_file?exts=" + encodeURIComponent("*.mp4 *.mov *.mkv"));
+    if (r && r.path) {
+      $("gpuSample").value = r.path;
+      validateGpuSample();
+    }
+  } catch (e) {
+    alert("文件选择失败：" + (e.message || e));
+  }
+}
 
 async function gpuStartBench() {
   const sv = ($("gpuSample").value || "").trim();

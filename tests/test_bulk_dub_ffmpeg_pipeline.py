@@ -17,13 +17,17 @@ from dub_align_studio.bulk_dub.ffmpeg_pipeline import (  # noqa: E402
 
 
 def test_8_original_first_mirror_second():
-    """R14-FIX-4d：v0 现在被 setsar=1 归一化成 [v0s]，concat 变成 [v0s][v1]。
-    concat 后 format=yuv420p 强制 8bit 输出避免 encoder 侧冲突。"""
+    """R14-FIX-4d：v0 setsar=1 归一化 [v0s]，concat 变 [v0s][v1]。
+    R15：format=yuv420p 移到两个分支各自内部（不再在 concat 后做），
+    避免 concat 边界处再做颜色空间换算导致黑帧。"""
     lines, _ = build_filter_chain(width=1080, height=1920, final_seconds=10)
     joined = ";".join(lines)
     assert "[v0s][v1]concat=n=2:v=1" in joined
-    assert "[v0]setsar=1[v0s]" in joined
+    assert "[v0]setsar=1" in joined and "[v0s]" in joined
+    # format=yuv420p 必须出现（黑场修复的一部分：两个分支都归一到 8bit）
     assert "format=yuv420p" in joined
+    # PTS 归零（防 concat 边界抖动）
+    assert "setpts=PTS-STARTPTS" in joined
 
 
 def test_9_mirror_branch_hflip():
@@ -78,11 +82,17 @@ def test_18_no_subtitle_filter_in_chain():
 
 
 def test_19_no_atempo_or_speed_filter():
+    """确认没有音频变速：atempo 不应出现。
+    R15 修黑场闪动加了 setpts=PTS-STARTPTS 用于重置视频分支 PTS —— 允许存在。
+    """
     lines, args = build_filter_chain(width=100, height=100, final_seconds=5,
                                         keep_original_audio=True)
     joined = ";".join(lines) + " " + " ".join(args)
     assert "atempo" not in joined
-    assert "setpts=" not in joined
+    # setpts 只允许用于 PTS-STARTPTS 归零，不允许用来变速（不能有 setpts=N/xxx*PTS）
+    for line in lines:
+        if "setpts=" in line:
+            assert "PTS-STARTPTS" in line, f"意外的 setpts 变速：{line}"
 
 
 def test_voice_short_name_extracts_before_paren():
@@ -92,7 +102,9 @@ def test_voice_short_name_extracts_before_paren():
 
 
 def test_build_output_filename_uses_stem_and_voice():
-    assert build_output_filename("C:/vids/001.mp4", "晓双") == "001_晓双_带货.mp4"
+    # R15：用户明确要求 —— 输出保持原视频名，不加任何后缀
+    assert build_output_filename("C:/vids/001.mp4", "晓双") == "001.mp4"
+    assert build_output_filename("C:/vids/JYG89-4664.mp4", "任何音色") == "JYG89-4664.mp4"
 
 
 def test_cleanup_staging_refuses_outside_bulkdub(tmp_path):
