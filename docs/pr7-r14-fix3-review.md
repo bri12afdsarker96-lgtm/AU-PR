@@ -50,3 +50,42 @@ bulk_dub 套件全量运行时存在**时序敏感的偶发失败**，在复核�
 ### 5. 诚实边界（维持原声明）
 
 无独立 GPU 环境，NVENC/QSV/AMF 真机路径、10000/日产能、24h 耐久本轮复核同样**未验证**——与 PR 正文的"未验证 / 保留"清单一致，无越界宣称。
+
+---
+
+# 追加：R14-FIX-4 复核（2026-08-14 第二轮）
+
+复核对象：`014a64c..e6cb2c2`（测试鲁棒性整改）。
+
+## 结论
+
+**R14-FIX-4 通过复核，验收达标，可进入人工操作机打包测试。** 修复方向正确且未削弱断言强度；另发现一个残留小缺口（非阻塞）。
+
+## 逐项核实
+
+| 声明 | 核实结果 |
+| --- | --- |
+| fast-forward `014a64c..e6cb2c2`，未 force/rebase | ✅ `merge-base --is-ancestor` 成立 |
+| PR #7 head = `e6cb2c2`，Draft/open/未合并，base 未动 | ✅ GitHub API 确认 |
+| 只动 2 个测试文件（+98/-31），`source/` 0 改动 | ✅ `git diff --stat 014a64c e6cb2c2 -- source/` 为空 |
+| 未删/未跳过测试来隐藏问题 | ✅ 260 项全数存在；diff 审查确认断言为**加强**而非削弱 |
+
+## 断言强度审查（逐处 diff）
+
+- `test_fix2_02`：sleep(1) 单点断言 → `_stays_true(status==PENDING, 3s)` 持续探测——**加强**
+- `test_fix2_05`：去掉全局 `threading.enumerate()`（误报根因：被并行/前序测试收敛中的 coord 污染），改为本实例核对，且**新增** `_wait_until(not coord1.is_alive(), 10s)` 死亡确认——合理缩小范围 + 补强
+- `test_fix3_a`：sleep(0.05) 押注调度 → poll 状态至 preparing/running——**加强**
+- `test_fix3_d`：sleep(0.2) 单点存活检查 → 持续 2 秒存活验证（负向断言）——**加强**
+- `test_fix3_e`：sleep(0.2) 单点 → poll 至真死——合理
+- `test_bulk_dub_r12.py`：`_mk_service_paused` 暂停 worker 消除观察窗口污染；传播断言仍走 store 层，验证目标未变
+- `_stays_true` 探测抛异常即返回 False（fail-safe 方向正确）
+
+## 独立验收复跑（本复核容器 = 此前 2/3 概率复现失败的环境）
+
+- 正常负载连续 5 轮：round 2~5 全部 **260 passed / 0 failed**；round 1 为 259 passed / **1 skipped**（见下）
+- 高负载（双份套件并行）连续 2 轮 × 2 副本 = 4 份：全部 **260 passed / 0 failed / 0 skipped**
+- 对照：R14-FIX-3 `014a64c` 在本容器此前 3 次全量出现 1~3 项漂移失败——修复效果确凿
+
+## 残留小缺口（非阻塞，建议下轮顺手修）
+
+`_has_ffmpeg()`（tests/test_bulk_dub_r14.py:448 及同构副本）用 `subprocess.run(["ffmpeg","-version"], timeout=5)` 探测，慢机/冷启动下探测超时 → 相关测试被**静默 skip**（本轮 9 份运行中观测到 1 次）。skip 不计 fail，"0 failed" 验收表面达标但覆盖被悄悄缩水，与"不掩盖真实回归"的整改精神相悖。建议：模块级探测一次并缓存（如 `functools.lru_cache`），timeout 放宽到 15s；skip 时输出明确 reason 便于发现。
