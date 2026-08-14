@@ -1111,11 +1111,56 @@ footer b{color:var(--muted);font-weight:600}
     <div class="card">
       <h2>链路自检</h2>
       <div class="row" style="margin-bottom:12px">
-        <button class="btn line" onclick="run('probe','checklog')">探测组件（详细）</button>
+        <button class="btn line" onclick="run('probe','checklog');refreshComponentStatuses()">探测组件（详细）</button>
         <button class="btn line" onclick="run('verify','checklog')">端到端渲染自检</button>
+        <button class="btn line" onclick="refreshComponentStatuses()">刷新状态</button>
       </div>
-      <div class="console" id="checklog" style="height:262px"><span class="dim">—— 就绪 ——</span></div>
+      <!-- 结构化组件列表：每个缺失项都有内联「安装」按钮 -->
+      <div id="componentStatusList" style="margin-bottom:12px"></div>
+      <div class="console" id="checklog" style="height:200px"><span class="dim">—— 就绪 ——</span></div>
     </div>
+
+    <script>
+    // 拉 /api/components，把每一项按 installed 渲染红/绿点 + 「安装」按钮
+    async function refreshComponentStatuses(){
+      const list = document.getElementById('componentStatusList');
+      if(!list) return;
+      try {
+        const r = await fetch('/api/components', {cache:'no-store'});
+        if(!r.ok){ list.innerHTML=''; return; }
+        const j = await r.json();
+        const comps = (j && j.components) || [];
+        if(!comps.length){ list.innerHTML=''; return; }
+        // 排序：未安装的排前面，方便用户一眼看到要装的
+        comps.sort((a,b) => (a.installed?1:0) - (b.installed?1:0));
+        const rows = comps.map(c => {
+          const dot = c.installed
+            ? '<span style="color:#4caf50">●</span>'
+            : '<span style="color:#e57373">●</span>';
+          // 「安装」按钮：仅在未装 && kind 是可安装类型时给出
+          const canInstall = !c.installed && ['download','pip','dots','torch'].includes(c.kind);
+          const btn = canInstall
+            ? `<button class="btn" style="padding:3px 10px;font-size:12px;margin-left:8px" onclick="installComponent('${c.key}');setTimeout(refreshComponentStatuses,1500)">安装</button>`
+            : '';
+          // detail 精简：去掉路径 / 括号内容 / 全角句号后半段，避免展示 C:\Users\<name>\...
+          let detail = String(c.detail || '');
+          detail = detail.split('（')[0].split('(')[0].split('。')[0].trim();
+          if (detail.length > 60) detail = detail.substring(0, 60) + '…';
+          return `<div style="display:flex;align-items:center;padding:4px 8px;border-bottom:1px solid rgba(255,255,255,0.05);font-size:13px">
+            <span style="margin-right:8px">${dot}</span>
+            <span style="min-width:100px"><b>${c.name || c.key}</b></span>
+            <span style="flex:1;color:var(--faint);font-size:12px">${detail}</span>
+            ${btn}
+          </div>`;
+        }).join('');
+        list.innerHTML = rows;
+      } catch(e) {
+        list.innerHTML = '';   // 静默失败，别暴露错误信息
+      }
+    }
+    // 页面加载时也拉一次
+    document.addEventListener('DOMContentLoaded', () => setTimeout(refreshComponentStatuses, 500));
+    </script>
   </div>
 </section>
 
