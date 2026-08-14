@@ -155,6 +155,15 @@ if errorlevel 1 (
     for /f "delims=" %%v in ('python -c "import webview; print(webview.__version__)" 2^>nul') do echo   [OK] pywebview %%v
 )
 
+REM certifi CA 证书（HTTPS 必需；缺了 Edge TTS / 模型下载全挂）
+python -c "import certifi" 2>nul
+if errorlevel 1 (
+    echo   [!] 未装 certifi -^> 装上（HTTPS 打包必需）
+    python -m pip install certifi
+) else (
+    echo   [OK] certifi 已装（HTTPS CA 证书会打进包）
+)
+
 if exist "%PYI_DIST%\" (
     echo   清理旧 %PYI_DIST%\
     rmdir /S /Q "%PYI_DIST%"

@@ -24,12 +24,17 @@ import platform
 import subprocess
 from functools import lru_cache
 
+# 冻结 exe（PyInstaller windowed）里 subprocess 默认会弹黑色 cmd 窗，
+# 必须传 CREATE_NO_WINDOW 抑制（否则启动算 HWID 时闪黑窗）。
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 
 def _run_ok(cmd: list[str], timeout: float = 3.0) -> str:
     try:
         r = subprocess.run(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             timeout=timeout, text=True, encoding="utf-8", errors="replace",
+            creationflags=_NO_WINDOW,
         )
         if r.returncode == 0:
             return (r.stdout or "").strip()

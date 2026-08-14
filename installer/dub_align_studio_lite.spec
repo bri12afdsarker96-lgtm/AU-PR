@@ -87,6 +87,21 @@ try:
 except Exception as _exc:  # noqa: BLE001
     print(f"[spec] pywebview 未装/收集失败 ({_exc}) → 包内不带原生窗口能力，只能浏览器")
 
+# ---------- certifi CA 证书（HTTPS 必需！） ----------
+# 冻结 exe 里若不带 CA 证书，所有 HTTPS 请求（Edge TTS worker.dev、ggml 模型下载
+# 从 HF/GitHub）都会失败——而 license 服务器是 HTTP 所以不受影响，正好解释
+# 「license 通、Edge TTS/下载全挂」。把 certifi 的 cacert.pem 打进去。
+try:
+    from PyInstaller.utils.hooks import collect_all as _collect_all2
+    _cd, _cb, _ch = _collect_all2("certifi")
+    _extra_datas.extend(_cd)
+    _extra_binaries.extend(_cb)
+    _extra_hidden.extend(_ch)
+    _extra_hidden.extend(["certifi", "ssl", "_ssl"])
+    print("[spec] certifi CA 证书已收集（HTTPS 可用）")
+except Exception as _exc:  # noqa: BLE001
+    print(f"[spec] certifi 收集失败 ({_exc}) → HTTPS 可能不可用；pip install certifi 后重打")
+
 DATAS = DATAS + _extra_datas
 
 a = Analysis(

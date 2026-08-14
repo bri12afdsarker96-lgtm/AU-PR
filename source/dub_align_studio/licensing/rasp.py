@@ -32,6 +32,9 @@ import sys
 from dataclasses import dataclass, field
 from functools import lru_cache
 
+# 冻结 exe 里 subprocess 会闪黑窗，传 CREATE_NO_WINDOW 抑制
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 
 # 已知调试/hook/逆向工具的**进程名关键字**（不区分大小写）
 _SUSPECT_PROCESSES = (
@@ -142,6 +145,7 @@ def _list_processes_windows() -> list[str]:
             ["tasklist", "/fo", "csv", "/nh"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             timeout=5.0, text=True, encoding="utf-8", errors="replace",
+            creationflags=_NO_WINDOW,
         )
         if out.returncode != 0:
             return []
@@ -163,6 +167,7 @@ def _list_processes_posix() -> list[str]:
             ["ps", "axo", "comm"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             timeout=5.0, text=True, encoding="utf-8", errors="replace",
+            creationflags=_NO_WINDOW,
         )
         if out.returncode != 0:
             return []
@@ -242,6 +247,7 @@ def vm_detected() -> bool:
                 ["wmic", "computersystem", "get", "manufacturer,model", "/format:csv"],
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                 timeout=5.0, text=True, encoding="utf-8", errors="replace",
+                creationflags=_NO_WINDOW,
             )
             text = (out.stdout or "").lower()
             for k in _VM_KEYWORDS:
