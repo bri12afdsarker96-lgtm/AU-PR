@@ -17,9 +17,13 @@ from dub_align_studio.bulk_dub.ffmpeg_pipeline import (  # noqa: E402
 
 
 def test_8_original_first_mirror_second():
+    """R14-FIX-4d：v0 现在被 setsar=1 归一化成 [v0s]，concat 变成 [v0s][v1]。
+    concat 后 format=yuv420p 强制 8bit 输出避免 encoder 侧冲突。"""
     lines, _ = build_filter_chain(width=1080, height=1920, final_seconds=10)
     joined = ";".join(lines)
-    assert "[v0][v1]concat=n=2:v=1" in joined
+    assert "[v0s][v1]concat=n=2:v=1" in joined
+    assert "[v0]setsar=1[v0s]" in joined
+    assert "format=yuv420p" in joined
 
 
 def test_9_mirror_branch_hflip():
