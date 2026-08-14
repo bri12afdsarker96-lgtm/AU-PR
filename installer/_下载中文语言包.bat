@@ -9,7 +9,7 @@ REM ============================================================
 setlocal
 cd /d "%~dp0"
 
-set "URL=https://jrsoftware.org/files/istrans/ChineseSimplified.isl"
+set "URL=https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/ChineseSimplified.isl"
 set "DEST=%~dp0ChineseSimplified.isl"
 
 echo.
@@ -40,7 +40,7 @@ exit /b 0
 :err_dl
 echo.
 echo   [X] 下载失败。可能：
-echo       1) 网络不通 jrsoftware.org  -^> 挂 VPN 再试
+echo       1) 网络不通 raw.githubusercontent.com  -^> 挂 VPN 再试
 echo       2) 浏览器手工下载：
 echo          %URL%
 echo          保存为：%DEST%
