@@ -45,10 +45,17 @@ EXTRA_HIDDEN = [
 # 这是之前"没输激活码也能进""源码运行"标签的根因。
 # prepare_build_info() 在 pyinstaller 之前已把 source/dub_align_studio/_build_info.py 写好，
 # 所以打包时该模块一定存在，可以安全加入 hiddenimports。
-if (SOURCE / "dub_align_studio" / "_build_info.py").exists():
+# 注意：_build_info 可能是 .py（没 Cython）或 .pyd/.so（Cython 编译后源码已删）——
+# 两种都要认，否则 Cython 编成 .pyd 后这里判 .py 不存在 → 不加 hiddenimports → 白编。
+_bi_dir = SOURCE / "dub_align_studio"
+_bi_present = ((_bi_dir / "_build_info.py").exists()
+               or bool(list(_bi_dir.glob("_build_info*.pyd")))
+               or bool(list(_bi_dir.glob("_build_info*.so"))))
+if _bi_present:
     EXTRA_HIDDEN.append("dub_align_studio._build_info")
+    print("[spec] _build_info 已纳入 hiddenimports")
 else:
-    print("[spec][!] source/dub_align_studio/_build_info.py 不存在 —— "
+    print("[spec][!] source/dub_align_studio/_build_info.(py|pyd) 不存在 —— "
           "打包版将无防护！请先跑 build_dist.prepare_build_info()")
 
 # 数据文件（web 前端资源必须一起打）

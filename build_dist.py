@@ -519,39 +519,102 @@ def prepare_build_info() -> Path:
     )
     target = SOURCE_DIR / "_build_info.py"
     target.write_text(content, encoding="utf-8")
+    # 把 integrity_key 另存到临时文件——因为 _build_info.py 可能被 Cython 编译成
+    # .pyd 后删掉源码，finalize_build_info_hmac 就读不到 key 了，改从这里读。
+    _BUILD_INFO_KEY_TMP.write_text(integrity_key.hex(), encoding="ascii")
     _log(f"[OK] source/_build_info.py 写入（pyinstaller 会打进 PYZ）")
     return target
 
 
-def cleanup_build_info() -> None:
-    """打包完成后清 source/_build_info.py，保持仓库干净。"""
-    target = SOURCE_DIR / "_build_info.py"
-    if target.exists():
+# integrity_key 的临时落脚（打包完清掉）
+_BUILD_INFO_KEY_TMP = HERE / ".build_info_key.tmp"
+
+
+def cython_compile_build_info() -> bool:
+    """把 source/dub_align_studio/_build_info.py 也 Cython 编成 .pyd。
+
+    为什么必须：_build_info 里有 PACKAGED=True（gate/RASP 的总开关）+
+    INTEGRITY_HMAC_KEY + XOR_SEED。若只被 PyInstaller 编成 .pyc，攻击者
+    pyinstxtractor 抠出 .pyc → 把 PACKAGED 改 False（或反编译拿 key）就破了。
+    编成 .pyd 后是二进制扩展，改标志/挖 key 的成本高一个数量级。
+
+    返回 True=成功编成 .pyd 并删了 .py；False=没编（缺 Cython/MSVC，退回 .pyc）。
+    """
+    bi = SOURCE_DIR / "_build_info.py"
+    if not bi.exists():
+        return False
+    try:
+        import Cython  # noqa: F401, PLC0415
+    except ImportError:
+        _log("[!] 无 Cython，_build_info 退回 .pyc（PACKAGED/密钥可被 patch）")
+        return False
+    ext = ".pyd" if platform.system() == "Windows" else ".so"
+    cmd = [sys.executable, "-m", "Cython.Build.Cythonize", "-i", "-3", str(bi)]
+    r = subprocess.run(cmd, cwd=str(HERE))
+    produced = list(SOURCE_DIR.glob(f"_build_info*{ext}"))
+    if r.returncode == 0 and produced:
         try:
-            target.unlink()
-            _log(f"清理 {target.name}")
+            bi.unlink()
+        except OSError:
+            pass
+        for c in SOURCE_DIR.glob("_build_info*.c"):
+            try:
+                c.unlink()
+            except OSError:
+                pass
+        _bt = HERE / "build"
+        if _bt.exists():
+            shutil.rmtree(_bt, ignore_errors=True)
+        _log(f"[OK] _build_info 已编译成 {ext}（PACKAGED/密钥进二进制，无源码可 patch）")
+        return True
+    _log(f"[!] _build_info Cython 编译失败（exit={r.returncode}）→ 退回 .pyc")
+    return False
+
+
+def cleanup_build_info() -> None:
+    """打包完清 source/_build_info.py + .pyd/.so/.c + key 临时文件，保持仓库干净。"""
+    for pat in ("_build_info.py", "_build_info*.pyd", "_build_info*.so", "_build_info*.c"):
+        for f in SOURCE_DIR.glob(pat):
+            try:
+                f.unlink()
+                _log(f"清理 {f.name}")
+            except OSError:
+                pass
+    if _BUILD_INFO_KEY_TMP.exists():
+        try:
+            _BUILD_INFO_KEY_TMP.unlink()
         except OSError:
             pass
 
 
 def finalize_build_info_hmac(dist_dir: Path, exe_name: str) -> str:
     """算 exe HMAC 写 sidecar (dist_dir/_build_hmac.dat)。
-    key 藏在 PYZ 里的 _build_info.INTEGRITY_HMAC_KEY，sidecar 只有 hash 值本身。
-    攻击者要伪造 HMAC 需要先解 PYZ 拿 key。"""
-    bi_path = SOURCE_DIR / "_build_info.py"
-    if not bi_path.exists():
-        _log("[!] source/_build_info.py 不存在，跳过 HMAC baseline")
-        return ""
-    _ns: dict = {}
-    exec(bi_path.read_text(encoding="utf-8"), _ns)  # noqa: S102
-    integrity_key = _ns.get("INTEGRITY_HMAC_KEY", b"")
-    if not isinstance(integrity_key, (bytes, bytearray)) or len(integrity_key) < 32:
+    key 藏在 _build_info(.pyd/.pyc)，sidecar 只有 hash 值本身。
+    攻击者要伪造 HMAC 需要先从二进制挖 key。
+
+    key 来源优先：.build_info_key.tmp（prepare 时落的）→ 若无再尝试读 .py。"""
+    integrity_key = b""
+    if _BUILD_INFO_KEY_TMP.exists():
+        try:
+            integrity_key = bytes.fromhex(_BUILD_INFO_KEY_TMP.read_text(encoding="ascii").strip())
+        except Exception:  # noqa: BLE001
+            integrity_key = b""
+    if len(integrity_key) < 32:
+        bi_path = SOURCE_DIR / "_build_info.py"
+        if bi_path.exists():
+            _ns: dict = {}
+            exec(bi_path.read_text(encoding="utf-8"), _ns)  # noqa: S102
+            k = _ns.get("INTEGRITY_HMAC_KEY", b"")
+            if isinstance(k, (bytes, bytearray)):
+                integrity_key = bytes(k)
+    if len(integrity_key) < 32:
+        _log("[!] 拿不到 integrity_key，跳过 HMAC baseline")
         return ""
     exe_path = dist_dir / exe_name
     if not exe_path.exists():
         return ""
     import hmac as _hmac
-    h = _hmac.new(bytes(integrity_key), b"", hashlib.sha256)
+    h = _hmac.new(integrity_key, b"", hashlib.sha256)
     with open(exe_path, "rb") as f:
         while True:
             chunk = f.read(1024 * 1024)
@@ -562,13 +625,14 @@ def finalize_build_info_hmac(dist_dir: Path, exe_name: str) -> str:
     (dist_dir / "_build_hmac.dat").write_text(
         "hmac:" + digest + "\n", encoding="ascii",
     )
-    _log(f"[OK] exe HMAC baseline sidecar 已写入（key 藏在 PYZ）")
+    _log("[OK] exe HMAC baseline sidecar 已写入（key 藏在 _build_info 二进制）")
+    return digest
 
 
 # 老 API 名保留，转成 finalize 语义（bat 里可能仍在调）
 def write_build_info(dist_dir: Path, exe_name: str) -> Path:
     finalize_build_info_hmac(dist_dir, exe_name)
-    return target
+    return SOURCE_DIR / "_build_info.py"
 
 
 def dist_manifest(dist_dir: Path) -> None:

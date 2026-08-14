@@ -71,3 +71,6 @@ source/dub_align_studio/_build_info.py
 # Cython 打包临时（源码备份 + 计数文件）
 .licensing_src_backup/
 _cython_count.tmp
+
+# _build_info 密钥临时文件（打包时短暂存在）
+.build_info_key.tmp

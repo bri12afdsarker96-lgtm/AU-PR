@@ -117,6 +117,8 @@ if not errorlevel 1 (
     ) else (
         echo   [OK] Cython 编译成功 !CYN! 个 licensing 模块 -^> .pyd（源码已删，无源码可反）
     )
+    REM _build_info 也编成 .pyd（PACKAGED 总开关 + HMAC 密钥 + XOR 种子进二进制）
+    python -c "import sys; sys.path.insert(0, '.'); from build_dist import cython_compile_build_info; cython_compile_build_info()"
 ) else (
     echo   [!] 无 Cython，跳过（licensing 只有 .pyc；可用但反编译难度低）
     echo       你选了方案 A：python -m pip install cython  再重跑
