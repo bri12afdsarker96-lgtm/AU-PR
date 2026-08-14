@@ -100,7 +100,9 @@ a = Analysis(
     runtime_hooks=[],
     excludes=[],
     noarchive=False,
-    optimize=0,
+    # -OO：剥离所有 docstring + assert，反编译出来的代码更难读
+    # （licensing 无 assert 安全逻辑，剥离不影响功能——已核查）
+    optimize=2,
 )
 
 pyz = PYZ(a.pure)
