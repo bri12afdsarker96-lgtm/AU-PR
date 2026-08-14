@@ -46,6 +46,8 @@ vendor_tools/
 build/
 dist/
 *.spec
+# 但 installer/ 下的 spec 是打包脚本源码，必须入库
+!installer/*.spec
 
 # Cython 中间产物（licensing/*.c）
 source/dub_align_studio/licensing/*.c
