@@ -22,7 +22,7 @@ from pathlib import Path
 
 from ..engines.base import EngineUnavailable
 from ..engines.edge_tts import (
-    DEFAULT_STYLE, _endpoint_url, _normalize_endpoint_root,
+    DEFAULT_STYLE, _BROWSER_UA, _endpoint_url, _normalize_endpoint_root,
     _convert_mp3_to_wav, edge_tts_endpoint,
 )
 
@@ -83,8 +83,13 @@ class EdgeTtsBackend(TtsBackend):
             "style": style or DEFAULT_STYLE,
         }
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        headers = {"Content-Type": "application/json",
-                   "Accept": "audio/mpeg, application/json"}
+        # R14-FIX-4c：**必须带浏览器 User-Agent**——否则 Cloudflare 边缘
+        # 会把默认 Python-urllib UA 识别为机器人并返回 HTTP 403 Error 1010。
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "audio/mpeg, application/json",
+            "User-Agent": _BROWSER_UA,
+        }
 
         # 单次请求（不重试）
         try:

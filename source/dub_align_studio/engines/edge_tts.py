@@ -59,6 +59,15 @@ _WAV_SAMPLE_RATE = 44100
 _WAV_CHANNELS = 2               # 与 mock/dots 输出一致；_concat_wavs 只要每段格式一致即可
 _PROBE_SAMPLE_TEXT = "配音对齐工作室。"
 
+# R14-FIX-4c：Cloudflare 边缘对无浏览器指纹的 UA（如 "Python-urllib/3.x"）
+# 直接返回 HTTP 403 Error 1010，触发路径包括"测试连接"按钮与生产合成。
+# 用常见 Chrome UA 伪装规避（不涉及 CF 账户端 Bot Fight Mode 设置）。
+_BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
+)
+
 # 预设声线（README 列出的中文声线；风格在请求里另传）
 EDGE_VOICES: list[dict] = [
     {"id": "zh-CN-XiaoxiaoNeural", "name": "晓晓（女·活泼）"},
@@ -259,7 +268,15 @@ class EdgeTtsEngine:
             "style": style or DEFAULT_STYLE,
         }
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        headers = {"Content-Type": "application/json", "Accept": "audio/mpeg, application/json"}
+        # R14-FIX-4c：**必须带浏览器 User-Agent**——否则 Cloudflare 边缘
+        # 会把 Python-urllib/x.x 的默认 UA 识别为机器人并返回 HTTP 403
+        # Error 1010（"Access denied. The site owner has blocked ..."）。
+        # 与"测试连接"共用同一路径，测试也会因此失败。
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "audio/mpeg, application/json",
+            "User-Agent": _BROWSER_UA,
+        }
 
         last_err: str = "未知错误"
         for attempt in range(1, _MAX_RETRIES + 1):
