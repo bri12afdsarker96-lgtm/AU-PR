@@ -118,17 +118,38 @@ def cython_compile_licensing() -> None:
     _log("Cython OK（licensing/*.pyd 已生成）")
 
 
-def nuitka_build() -> Path:
-    """Nuitka --standalone 打包主程序到 dist/launcher.dist/。"""
+def _find_icon() -> Path | None:
+    """按优先级找应用图标：installer\\app.ico > icon.ico > None。"""
+    for candidate in (
+        HERE / "installer" / "app.ico",
+        HERE / "icon.ico",
+        HERE / "app.ico",
+    ):
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def nuitka_build(strict: bool = True) -> Path:
+    """Nuitka --standalone 打包主程序到 dist/launcher.dist/。
+
+    strict=True（默认，发行必须）：缺 nuitka 直接 raise，不再"跳过"生成
+    纯 Python 包（那样打出来的 setup.exe 装完根本没 .exe 可运行）。
+    """
     try:
         import nuitka  # noqa: F401, PLC0415
     except ImportError:
-        _log("⚠ 未安装 nuitka，跳过 Nuitka（会生成纯 Python 包）")
+        msg = ("未安装 nuitka —— 发行包必须编译产 exe，不能跳过。"
+               "\n    修复：pip install nuitka  然后重跑本脚本。"
+               "\n    若只想生成 Python 源码目录用于开发调试，加 --skip-nuitka。")
+        if strict:
+            raise RuntimeError(msg)
+        _log(f"[!] {msg}  （--skip-nuitka 已指定，继续但不会有 exe）")
         return HERE / "source"
-    _log("Nuitka --standalone 编译主程序…")
+    _log("Nuitka --standalone 编译主程序...")
     out_dir = DIST_ROOT / "_nuitka_out"
     out_dir.mkdir(parents=True, exist_ok=True)
-    ico = HERE / "icon.ico"
+    ico = _find_icon()
     cmd = [
         sys.executable, "-m", "nuitka",
         "--standalone",
@@ -141,8 +162,11 @@ def nuitka_build() -> Path:
         f"--output-filename=水星配音对齐工作室.exe" if platform.system() == "Windows" else "--output-filename=dub_align_studio",
         str(SOURCE_DIR.parent / "dub_align_studio" / "launcher.py"),
     ]
-    if ico.exists() and platform.system() == "Windows":
+    if ico is not None and platform.system() == "Windows":
         cmd.insert(-1, f"--windows-icon-from-ico={ico}")
+        _log(f"图标：{ico}")
+    elif platform.system() == "Windows":
+        _log("[!] 未找到 icon.ico —— exe 用 Nuitka 默认图标")
     _log(f"命令：{' '.join(cmd)}")
     r = subprocess.run(cmd, cwd=str(HERE))
     if r.returncode != 0:
@@ -341,8 +365,23 @@ def main() -> int:
     write_launcher_bat(DIST_ROOT, exe_name)
     write_integrity_hash(DIST_ROOT, exe_name)
 
+    # 关键校验：exe 必须存在，否则打出来的 setup 装完是空壳，
+    # [Run] 阶段会 CreateProcess failed; code 2（文件不存在）
+    if not args.skip_nuitka:
+        exe_path = DIST_ROOT / exe_name
+        if not exe_path.exists():
+            _log("=" * 60)
+            _log(f"[X] 关键失败：{exe_path} 不存在")
+            _log("    很可能 Nuitka 编译成功但输出目录/文件名不对——检查")
+            _log(f"    {DIST_ROOT / '_nuitka_out'} 下有什么。")
+            _log("    切勿把这个 dist 用去打 installer——装完会 CreateProcess"
+                 " failed; code 2（正是你现在看到的错）。")
+            return 4
+        sz_mb = exe_path.stat().st_size / 1024 / 1024
+        _log(f"[OK] 主 exe 存在：{exe_path.name}  ({sz_mb:.1f} MB)")
+
     dist_manifest(DIST_ROOT)
-    _log("✅ 构建完成")
+    _log("[OK] 构建完成")
     return 0
 
 

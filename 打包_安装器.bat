@@ -32,9 +32,14 @@ echo.
 echo ============================================================
 echo   Step 2/2  Inno Setup 6 编译（installer.iss）
 echo ============================================================
-REM ---- 提示：如果 Inno Setup 缺 Chinese Simplified 语言，向导会自动降级英文 ----
-REM ---- 想要中文向导：把 ChineseSimplified.isl 放到本项目 installer\ 目录下 ----
-REM ---- 下载：https://jrsoftware.org/files/istrans/ChineseSimplified.isl ----
+REM ---- 中文向导预检：优先本地 installer\ChineseSimplified.isl ----
+if not exist "installer\ChineseSimplified.isl" (
+    echo.
+    echo   [!] 未找到 installer\ChineseSimplified.isl
+    echo       没有它，安装向导会降级到英文。
+    set /p DL="    要现在下载吗？（Y=下载，N=继续用英文）: "
+    if /i "!DL!"=="Y" call "installer\_下载中文语言包.bat"
+)
 set "ISCC=C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 if not exist "%ISCC%" (
     set "ISCC=C:\Program Files\Inno Setup 6\ISCC.exe"

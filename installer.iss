@@ -26,6 +26,15 @@
 #define OutputDir      "dist\安装器"
 #define OutputBaseName "setup_水星配音对齐工作室_v" + AppVersion + "_lite"
 
+; ---------- 预编译护栏：源目录必须已有主 exe，否则 ISCC 直接 fatal ----------
+; 之前踩过：Nuitka 没跑通 -> dist\轻量云配版包\ 里没 exe -> ISCC 照打包空壳 ->
+; 装完 [Run] 步 CreateProcess failed; code 2（系统找不到指定的文件）。
+; 这里加个 #error 提前拦截，比装完再报错友好一万倍。
+#define SourceExe SourceDir + "\" + AppExeName
+#if !FileExists(SourceExe)
+  #error 未找到主 exe：dist\轻量云配版包\水星配音对齐工作室.exe —— 请先跑 build_dist.py 编译主程序（需装 nuitka）
+#endif
+
 [Setup]
 AppId={{5D3BAA00-1E4F-45D6-9F60-DUBALIGN2026}}
 AppName={#AppName}
@@ -43,8 +52,11 @@ DisableDirPage=no
 UninstallDisplayName={#AppName} v{#AppVersion}
 UninstallDisplayIcon={app}\{#AppExeName}
 
-; 图标（可选；有 icon.ico 就用）
-; SetupIconFile=icon.ico
+; 图标（installer 向导 + 装完的开始菜单/桌面快捷方式都用）
+#define IconFile "installer\app.ico"
+#if FileExists(IconFile)
+SetupIconFile={#IconFile}
+#endif
 
 ; 输出
 OutputDir={#OutputDir}
@@ -115,14 +127,20 @@ Name: "quicklaunchicon"; Description: "创建快速启动栏图标"; GroupDescri
 Source: "{#SourceDir}\*"; DestDir: "{app}"; \
     Flags: ignoreversion recursesubdirs createallsubdirs; \
     Excludes: "*.py,*.pyc,*.pyo,__pycache__,.git,.github,.claude,tests,docs,settings.json,license.json,queue.sqlite3,gpu_state.json,*.md,pyproject.toml,setup.py,conftest.py,.gitignore"
+; 图标：把 app.ico 也复制到安装目录，供快捷方式引用
+#if FileExists(IconFile)
+Source: "{#IconFile}"; DestDir: "{app}"; DestName: "app.ico"; Flags: ignoreversion
+#endif
 
 [Icons]
-; 开始菜单主图标
-Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
+; 开始菜单主图标（IconFilename 显式绑 app.ico，避免装完 lnk 图标丢失）
+Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"; \
+    IconFilename: "{app}\app.ico"; WorkingDir: "{app}"
 ; 开始菜单里的卸载入口
 Name: "{group}\卸载 {#AppName}"; Filename: "{uninstallexe}"
 ; 桌面（可选）
-Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; \
+    IconFilename: "{app}\app.ico"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
 ; 安装完成后可选立即启动（不勾就不启动）
