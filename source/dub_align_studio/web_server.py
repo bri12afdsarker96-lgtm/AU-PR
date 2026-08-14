@@ -1159,7 +1159,11 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _serve_bulk_csv_streaming(self, query: dict) -> None:
         """R11-8：万级 CSV **真流式**——用 chunked transfer encoding，
-        每次 iter_csv_chunks 产出一批就发一批，永不把全表加载进内存。"""
+        每次 iter_csv_chunks 产出一批就发一批，永不把全表加载进内存。
+
+        R13-P0-4：在发 200 headers **之前**先做 batch_id 存在性校验——避免
+        \"未知 batch 返回 200 空 CSV\" 的假成功。
+        """
         from .bulk_dub import csv_export as _ce
         from .bulk_dub.service import get_service
         from .bulk_dub.store import is_safe_id as _is_safe
@@ -1169,6 +1173,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({"error": "非法 batch_id"}, 400)
             return
         svc = get_service()
+        if batch_id and not svc.store.batch_exists(batch_id):
+            self._json({"error": f"batch 不存在：{batch_id}"}, 404)
+            return
         self.send_response(200)
         self.send_header("Content-Type", "text/csv; charset=utf-8")
         self.send_header("Content-Disposition",
@@ -1232,6 +1239,7 @@ class _Handler(BaseHTTPRequestHandler):
                 # 明确 416
                 self.send_response(416)
                 self.send_header("Content-Range", f"bytes */{file_size}")
+                self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
             spec = range_hdr[6:].strip()
@@ -1239,6 +1247,7 @@ class _Handler(BaseHTTPRequestHandler):
                 # 多 Range 明确不支持
                 self.send_response(416)
                 self.send_header("Content-Range", f"bytes */{file_size}")
+                self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
             try:
@@ -1266,6 +1275,7 @@ class _Handler(BaseHTTPRequestHandler):
                 if start < 0 or end < 0 or start > end or start >= file_size:
                     self.send_response(416)
                     self.send_header("Content-Range", f"bytes */{file_size}")
+                    self.send_header("Content-Length", "0")
                     self.end_headers()
                     return
                 end = min(end, file_size - 1)
@@ -1273,6 +1283,7 @@ class _Handler(BaseHTTPRequestHandler):
             except ValueError:
                 self.send_response(416)
                 self.send_header("Content-Range", f"bytes */{file_size}")
+                self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
         length = end - start + 1
@@ -1692,6 +1703,7 @@ class _Handler(BaseHTTPRequestHandler):
         if start > end or start >= size:
             self.send_response(416)
             self.send_header("Content-Range", f"bytes */{size}")
+            self.send_header("Content-Length", "0")
             self.end_headers()
             return
         partial = header is not None and (start, end) != (0, size - 1)

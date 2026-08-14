@@ -39,7 +39,12 @@ class EdgeTtsBackend(TtsBackend):
         - `endpoint=None`（默认）→ **每次 synthesize** 都从 settings 读一遍
           `edge_tts_endpoint()`；工具箱保存新地址后立即生效，无需重启软件。
         - `endpoint="..."`（显式传入）→ 固定用该地址（测试用）。
+
+    R13-P1-7 backend capability：`requires_endpoint = True` —— 生产 backend
+    必须先配置 Cloudflare Worker 地址；service 层从 backend 读该属性，
+    不再暴露"生产参数跳过 endpoint 校验"的入口。
     """
+    requires_endpoint = True
 
     def __init__(self, endpoint: str | None = None,
                  timeout: float = _DEFAULT_TIMEOUT_S,
@@ -173,7 +178,13 @@ class EdgeTtsBackend(TtsBackend):
 
 
 class MockTtsBackend(TtsBackend):
-    """确定性 mock：生成指定时长的静音 WAV，用于压测和单元测试。"""
+    """确定性 mock：生成指定时长的静音 WAV，用于压测和单元测试。
+
+    R13-P1-7：`requires_endpoint = False` —— mock backend 内部生成，无需
+    Cloudflare Worker 地址；service 依 capability 判断自动跳过端点校验，
+    生产 backend 无绕过入口。
+    """
+    requires_endpoint = False
 
     def __init__(self, *, base_seconds: float = 3.0,
                  http_error_every: int = 0,

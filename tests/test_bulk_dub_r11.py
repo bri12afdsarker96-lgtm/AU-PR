@@ -221,6 +221,18 @@ def test_r11_3_recover_video_running_reserved_file_already_committed(tmp_path):
     ])[0]
     s1.update(tid, status=STATUS_VIDEO_RUNNING,
                reserved_output_path=str(out), tts_duration=0.5)
+    # R13-P0-3：正式文件恢复必须**同时**通过 marker 校验——写一份归属 marker
+    from dub_align_studio.bulk_dub.ffmpeg_pipeline import (
+        marker_path_for, _write_marker, _blake2b_of_file,
+    )
+    _write_marker(
+        marker_path_for(out), task_id=tid, batch_id=b, fingerprint="fp",
+        target_final_seconds=1.0, file_size=out.stat().st_size,
+        output_name=out.name, encoder_used="libx264",
+        hw_fallback_used=False,
+        content_hash=_blake2b_of_file(out),
+        commit_stage="target_ready",
+    )
 
     # 重启：新连接 + 恢复
     from dub_align_studio.bulk_dub import scheduler as sched_mod
@@ -453,7 +465,7 @@ def test_r11_7_batch_dedup_and_batch_query(tmp_path, monkeypatch):
     (tmp_path / "out").mkdir()
     r = svc.start_batch(source_bytes=xlsx, label="dedupe",
                          output_dir=str(tmp_path / "out"),
-                         check_exists=True, require_endpoint=False)
+                         check_exists=True)
     # R12-1：外部指纹 hit → 2 条"重用"直接 completed；
     # 新指纹只有 2 个 leader（新A 首个 + 新B），另 1 条"新A"重复 → follower
     assert r["reused"] == 2, f"reused={r['reused']}"

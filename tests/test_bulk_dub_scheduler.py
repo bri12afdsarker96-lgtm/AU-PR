@@ -252,11 +252,11 @@ def test_26_batch_freezes_params(tmp_path):
     r1 = svc.start_batch(source_bytes=xlsx, label="b1",
                           output_dir=str(tmp_path / "out1"),
                           voice_id="zh-CN-XiaoshuangNeural", speed=1.25,
-                          check_exists=False, require_endpoint=False)
+                          check_exists=False)
     r2 = svc.start_batch(source_bytes=xlsx, label="b2",
                           output_dir=str(tmp_path / "out2"),
                           voice_id="zh-CN-YunxiNeural", speed=1.0,
-                          check_exists=False, require_endpoint=False)
+                          check_exists=False)
     tasks_b1 = svc.store.list_tasks(batch_id=r1["batch_id"])
     tasks_b2 = svc.store.list_tasks(batch_id=r2["batch_id"])
     # batch 1 参数不能被 batch 2 覆盖

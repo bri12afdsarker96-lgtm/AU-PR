@@ -35,6 +35,11 @@ from .store import (
 
 
 class TtsBackend:
+    """R13-P1-7：`requires_endpoint` 是 backend capability——生产 backend
+    表达"必须先配置 Worker 才能启动"，mock backend 明示不需要。
+    service 依此判断，不再暴露"跳过端点校验"的生产入口。"""
+    requires_endpoint: bool = True
+
     def synthesize(self, *, text: str, voice_id: str, speed: float,
                    pitch: int, style: str, output_wav: Path) -> float:
         raise NotImplementedError
@@ -159,6 +164,12 @@ class Scheduler:
                     reserved_output_verifier=self._verify_reserved_output,
                     staging_cleanup=vp.cleanup_staging,
                 )
+                # R13-P0-1：leader 已恢复到终态后，follower 与 leader 对账
+                # （幂等；孤儿 follower → failed，避免永远 waiting）
+                try:
+                    self.store.reconcile_dependencies()
+                except Exception:  # noqa: BLE001
+                    pass
                 self._reload_paused_from_db()
                 self._started_at = time.time()
                 for _ in range(max(1, min(16, self.config.tts_concurrency))):
@@ -323,13 +334,34 @@ class Scheduler:
 
     def _verify_reserved_output(self, row: TaskRow,
                                  path: Path) -> tuple[bool, dict]:
-        """R11-3 恢复：预留正式文件已存在 → 校验后返回 meta 用于补记 completed。
+        """R13-P0-3 恢复：正式文件必须**同时**通过 marker + 内容校验才认领。
 
-        校验：视频流 + 音频流 + ffprobe 时长 ≈ 已知 tts_duration or > 0。
+        校验顺序（任一失败 → False）：
+            1. 目标目录内存在同名 marker sidecar；
+            2. marker.schema ∈ {v1, v2}；task_id 匹配本任务；
+            3. 若 marker.size/hash/output_name 存在 → 与 target 严格一致；
+            4. ffprobe 有音视频流 + 时长 > 0；
+            5. 时长与 marker.final_seconds 容差 <= 0.4s（可选）。
+
+        无 marker（外部 mp4）→ 绝不认领。
         """
         try:
             if not path.is_file() or path.stat().st_size < 1024:
                 return False, {}
+            marker_path = vp.marker_path_for(path)
+            marker = vp.read_marker(marker_path)
+            if marker is None:
+                return False, {}
+            # 严格校验 marker 归属：task_id 必须一致（外部 mp4 拷进来撞名也不认）
+            if marker.get("task_id") != row.task_id:
+                return False, {}
+            ok, reason = vp.verify_marker_matches_target(
+                marker, path, expected_task_id=row.task_id,
+                expected_batch_id=row.batch_id,
+                expected_fingerprint=row.fingerprint,
+            )
+            if not ok:
+                return False, {"reject_reason": reason}
             has_v, has_a = vp.has_video_and_audio_streams(path)
             if not (has_v and has_a):
                 return False, {}
@@ -337,12 +369,12 @@ class Scheduler:
             if actual <= 0:
                 return False, {}
             return True, {
-                "final_duration": actual,
+                "final_duration": marker.get("final_seconds") or actual,
                 "tts_duration": row.tts_duration or 0,
                 "concat_duration": row.concat_duration or 0,
                 "video_duration": row.video_duration or 0,
-                "encoder_used": row.encoder_used or "unknown",
-                "hw_fallback_used": row.hw_fallback_used,
+                "encoder_used": marker.get("encoder_used") or row.encoder_used or "unknown",
+                "hw_fallback_used": int(bool(marker.get("hw_fallback_used") or row.hw_fallback_used)),
             }
         except Exception:  # noqa: BLE001
             return False, {}
@@ -391,51 +423,89 @@ class Scheduler:
             return tuple(self._batch_paused_set)
 
     def cancel_task(self, task_id: str) -> bool:
+        """R13-P0-2 取消：
+        - waiting 类立即 cancelled，同事务广播 follower
+        - running 类 → cancelling（worker 稳定点收敛 + 清 staging）；不由取消
+          线程并发删除工作文件
+        - terminal（completed/output_committed/failed/cancelled/cancelling）→
+          返回 False；页面不会再显示"已取消"错觉
+        """
         row = self.store.get(task_id)
         if row is None:
             return False
+        # cancel flag 必须先置位——即使 running 也让 worker 尽快退出
         with self._cancel_lock:
             flag = self._cancel_flags.get(task_id)
             if flag is None:
                 flag = threading.Event()
                 self._cancel_flags[task_id] = flag
             flag.set()
-        # R12-6：走原子接口——waiting 类立即 cancelled；running 类 → cancelling
-        changed = self.store.cancel_atomic([task_id])
-        if changed:
+        results = self.store.cancel_atomic_detailed([task_id])
+        if not results:
+            return False
+        _, old, new = results[0]
+        if new == STATUS_CANCELLED:
+            # waiting 类：release reservation + 清 staging（worker 不在跑，安全）
             self.store.release_reservation(task_id)
             vp.cleanup_staging(row.staging_dir)
-            # R12-1：若本任务是 leader，follower 也传播 cancelled
-            self.store.propagate_leader_result_atomic(
-                task_id, to_status=STATUS_CANCELLED,
-                error_type="cancelled", error_detail="leader 被取消",
-            )
-        return True
+            # leader 取消 → 广播 follower（同事务）
+            try:
+                self.store.finalize_leader_cancel(
+                    task_id, error_type="cancelled",
+                    error_detail="leader 被取消",
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            return True
+        if new == STATUS_CANCELLING:
+            # running：**不**并发清 staging 和 release reservation——由 worker
+            # 见到 cancel_flag 时自行收敛并清理，避免与 ffmpeg/TTS worker 撞刀
+            return True
+        # 未变化：old 已是 terminal → 取消失败
+        return False
 
     def cancel_all_waiting(self, batch_id: str) -> int:
-        """R11-10+R12-6：原子取消——把 waiting 类（pending/retry_wait/tts_done/
-        waiting_dependency）转 cancelled；running 类转 cancelling。每条清 staging+reservation。"""
+        """R13-P0-2：批量取消——waiting 类立即 cancelled 并广播 follower；
+        running 类转 cancelling 由 worker 收敛。绝不并发清 running 任务的
+        staging/reservation。"""
         cancelled = self.store.cancel_batch_atomic(batch_id)
+        n = 0
         for tid in cancelled:
             row = self.store.get(tid)
-            if row is not None:
+            if row is None:
+                continue
+            n += 1
+            if row.status == STATUS_CANCELLED:
                 self.store.release_reservation(tid)
                 vp.cleanup_staging(row.staging_dir)
-                # follower 传播
-                self.store.propagate_leader_result_atomic(
-                    tid, to_status=STATUS_CANCELLED,
-                    error_type="cancelled", error_detail="leader 被批量取消",
-                )
-        return len(cancelled)
+                try:
+                    self.store.finalize_leader_cancel(
+                        tid, error_type="cancelled",
+                        error_detail="leader 被批量取消",
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+        return n
 
     def retry_failed(self, batch_id: str, only_retryable: bool = False) -> int:
+        """R13-P0-1 重试语义：
+        - 只把 **leader**（leader_task_id 为空）从 failed 转 pending；
+        - failed **follower** 恢复为 waiting_dependency，不进入调度队列；
+        - `error_type == 'excel_invalid'` 永远跳过；这类是 Excel 校验失败，
+          重试也无意义，避免误入调度。
+        """
         n = 0
         for row in self.store.list_tasks(batch_id=batch_id, status=STATUS_FAILED,
                                           limit=100000):
-            if only_retryable and row.error_type in ("client_4xx", "excel_invalid",
-                                                     "video_error"):
+            if row.error_type == "excel_invalid":
                 continue
-            self.store.reset_status(row.task_id, STATUS_PENDING)
+            if only_retryable and row.error_type in ("client_4xx", "video_error"):
+                continue
+            if row.leader_task_id:
+                # follower：只回到 waiting_dependency，不进入调度队列
+                self.store.reset_status(row.task_id, STATUS_WAITING_DEPENDENCY)
+            else:
+                self.store.reset_status(row.task_id, STATUS_PENDING)
             with self._cancel_lock:
                 self._cancel_flags.pop(row.task_id, None)
             n += 1
@@ -547,8 +617,39 @@ class Scheduler:
                 del self.metrics.tts_times[:-500]
         self.notify()
 
+    def _converge_cancelled_if_flagged(self, row: TaskRow) -> bool:
+        """R13-P0-2：TTS/视频返回后错误路径统一检查——若取消标志已置，
+        把当前 tts_running/cancelling → cancelled，并**不**再走 retry_wait/fail。"""
+        cancel_flag = self._ensure_cancel_flag(row.task_id)
+        if not cancel_flag.is_set():
+            return False
+        for from_st in (STATUS_TTS_RUNNING, STATUS_VIDEO_RUNNING,
+                         STATUS_CANCELLING):
+            if self.store.try_advance_status(
+                row.task_id, from_status=from_st, to_status=STATUS_CANCELLED,
+                error_type="cancelled",
+                error_detail="任务返回时检测到取消",
+                finished_at=time.time(),
+            ):
+                # leader 取消 → 广播 follower
+                try:
+                    self.store.finalize_leader_cancel(
+                        row.task_id, error_type="cancelled",
+                        error_detail="TTS/视频返回时收敛为 cancelled",
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                break
+        self._breaker.release_probe()
+        vp.cleanup_staging(row.staging_dir)
+        self._cancel_flag_pop(row.task_id)
+        return True
+
     def _handle_tts_http_error(self, row: TaskRow, exc: TtsHttpError,
                                 attempt: int) -> None:
+        # R13-P0-2：先看取消标志，避免覆盖 cancelling
+        if self._converge_cancelled_if_flagged(row):
+            return
         kind = classify_http_error(exc.status_code)
         with self._metrics_lock:
             if kind == "retryable_429":
@@ -568,25 +669,40 @@ class Scheduler:
         wait = exc.retry_after if exc.retry_after and exc.retry_after > 0 \
             else compute_backoff(attempt)
         next_at = time.time() + wait
-        self.store.update(row.task_id, status=STATUS_RETRY_WAIT,
-                          stage=f"TTS 等待重试 ({int(wait)}s)",
-                          error_type=kind, error_detail=str(exc),
-                          next_attempt_at=next_at)
+        # R13-P0-2：retry_wait 转换必须是条件推进——若同一时刻被取消，不覆盖
+        advanced = self.store.try_advance_status(
+            row.task_id, from_status=STATUS_TTS_RUNNING,
+            to_status=STATUS_RETRY_WAIT,
+            stage=f"TTS 等待重试 ({int(wait)}s)",
+            error_type=kind, error_detail=str(exc),
+            next_attempt_at=next_at,
+        )
+        if not advanced:
+            self._converge_cancelled_if_flagged(row)
+            return
         with self._metrics_lock:
             self.metrics.retry_count += 1
 
     def _handle_tts_generic_error(self, row: TaskRow, exc: Exception,
                                    attempt: int) -> None:
+        if self._converge_cancelled_if_flagged(row):
+            return
         self._breaker.record_failure()
         if attempt >= self.config.tts_max_retries:
             self._fail(row.task_id, "tts_error", str(exc)[:400])
             return
         wait = compute_backoff(attempt)
         next_at = time.time() + wait
-        self.store.update(row.task_id, status=STATUS_RETRY_WAIT,
-                          stage=f"TTS 等待重试 ({int(wait)}s)",
-                          error_type="tts_error", error_detail=str(exc)[:400],
-                          next_attempt_at=next_at)
+        advanced = self.store.try_advance_status(
+            row.task_id, from_status=STATUS_TTS_RUNNING,
+            to_status=STATUS_RETRY_WAIT,
+            stage=f"TTS 等待重试 ({int(wait)}s)",
+            error_type="tts_error", error_detail=str(exc)[:400],
+            next_attempt_at=next_at,
+        )
+        if not advanced:
+            self._converge_cancelled_if_flagged(row)
+            return
         with self._metrics_lock:
             self.metrics.retry_count += 1
 
@@ -685,6 +801,7 @@ class Scheduler:
                 allow_hw_fallback=True,
                 task_id=row.task_id,
                 fingerprint=row.fingerprint,
+                batch_id=row.batch_id,
             )
         except VideoCancelled:
             self.store.try_advance_status(
@@ -722,6 +839,7 @@ class Scheduler:
             # 状态不是 video_running（例如被取消）→ 不能写 completed；
             # 已落文件由恢复逻辑按 marker 认领或清理
             vp.cleanup_staging(staging)
+            self._converge_cancelled_if_flagged(row)
             self._cancel_flag_pop(row.task_id)
             return
 
@@ -729,7 +847,8 @@ class Scheduler:
         if result.hw_fallback_used:
             with self._metrics_lock:
                 self.metrics.hw_fallback_count += 1
-        ok = self.store.complete_task_transactional(
+        # R13-P0-1：leader 完成 + follower 广播走**同一** SQLite 事务
+        ok, follower_affected = self.store.finalize_leader_success(
             row.task_id,
             output_path=result.output_path,
             final_duration=result.final_duration,
@@ -744,19 +863,10 @@ class Scheduler:
         )
         vp.cleanup_staging(staging)
         self._cancel_flag_pop(row.task_id)
-        # R12-1：leader 完成 → 广播 follower
-        if ok:
-            leader_row = self.store.get(row.task_id)
-            if leader_row is not None:
-                affected = self.store.propagate_leader_result_atomic(
-                    row.task_id, to_status=STATUS_COMPLETED,
-                    copy_output=True, leader_row=leader_row,
-                )
-                if affected:
-                    with self._metrics_lock:
-                        # follower 也算完成计入速率（真实完成条数）
-                        for _ in range(affected):
-                            self.metrics.record_success(0, 0)
+        if ok and follower_affected:
+            with self._metrics_lock:
+                for _ in range(follower_affected):
+                    self.metrics.record_success(0, 0)
         with self._metrics_lock:
             # R12-11：**只**记录视频阶段耗时；TTS 耗时在 _process_tts 里记
             self.metrics.record_success(0, elapsed)
@@ -777,17 +887,20 @@ class Scheduler:
             self._cancel_flags.pop(task_id, None)
 
     def _fail(self, task_id: str, error_type: str, detail: str) -> None:
-        self.store.update(task_id, status=STATUS_FAILED,
-                          error_type=error_type, error_detail=detail,
-                          finished_at=time.time(), stage="失败")
-        # R12-1：leader 失败 → follower 也传播 failed
-        try:
-            self.store.propagate_leader_result_atomic(
-                task_id, to_status=STATUS_FAILED,
-                error_type=error_type, error_detail=detail,
-            )
-        except Exception:  # noqa: BLE001
-            pass
+        """R13-P0-2 条件失败 + follower 广播：绝不覆盖 cancelled/cancelling/
+        completed/output_committed。若 leader 因状态不符没写 failed，也不广播
+        follower——否则会让 cancelled 任务的 follower 被误标 failed。"""
+        ok, old = self.store.fail_task_cas(
+            task_id, error_type=error_type, error_detail=detail,
+        )
+        if ok:
+            try:
+                self.store.finalize_leader_fail(
+                    task_id, error_type=error_type, error_detail=detail,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        # 若 old ∈ (cancelling, cancelled) → 交给取消收敛路径处理
         self._cancel_flag_pop(task_id)
 
     def _active_incr(self, kind: str, delta: int) -> None:

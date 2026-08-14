@@ -112,11 +112,11 @@ def test_p0_1_two_batches_do_not_leak_params(tmp_path):
         r1 = svc.start_batch(source_bytes=xlsx1, label="B1",
                               output_dir=str(out1),
                               voice_id="zh-CN-XiaoshuangNeural", speed=1.25,
-                              check_exists=False, require_endpoint=False)
+                              check_exists=False)
         r2 = svc.start_batch(source_bytes=xlsx2, label="B2",
                               output_dir=str(out2),
                               voice_id="zh-CN-YunxiNeural", speed=0.8,
-                              check_exists=False, require_endpoint=False)
+                              check_exists=False)
         assert _wait_until(
             lambda: (svc.store.count_by_status(r1["batch_id"]).get(STATUS_COMPLETED, 0) == 5
                      and svc.store.count_by_status(r2["batch_id"]).get(STATUS_COMPLETED, 0) == 5),

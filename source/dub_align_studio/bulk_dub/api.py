@@ -180,12 +180,13 @@ def dispatch_post(path: str, query: dict[str, str], body: bytes,
             speed = float(query.get("speed") or DEFAULT_SPEED)
             pitch = int(query.get("pitch") or 0)
             zoom = int(query.get("zoom_percent") or 130)
-            tts_c = int(query.get("tts_concurrency") or 4)
-            video_c = int(query.get("video_concurrency") or 0)
+            # R13-P0-5：并发只有当客户端显式传入才应用；未传 → 沿用当前 scheduler 值
+            tts_c = int(query["tts_concurrency"]) if query.get("tts_concurrency") else None
+            video_c = int(query["video_concurrency"]) if query.get("video_concurrency") else None
         except ValueError as exc:
             return True, *_json_response({"error": f"参数不是数字：{exc}"}, 400)
-        # R12-12：HTTP 层**不接受** require_endpoint——生产始终要求 Endpoint。
-        # 测试通过 svc._skip_endpoint_check=True 或直接注入 Mock backend 跳过。
+        # R13-P1-7：HTTP + service 层都**不接受** require_endpoint / _skip_endpoint_check；
+        # 由 backend.requires_endpoint 决定
         try:
             result = svc.start_batch(
                 source_bytes=xlsx,

@@ -1336,6 +1336,351 @@ class TaskStore:
             )
             return int(cur.rowcount or 0)
 
+    # ================================================================
+    # R13 事务原子接口：leader 终态 + follower 传播 在同一 SQLite 事务内
+    # ================================================================
+
+    # 允许 _fail / finalize_fail 覆盖的来源状态白名单——绝不能覆盖
+    # cancelled / cancelling / completed / output_committed
+    _FAIL_FROM_STATUSES = (
+        STATUS_PENDING, STATUS_VALIDATING, STATUS_RETRY_WAIT,
+        STATUS_TTS_RUNNING, STATUS_TTS_DONE, STATUS_VIDEO_RUNNING,
+        STATUS_INTERRUPTED, STATUS_WAITING_DEPENDENCY,
+    )
+    # complete 允许的来源状态
+    _COMPLETE_FROM_STATUSES = (STATUS_VIDEO_RUNNING, STATUS_OUTPUT_COMMITTED)
+    # cancel 允许把 waiting 类直接转 cancelled；running 类转 cancelling
+    _CANCEL_WAITING_STATUSES = (
+        STATUS_PENDING, STATUS_RETRY_WAIT, STATUS_TTS_DONE,
+        STATUS_WAITING_DEPENDENCY,
+    )
+    _CANCEL_RUNNING_STATUSES = (STATUS_TTS_RUNNING, STATUS_VIDEO_RUNNING)
+    _TERMINAL_STATUSES = (
+        STATUS_COMPLETED, STATUS_FAILED, STATUS_CANCELLED, STATUS_OUTPUT_COMMITTED,
+    )
+
+    def finalize_leader_success(self, leader_task_id: str, *,
+                                  output_path: str,
+                                  final_duration: float,
+                                  tts_duration: float,
+                                  concat_duration: float,
+                                  video_duration: float,
+                                  encoder_used: str,
+                                  hw_fallback_used: bool,
+                                  warnings_to_add: list[str] | None = None,
+                                  expected_statuses: tuple[str, ...] = _COMPLETE_FROM_STATUSES,
+                                  expected_reserved_path: str = "") -> tuple[bool, int]:
+        """R13-P0-1 单事务完成 leader + 广播 follower 到 completed。
+
+        返回 (leader_completed, follower_count)。leader 因状态不符（如被取消）
+        不能完成时返回 (False, 0)。
+        """
+        warnings_to_add = warnings_to_add or []
+        now = time.time()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                cur_row = conn.execute(
+                    "SELECT warnings, reserved_output_path FROM tasks"
+                    " WHERE task_id=?", (leader_task_id,),
+                ).fetchone()
+                if cur_row is None:
+                    conn.execute("ROLLBACK")
+                    return False, 0
+                if expected_reserved_path and cur_row["reserved_output_path"] \
+                        and cur_row["reserved_output_path"] != expected_reserved_path:
+                    conn.execute("ROLLBACK")
+                    return False, 0
+                existing = json.loads((cur_row["warnings"] or "[]") or "[]")
+                if not isinstance(existing, list):
+                    existing = []
+                for w in warnings_to_add:
+                    if w and w not in existing:
+                        existing.append(w)
+                statuses = tuple(expected_statuses)
+                cur = conn.execute(
+                    "UPDATE tasks SET status=?, output_path=?, reserved_output_path='',"
+                    " final_duration=?, tts_duration=?, concat_duration=?,"
+                    " video_duration=?, encoder_used=?, hw_fallback_used=?,"
+                    " progress=100, stage='完成', error_type='', error_detail='',"
+                    " warnings=?, finished_at=?, updated_at=?"
+                    f" WHERE task_id=? AND status IN ({','.join('?' * len(statuses))})",
+                    (STATUS_COMPLETED, output_path,
+                     float(final_duration), float(tts_duration),
+                     float(concat_duration), float(video_duration),
+                     encoder_used, 1 if hw_fallback_used else 0,
+                     json.dumps(existing, ensure_ascii=False), now, now,
+                     leader_task_id, *statuses),
+                )
+                if cur.rowcount != 1:
+                    conn.execute("ROLLBACK")
+                    return False, 0
+                # 同事务把 waiting_dependency follower 也转 completed
+                fcur = conn.execute(
+                    "UPDATE tasks SET status=?, output_path=?,"
+                    " video_duration=?, tts_duration=?, concat_duration=?,"
+                    " final_duration=?, encoder_used=?, hw_fallback_used=?,"
+                    " progress=100, stage='完成（跟随 leader）',"
+                    " error_type='', error_detail='',"
+                    " finished_at=?, updated_at=?"
+                    " WHERE leader_task_id=? AND status=?",
+                    (STATUS_COMPLETED, output_path,
+                     float(video_duration), float(tts_duration),
+                     float(concat_duration), float(final_duration),
+                     encoder_used, 1 if hw_fallback_used else 0,
+                     now, now, leader_task_id, STATUS_WAITING_DEPENDENCY),
+                )
+                affected = int(fcur.rowcount or 0)
+                conn.execute("COMMIT")
+                return True, affected
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+
+    def finalize_leader_fail(self, leader_task_id: str, *,
+                              error_type: str, error_detail: str,
+                              from_statuses: tuple[str, ...] = _FAIL_FROM_STATUSES,
+                              ) -> tuple[bool, int]:
+        """R13-P0-1+R13-P0-2 单事务失败 leader + 广播 follower。
+
+        绝不覆盖 cancelled/cancelling/completed/output_committed 上的 leader。
+        返回 (leader_failed, follower_count)。leader 因状态不符不能失败时 (False, 0)。
+        """
+        now = time.time()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                statuses = tuple(from_statuses)
+                cur = conn.execute(
+                    "UPDATE tasks SET status=?, error_type=?, error_detail=?,"
+                    " stage='失败', finished_at=?, updated_at=?,"
+                    " reserved_output_path=''"
+                    f" WHERE task_id=? AND status IN ({','.join('?' * len(statuses))})",
+                    (STATUS_FAILED, error_type, error_detail, now, now,
+                     leader_task_id, *statuses),
+                )
+                if cur.rowcount != 1:
+                    conn.execute("ROLLBACK")
+                    return False, 0
+                # follower：只把 waiting_dependency 转 failed（不动 pending/终态）
+                fcur = conn.execute(
+                    "UPDATE tasks SET status=?, error_type=?, error_detail=?,"
+                    " stage='跟随 leader 失败', progress=0,"
+                    " finished_at=?, updated_at=?"
+                    " WHERE leader_task_id=? AND status=?",
+                    (STATUS_FAILED, error_type or "leader_terminated",
+                     error_detail or "leader 已失败",
+                     now, now, leader_task_id, STATUS_WAITING_DEPENDENCY),
+                )
+                affected = int(fcur.rowcount or 0)
+                conn.execute("COMMIT")
+                return True, affected
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+
+    def finalize_leader_cancel(self, leader_task_id: str, *,
+                                error_type: str = "cancelled",
+                                error_detail: str = "leader 被取消",
+                                ) -> tuple[bool, int]:
+        """R13-P0-2 单事务取消 leader + 广播 follower。leader 必须已在
+        cancelling 状态（由 cancel_atomic 转过来的）；worker 在稳定点调用本方法
+        真正收敛。"""
+        now = time.time()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                cur = conn.execute(
+                    "UPDATE tasks SET status=?, error_type=?, error_detail=?,"
+                    " stage='已取消', finished_at=?, updated_at=?,"
+                    " reserved_output_path=''"
+                    " WHERE task_id=? AND status IN (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (STATUS_CANCELLED, error_type, error_detail, now, now,
+                     leader_task_id,
+                     STATUS_CANCELLING, STATUS_PENDING, STATUS_RETRY_WAIT,
+                     STATUS_TTS_DONE, STATUS_WAITING_DEPENDENCY,
+                     STATUS_TTS_RUNNING, STATUS_VIDEO_RUNNING),
+                )
+                if cur.rowcount != 1:
+                    conn.execute("ROLLBACK")
+                    return False, 0
+                fcur = conn.execute(
+                    "UPDATE tasks SET status=?, error_type=?, error_detail=?,"
+                    " stage='跟随 leader 取消', progress=0,"
+                    " finished_at=?, updated_at=?"
+                    " WHERE leader_task_id=? AND status=?",
+                    (STATUS_CANCELLED, error_type or "cancelled",
+                     error_detail or "leader 已取消",
+                     now, now, leader_task_id, STATUS_WAITING_DEPENDENCY),
+                )
+                affected = int(fcur.rowcount or 0)
+                conn.execute("COMMIT")
+                return True, affected
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+
+    def reconcile_dependencies(self, batch_id: str | None = None) -> dict[str, int]:
+        """R13-P0-1 启动恢复的依赖对账：把 waiting_dependency follower 与 leader
+        终态对齐（幂等）。leader 不存在 / 跨批次引用 → follower 明确 failed，
+        避免永远等待。"""
+        stats = {
+            "follower_completed": 0,
+            "follower_failed": 0,
+            "follower_cancelled": 0,
+            "follower_orphan_failed": 0,
+        }
+        now = time.time()
+        with self._connect() as conn:
+            q = ("SELECT f.task_id, f.batch_id, f.leader_task_id,"
+                 "       l.status AS leader_status, l.batch_id AS leader_batch,"
+                 "       l.output_path AS leader_output,"
+                 "       l.final_duration AS leader_final,"
+                 "       l.tts_duration AS leader_tts,"
+                 "       l.concat_duration AS leader_concat,"
+                 "       l.video_duration AS leader_video,"
+                 "       l.encoder_used AS leader_enc,"
+                 "       l.hw_fallback_used AS leader_hw"
+                 " FROM tasks f LEFT JOIN tasks l"
+                 "   ON f.leader_task_id = l.task_id"
+                 " WHERE f.status=?")
+            args: list[Any] = [STATUS_WAITING_DEPENDENCY]
+            if batch_id:
+                q += " AND f.batch_id=?"; args.append(batch_id)
+            rows = conn.execute(q, args).fetchall()
+            for r in rows:
+                ftid = r["task_id"]
+                ldr_status = r["leader_status"]
+                # leader 不存在 / 跨批次 / 无 leader_task_id → 孤儿，明确失败
+                if not r["leader_task_id"] or ldr_status is None \
+                        or (r["leader_batch"] and r["leader_batch"] != r["batch_id"]):
+                    conn.execute(
+                        "UPDATE tasks SET status=?, error_type=?, error_detail=?,"
+                        " stage='孤儿 follower', finished_at=?, updated_at=?"
+                        " WHERE task_id=? AND status=?",
+                        (STATUS_FAILED, "orphan_dependency",
+                         "leader 不存在或跨批次引用", now, now,
+                         ftid, STATUS_WAITING_DEPENDENCY),
+                    )
+                    stats["follower_orphan_failed"] += 1
+                    continue
+                if ldr_status == STATUS_COMPLETED:
+                    conn.execute(
+                        "UPDATE tasks SET status=?, output_path=?,"
+                        " video_duration=?, tts_duration=?, concat_duration=?,"
+                        " final_duration=?, encoder_used=?, hw_fallback_used=?,"
+                        " progress=100, stage='完成（对账追加）',"
+                        " error_type='', error_detail='',"
+                        " finished_at=?, updated_at=?"
+                        " WHERE task_id=? AND status=?",
+                        (STATUS_COMPLETED, r["leader_output"] or "",
+                         float(r["leader_video"] or 0),
+                         float(r["leader_tts"] or 0),
+                         float(r["leader_concat"] or 0),
+                         float(r["leader_final"] or 0),
+                         r["leader_enc"] or "",
+                         int(r["leader_hw"] or 0),
+                         now, now, ftid, STATUS_WAITING_DEPENDENCY),
+                    )
+                    stats["follower_completed"] += 1
+                elif ldr_status == STATUS_FAILED:
+                    conn.execute(
+                        "UPDATE tasks SET status=?, error_type=?, error_detail=?,"
+                        " stage='跟随 leader 失败（对账）', progress=0,"
+                        " finished_at=?, updated_at=?"
+                        " WHERE task_id=? AND status=?",
+                        (STATUS_FAILED, "leader_terminated",
+                         "leader 已失败（重启对账追加）",
+                         now, now, ftid, STATUS_WAITING_DEPENDENCY),
+                    )
+                    stats["follower_failed"] += 1
+                elif ldr_status == STATUS_CANCELLED:
+                    conn.execute(
+                        "UPDATE tasks SET status=?, error_type=?, error_detail=?,"
+                        " stage='跟随 leader 取消（对账）', progress=0,"
+                        " finished_at=?, updated_at=?"
+                        " WHERE task_id=? AND status=?",
+                        (STATUS_CANCELLED, "cancelled",
+                         "leader 已取消（重启对账追加）",
+                         now, now, ftid, STATUS_WAITING_DEPENDENCY),
+                    )
+                    stats["follower_cancelled"] += 1
+                # 其它状态（pending/running）→ 保持 waiting_dependency 等待
+        return stats
+
+    def fail_task_cas(self, task_id: str, *, error_type: str, error_detail: str,
+                        from_statuses: tuple[str, ...] = _FAIL_FROM_STATUSES,
+                        ) -> tuple[bool, str]:
+        """R13-P0-2 条件失败：只有当当前状态 ∈ from_statuses 才转 failed。
+        绝不覆盖 cancelled/cancelling/completed/output_committed。
+        返回 (是否命中, 旧状态)。"""
+        now = time.time()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT status FROM tasks WHERE task_id=?", (task_id,)
+            ).fetchone()
+            if row is None:
+                return False, ""
+            old = row["status"]
+            statuses = tuple(from_statuses)
+            cur = conn.execute(
+                "UPDATE tasks SET status=?, error_type=?, error_detail=?,"
+                " stage='失败', finished_at=?, updated_at=?,"
+                " reserved_output_path=''"
+                f" WHERE task_id=? AND status IN ({','.join('?' * len(statuses))})",
+                (STATUS_FAILED, error_type, error_detail, now, now,
+                 task_id, *statuses),
+            )
+            return cur.rowcount == 1, old
+
+    def cancel_atomic_detailed(self, task_ids: list[str]) -> list[tuple[str, str, str]]:
+        """R13-P0-2 结构化取消：返回 [(task_id, old_status, new_status)] 三元组。
+        - waiting 类 → cancelled
+        - running 类 → cancelling（worker 稳定点收敛）
+        - terminal（completed/output_committed/failed/cancelled/cancelling）→ 不动，
+          调用方据此决定 API 返回值
+        """
+        if not task_ids:
+            return []
+        waiting = self._CANCEL_WAITING_STATUSES
+        running = self._CANCEL_RUNNING_STATUSES
+        now = time.time()
+        results: list[tuple[str, str, str]] = []
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                for tid in task_ids:
+                    r = conn.execute(
+                        "SELECT status FROM tasks WHERE task_id=?", (tid,)
+                    ).fetchone()
+                    if r is None:
+                        continue
+                    old = r["status"]
+                    if old in waiting:
+                        conn.execute(
+                            f"UPDATE tasks SET status=?, error_type='cancelled',"
+                            f" error_detail='用户取消', finished_at=?, updated_at=?,"
+                            f" reserved_output_path=''"
+                            f" WHERE task_id=? AND status=?",
+                            (STATUS_CANCELLED, now, now, tid, old),
+                        )
+                        results.append((tid, old, STATUS_CANCELLED))
+                    elif old in running:
+                        conn.execute(
+                            f"UPDATE tasks SET status=?, error_type='cancelled',"
+                            f" error_detail='取消中', stage='取消中', updated_at=?"
+                            f" WHERE task_id=? AND status=?",
+                            (STATUS_CANCELLING, now, tid, old),
+                        )
+                        results.append((tid, old, STATUS_CANCELLING))
+                    # else: terminal（completed/output_committed/failed/cancelled/cancelling）
+                    # 明确不动；调用方看 old 为终态即返回 False
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        return results
+
 
 def _row_to_task(row: sqlite3.Row) -> TaskRow:
     def _optional(name: str, default):

@@ -156,7 +156,7 @@ def test_35_reuse_completed_by_fingerprint(tmp_path):
     r = svc.start_batch(source_bytes=xlsx, label="dedupe",
                           output_dir=str(tmp_path / "out"),
                           voice_id="zh-CN-XiaoshuangNeural", speed=1.25,
-                          check_exists=True, require_endpoint=False)
+                          check_exists=True)
     assert r["reused"] == 1
     assert r["added"] == 0
     svc.stop()

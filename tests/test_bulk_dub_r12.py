@@ -93,7 +93,7 @@ def test_r12_1_100_identical_only_one_leader(tmp_path):
     svc = _mk_service(tmp_path)
     r = svc.start_batch(source_bytes=xlsx, label="dedup100",
                           output_dir=str(tmp_path / "out"),
-                          check_exists=False, _skip_endpoint_check=True)
+                          check_exists=False)
     assert r["added"] == 1
     assert r["followers"] == 99
     assert r["reused"] == 0
@@ -113,7 +113,7 @@ def test_r12_1_leader_success_propagates_to_followers(tmp_path):
     svc = _mk_service(tmp_path)
     r = svc.start_batch(source_bytes=xlsx, label="lead-ok",
                           output_dir=str(tmp_path / "out"),
-                          check_exists=False, _skip_endpoint_check=True)
+                          check_exists=False)
     tasks = svc.store.list_tasks(batch_id=r["batch_id"], limit=10)
     leader = next(t for t in tasks if t.status == STATUS_PENDING)
     followers = [t for t in tasks if t.status == STATUS_WAITING_DEPENDENCY]
@@ -148,7 +148,7 @@ def test_r12_1_leader_failure_propagates_to_followers(tmp_path):
     svc = _mk_service(tmp_path)
     r = svc.start_batch(source_bytes=xlsx, label="lead-fail",
                           output_dir=str(tmp_path / "out"),
-                          check_exists=False, _skip_endpoint_check=True)
+                          check_exists=False)
     tasks = svc.store.list_tasks(batch_id=r["batch_id"], limit=10)
     leader = next(t for t in tasks if t.status == STATUS_PENDING)
     n = svc.store.propagate_leader_result_atomic(
@@ -203,14 +203,14 @@ def test_r12_3_read_marker_recognizes_ours_vs_external(tmp_path):
     # 未写 marker → 视为"外部合法文件"，不认领
     assert vp.read_marker(marker) is None
     # 用官方接口写 marker
-    vp._write_marker(marker, task_id="T1", fingerprint="fp",
+    vp._write_marker(marker, task_id="T1", batch_id="B1", fingerprint="fp",
                      target_final_seconds=1.0, file_size=1,
                      output_name=target.name, encoder_used="libx264",
                      hw_fallback_used=False)
     meta = vp.read_marker(marker)
     assert meta is not None
     assert meta["task_id"] == "T1" and meta["fingerprint"] == "fp"
-    assert meta["schema"] == "bulk_dub_marker@v1"
+    assert meta["schema"] in ("bulk_dub_marker@v1", vp.MARKER_SCHEMA_V2)
 
 
 def test_r12_3_commit_never_overwrites_existing_target(tmp_path):

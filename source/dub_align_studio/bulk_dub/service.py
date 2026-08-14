@@ -146,13 +146,12 @@ class BulkDubService:
         return p
 
     def _require_endpoint_configured(self) -> None:
-        """R11-6：未配置 Endpoint 时**拒绝启动**——不建大量必失败任务。
-
-        R12-12：MockTtsBackend 天然不需要 Endpoint（内部生成静音 WAV），此时跳过
-        校验，让内部 service 单测可以直接跑；生产用 EdgeTtsBackend 时强制校验。
+        """R13-P1-7：从 backend capability `requires_endpoint` 读取——生产 backend
+        (`EdgeTtsBackend.requires_endpoint=True`) 必须配置 Worker；mock backend
+        (`MockTtsBackend.requires_endpoint=False`) 天然跳过。**生产参数不再暴露
+        `_skip_endpoint_check` / `require_endpoint=False` 的绕过入口。**
         """
-        from .edge_backend import MockTtsBackend
-        if isinstance(self.tts_backend, MockTtsBackend):
+        if not getattr(self.tts_backend, "requires_endpoint", True):
             return
         if not (edge_tts_endpoint() or "").strip():
             raise ValidationError(
@@ -173,11 +172,8 @@ class BulkDubService:
                     zoom_percent: int = 130,
                     encoder_preference: str = "auto",
                     check_exists: bool = True,
-                    _skip_endpoint_check: bool = False,
-                    # 兼容旧位置参数（不影响生产 API；service 层内部使用）
-                    tts_concurrency: int = DEFAULT_TTS_CONCURRENCY,
-                    video_concurrency: int = 0,
-                    require_endpoint: bool | None = None) -> dict:
+                    tts_concurrency: int | None = None,
+                    video_concurrency: int | None = None) -> dict:
         """R12-2 批次创建走**单事务**：batches + invalid + leader + follower + reuse。
 
         R12-1 leader/follower：Excel 每条行都插一条 task 记录（保留 100% 可追溯）；
@@ -188,18 +184,18 @@ class BulkDubService:
         R12-12：`require_endpoint` 仅在 service 内部（例如测试注入 mock backend）
         跳过。默认必查 Endpoint；API 层不再接受该参数。
         """
-        # 兼容旧签名：若显式传 require_endpoint=False，视同 _skip_endpoint_check
-        if require_endpoint is False:
-            _skip_endpoint_check = True
+        # R13-P0-5：显式传入并发数才应用；未传则保持 scheduler 现值不动
+        eff_tts = DEFAULT_TTS_CONCURRENCY if tts_concurrency is None else int(tts_concurrency)
+        eff_video = 0 if video_concurrency is None else int(video_concurrency)
         self.validate_params(
             voice_id=voice_id, speed=speed, pitch=pitch, style=style,
             zoom_percent=zoom_percent,
-            tts_concurrency=tts_concurrency,
-            video_concurrency=video_concurrency,
+            tts_concurrency=eff_tts,
+            video_concurrency=eff_video,
             encoder_preference=encoder_preference,
         )
-        if not _skip_endpoint_check:
-            self._require_endpoint_configured()
+        # R13-P1-7：从 backend capability 判断，生产无绕过入口
+        self._require_endpoint_configured()
         out_path = self._validate_output_dir(output_dir)
         preview = excel_reader.parse_excel(source_bytes, check_exists=check_exists)
         if preview.total > excel_reader.MAX_TASKS_PER_BATCH:
@@ -245,6 +241,8 @@ class BulkDubService:
         follower_n = 0
         # 同批内相同 fp → 记录 leader index（在 all_tasks 列表中的下标）
         leader_index_by_fp: dict[str, int] = {}
+        # R13-P1-6：本次 start_batch 内已复用/落地到本目录的 fp → dest_path
+        _reused_fp_dest: dict[str, str] = {}
         preview_index_by_row = {r.row_number: r for r in preview.rows}
 
         for r in preview.rows:
@@ -279,11 +277,43 @@ class BulkDubService:
                 keep_original_audio=bool(keep_original_audio),
                 params_snapshot=params_snapshot,
             )
-            # R12-1：外部指纹已完成 → 每条 Excel 行都写一条 completed 记录
+            # R13-P1-6：跨批次 fingerprint 命中——旧成片必须在**本批次 output_dir**
+            # 才算复用。若在别的目录：安全地把旧成片链/复制进本批次目录（marker 一并
+            # 落本批次任务归属），永不覆盖。同 fp 在本次 start_batch 内已经落地过 →
+            # 直接沿用（第二次不需要再 link）。
+            reused_ok = False
             if existing and existing.output_path and Path(existing.output_path).is_file():
+                src = Path(existing.output_path)
+                # 本次 start_batch 内已经复用过同 fp？直接沿用其 dest_path
+                already = _reused_fp_dest.get(fp)
+                if already and Path(already).is_file():
+                    dest_path = Path(already)
+                    reused_ok = True
+                else:
+                    try:
+                        src.resolve().relative_to(out_path.resolve())
+                        reused_ok = True
+                        dest_path = src
+                    except ValueError:
+                        # 旧成片不在本批 output_dir 下 → 尝试落地到本目录
+                        dest_path = out_path / src.name
+                        if not dest_path.exists():
+                            import os as _os
+                            try:
+                                _os.link(src, dest_path)
+                                reused_ok = True
+                            except (OSError, NotImplementedError):
+                                # 无 hardlink → 复用不成立，正常走 leader/follower
+                                reused_ok = False
+                        else:
+                            # 同名文件已存在 → 不覆盖，视作复用不成立
+                            reused_ok = False
+                    if reused_ok:
+                        _reused_fp_dest[fp] = str(dest_path)
+            if reused_ok:
                 task = dict(common,
                              status=STATUS_COMPLETED,
-                             output_path=existing.output_path,
+                             output_path=str(dest_path),
                              video_duration=existing.video_duration,
                              tts_duration=existing.tts_duration,
                              concat_duration=existing.concat_duration,
@@ -314,6 +344,15 @@ class BulkDubService:
         self._current_frozen_params = copy.deepcopy(params_snapshot)
 
         sched = self._ensure_scheduler()
+        # R13-P0-5：显式传入并发数 → 真实应用到 scheduler 池（方案 A）
+        effective_pools = None
+        if tts_concurrency is not None or video_concurrency is not None:
+            try:
+                effective_pools = sched.resize_pools(
+                    tts=tts_concurrency, video=video_concurrency,
+                )
+            except Exception as exc:  # noqa: BLE001
+                effective_pools = {"error": str(exc)}
         sched.notify()
 
         return {
@@ -323,6 +362,7 @@ class BulkDubService:
             "followers": follower_n,
             "invalid": invalid_n,
             "total_rows": preview.total,
+            "effective_pools": effective_pools,
         }
 
     # -------------------- 控制 --------------------

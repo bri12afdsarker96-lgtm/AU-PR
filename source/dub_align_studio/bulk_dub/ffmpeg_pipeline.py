@@ -274,7 +274,8 @@ def render_single(*, input_video: str | Path, tts_audio: str | Path,
                    cancel_flag=None, timeout: float = 1800.0,
                    allow_hw_fallback: bool = True,
                    task_id: str = "",
-                   fingerprint: str = "") -> RenderResult:
+                   fingerprint: str = "",
+                   batch_id: str = "") -> RenderResult:
     """一次 ffmpeg 完成整个滤镜链，写到 staging，再原子搬到 reserved_output。
 
     - reserved_output：调用方通过 TaskStore.reserve_output_path() 预留的最终路径。
@@ -406,6 +407,7 @@ def render_single(*, input_video: str | Path, tts_audio: str | Path,
         tmp_out, reserved_output,
         task_id=task_id or "no-task",
         fingerprint=fingerprint,
+        batch_id=batch_id,
         target_final_seconds=actual_seconds,
         encoder_used=used_encoder.encoder,
         hw_fallback_used=hw_fallback,
@@ -429,9 +431,18 @@ def _safe_unlink(path: Path) -> None:
         pass
 
 
+MARKER_SCHEMA_V2 = "bulk_dub_marker@v2"
+_MARKER_HASH_ALGO = "blake2b"
+
+
 def marker_path_for(target: Path) -> Path:
     """R12-3 sidecar marker 位于同目录 `.<name>.bulk_dub.marker.json`。"""
     return target.parent / f".{target.name}.bulk_dub.marker.json"
+
+
+def _marker_tmp_path(target: Path, task_id: str) -> Path:
+    """R13-P0-3：marker 临时文件——原子提升成 marker_path_for(target) 前的中间态。"""
+    return target.parent / f".{target.name}.bulk_dub.marker.{task_id}.tmp"
 
 
 def _hidden_part_path(target: Path, task_id: str) -> Path:
@@ -439,23 +450,69 @@ def _hidden_part_path(target: Path, task_id: str) -> Path:
     return target.parent / f".{target.name}.{task_id}.part"
 
 
-def _write_marker(marker: Path, *, task_id: str, fingerprint: str,
+def _blake2b_of_file(path: Path, chunk: int = 1024 * 1024) -> str:
+    """R13-P0-3：文件内容哈希——marker 用来在恢复时严格验证内容一致。"""
+    import hashlib
+    h = hashlib.blake2b(digest_size=32)
+    with open(path, "rb") as f:
+        while True:
+            b = f.read(chunk)
+            if not b:
+                break
+            h.update(b)
+    return h.hexdigest()
+
+
+def _write_marker(marker: Path, *, task_id: str, batch_id: str, fingerprint: str,
                     target_final_seconds: float, file_size: int,
                     output_name: str, encoder_used: str,
-                    hw_fallback_used: bool) -> None:
+                    hw_fallback_used: bool,
+                    content_hash: str = "",
+                    hash_algo: str = _MARKER_HASH_ALGO,
+                    commit_stage: str = "target_ready",
+                    _atomic: bool = True) -> None:
+    """R13-P0-3：marker 通过 `<name>.tmp` + fsync + atomic rename 落盘；
+    崩溃不留截断 JSON。字段：schema, task_id, batch_id, fingerprint, name,
+    size, duration, hash/algo, encoder, hw_fallback, commit_stage, written_at。
+    """
     import json as _json
     data = {
+        "schema": MARKER_SCHEMA_V2,
         "task_id": task_id,
+        "batch_id": batch_id,
         "fingerprint": fingerprint,
         "final_seconds": round(float(target_final_seconds), 3),
         "size": int(file_size),
         "output_name": output_name,
         "encoder_used": encoder_used,
         "hw_fallback_used": bool(hw_fallback_used),
-        "schema": "bulk_dub_marker@v1",
+        "content_hash": content_hash,
+        "hash_algo": hash_algo,
+        "commit_stage": commit_stage,
         "written_at": time.time(),
     }
-    marker.write_text(_json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    if not _atomic:
+        marker.write_text(_json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        _fsync_file(marker)
+        return
+    tmp = _marker_tmp_path(marker.parent / marker.name.rsplit(".bulk_dub.marker.json", 1)[0].lstrip("."),
+                            task_id) if marker.name.startswith(".") else marker.with_suffix(marker.suffix + ".tmp")
+    # 用固定 tmp 命名规则（避免上面复杂反推）
+    tmp = marker.parent / (marker.name + f".tmp.{task_id}")
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as w:
+            w.write(_json.dumps(data, ensure_ascii=False))
+            w.flush()
+            try:
+                os.fsync(w.fileno())
+            except OSError:
+                pass
+    finally:
+        # fdopen 已管 close；防御一次
+        try: os.close(fd)
+        except OSError: pass
+    os.replace(str(tmp), str(marker))  # POSIX atomic
     _fsync_file(marker)
 
 
@@ -464,11 +521,52 @@ def read_marker(marker: Path) -> dict | None:
     try:
         text = marker.read_text(encoding="utf-8")
         v = _json.loads(text)
-        if isinstance(v, dict) and v.get("schema") == "bulk_dub_marker@v1":
+        if isinstance(v, dict) and v.get("schema") in (MARKER_SCHEMA_V2, "bulk_dub_marker@v1"):
             return v
     except Exception:  # noqa: BLE001
         return None
     return None
+
+
+def verify_marker_matches_target(marker: dict, target: Path,
+                                    *, expected_task_id: str | None = None,
+                                    expected_batch_id: str | None = None,
+                                    expected_fingerprint: str | None = None,
+                                    duration_tolerance: float = DURATION_TOLERANCE_SECONDS,
+                                    ) -> tuple[bool, str]:
+    """R13-P0-3：marker + target 内容严格闭环校验。任一失败 → (False, 原因)。"""
+    if not target.is_file():
+        return False, "target 缺失"
+    if marker.get("output_name") and marker["output_name"] != target.name:
+        return False, "output_name 与 target 名字不一致"
+    if expected_task_id and marker.get("task_id") != expected_task_id:
+        return False, "task_id 不匹配"
+    if expected_batch_id and marker.get("batch_id") \
+            and marker["batch_id"] != expected_batch_id:
+        return False, "batch_id 不匹配"
+    if expected_fingerprint and marker.get("fingerprint") != expected_fingerprint:
+        return False, "fingerprint 不匹配"
+    try:
+        real_size = target.stat().st_size
+    except OSError as exc:
+        return False, f"target stat 失败：{exc}"
+    if marker.get("size") and int(marker["size"]) != real_size:
+        return False, "size 不匹配"
+    algo = marker.get("hash_algo") or ""
+    h_expected = marker.get("content_hash") or ""
+    if algo == _MARKER_HASH_ALGO and h_expected:
+        h_actual = _blake2b_of_file(target)
+        if h_actual != h_expected:
+            return False, "hash 不匹配"
+    # 时长（可选，若有 marker.final_seconds 且能 ffprobe）
+    if marker.get("final_seconds"):
+        try:
+            actual_dur = ffprobe_seconds(target)
+        except Exception:  # noqa: BLE001
+            actual_dur = 0
+        if actual_dur > 0 and abs(actual_dur - float(marker["final_seconds"])) > duration_tolerance:
+            return False, f"时长偏差 {abs(actual_dur - marker['final_seconds']):.3f}s > {duration_tolerance}s"
+    return True, "ok"
 
 
 def _fsync_file(path: Path) -> None:
@@ -486,7 +584,8 @@ def _commit_with_marker(source: Path, target: Path, *,
                          task_id: str, fingerprint: str,
                          target_final_seconds: float,
                          encoder_used: str,
-                         hw_fallback_used: bool) -> Path:
+                         hw_fallback_used: bool,
+                         batch_id: str = "") -> Path:
     """R12-3 完整提交协议：
 
     1. 在目标目录建立隐藏 `.name.<task_id>.part`；
@@ -500,9 +599,26 @@ def _commit_with_marker(source: Path, target: Path, *,
 
     任一步失败：清理 .part 和 marker，target 已有字节永不动。
     """
+    """R13-P0-3：重新排序的提交协议——**marker 先于 target 存在**。
+
+    1. 把 source 完整复制/链接进目录内隐藏 `.part`；flush + fsync；
+    2. ffprobe 校验时长 + 计算内容 hash（blake2b）；
+    3. **先写 marker**（`.tmp` + fsync + `os.replace` 原子提升）——此时 marker
+       已可作为"本批任务产物"的唯一凭证，即使随后崩溃，恢复能凭 marker 认领
+       或清理，绝不误吞外部 mp4；
+    4. 用 `os.link(part → target)` 原子且不覆盖；不支持时 fallback 到 `os.link`
+       方向 tmp 名再 os.link 到 target；仍不支持 → **明确失败**并保留 .part 与
+       marker（不允许退化成直接向 target 流式写，避免半文件暴露）；
+    5. 提交后再次 `os.replace` marker 更新 `commit_stage=complete`（同一路径，
+       内容变化）；
+    6. 清理 source staging。
+
+    任一步失败：清理 .part，marker 保留供恢复对账，target 已有字节永不动。
+    """
     part = _hidden_part_path(target, task_id)
+    marker = marker_path_for(target)
     _safe_unlink(part)
-    # 第 1-2 步：把 source 拷/链到 part
+    # 第 1 步：拷/链 source → part（目标目录内）
     try:
         try:
             os.link(source, part)
@@ -521,47 +637,50 @@ def _commit_with_marker(source: Path, target: Path, *,
                 if fd is not None:
                     try: os.close(fd)
                     except OSError: pass
-        # 第 3 步：校验 part
+        _fsync_file(part)
+        # 第 2 步：校验 part（ffprobe + hash）
         actual = ffprobe_seconds(part)
         if actual <= 0:
             raise VideoError("part 文件 ffprobe 无有效时长")
-        # 第 4 步：不覆盖提交（part → target）
+        part_size = part.stat().st_size
+        content_hash = _blake2b_of_file(part)
+        # 第 3 步：**marker 先落**（atomic replace；此时 target 尚不存在）
         if target.exists():
             raise VideoError(f"提交前发现 target 已存在：{target}")
+        _write_marker(marker, task_id=task_id, batch_id=batch_id,
+                       fingerprint=fingerprint,
+                       target_final_seconds=target_final_seconds,
+                       file_size=part_size, output_name=target.name,
+                       encoder_used=encoder_used,
+                       hw_fallback_used=hw_fallback_used,
+                       content_hash=content_hash,
+                       commit_stage="part_ready")
+        # 第 4 步：不覆盖提交 part → target（严格 no-replace）
         try:
             os.link(part, target)
             part.unlink()
         except (OSError, NotImplementedError):
-            # 无 hardlink → 手动 O_EXCL 创建 target 并流式复制
-            fd = os.open(str(target), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-            try:
-                with os.fdopen(fd, "wb") as w, open(part, "rb") as r:
-                    fd = None
-                    shutil.copyfileobj(r, w, length=1024 * 1024)
-                    w.flush()
-                    try:
-                        os.fsync(w.fileno())
-                    except OSError:
-                        pass
-            except FileExistsError:
-                raise VideoError(f"提交时发现 target 已被抢占：{target}")
-            finally:
-                if fd is not None:
-                    try: os.close(fd)
-                    except OSError: pass
-            _safe_unlink(part)
-        # 第 5 步：写 marker
-        size = target.stat().st_size
-        marker = marker_path_for(target)
-        _write_marker(marker, task_id=task_id, fingerprint=fingerprint,
+            # 无 hardlink 支持 → 明确失败，保留 .part 与 marker 让恢复接管；
+            # 绝不退化成直接向 target 流式复制（会有半文件可见窗口）。
+            raise VideoError(
+                f"当前文件系统不支持安全无覆盖链接（os.link 不可用）；"
+                f".part 与 marker 已保留在目标目录，需人工确认或换用支持 link 的卷。"
+            )
+        # 第 5 步：marker 更新为 target_ready（原子）
+        _write_marker(marker, task_id=task_id, batch_id=batch_id,
+                       fingerprint=fingerprint,
                        target_final_seconds=target_final_seconds,
-                       file_size=size, output_name=target.name,
+                       file_size=target.stat().st_size,
+                       output_name=target.name,
                        encoder_used=encoder_used,
-                       hw_fallback_used=hw_fallback_used)
-        # 第 6 步：清 source（.mp4 in staging）
+                       hw_fallback_used=hw_fallback_used,
+                       content_hash=content_hash,
+                       commit_stage="target_ready")
+        # 第 6 步：清 source staging
         _safe_unlink(source)
         return target
     except Exception:
+        # 只清 .part；marker 保留供 recovery 对账
         _safe_unlink(part)
         raise
 
