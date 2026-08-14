@@ -64,10 +64,26 @@ def main() -> int:
             pass
         print("启动失败，错误详情已写入：", log_path)
         print(detail)
+        # 窗口化 exe（console=False）里 input() 立刻 EOFError → 一闪而过；
+        # 用 Windows 原生消息框弹一下，用户至少看到错误后再退出。
         try:
-            input("按回车键退出…")
-        except EOFError:
-            pass
+            import ctypes
+            head = "水星配音对齐工作室 · 启动失败"
+            body = (
+                f"启动失败。详情已写入：\n{log_path}\n\n"
+                f"最后 500 字：\n{detail[-500:] if detail else '（无）'}\n\n"
+                "常见原因：\n"
+                "  • 端口 8760~8779 全被占用（换个端口或关掉占用进程）\n"
+                "  • WebView2 运行时缺失（下 Edge WebView2 Runtime 装上）\n"
+                "  • 依赖缺失（重装或对照 启动错误.log 补包）\n"
+            )
+            # MB_OK=0 | MB_ICONERROR=0x10 | MB_TOPMOST=0x40000
+            ctypes.windll.user32.MessageBoxW(0, body, head, 0x00040010)
+        except Exception:  # noqa: BLE001
+            try:
+                input("按回车键退出…")
+            except EOFError:
+                pass
         return 1
 
 

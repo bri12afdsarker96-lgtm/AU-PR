@@ -279,9 +279,14 @@ footer b{color:var(--muted);font-weight:600}
     </div>
     <div class="lic-msg" id="license-msg"></div>
     <div class="lic-info">
-      <div>设备指纹（HWID）：<code id="license-hwid">—</code></div>
-      <div>软件 ID：<code id="license-app-id">—</code> · 版本：<code id="license-app-ver">—</code></div>
-      <div>授权服务器：<code id="license-server">—</code></div>
+      <!-- 只在展开时才显示设备/服务端信息，未激活状态默认不暴露 HWID / 服务器 URL -->
+      <details id="license-diag">
+        <summary style="cursor:pointer;font-size:12px;color:#888">高级信息（排障时展开）</summary>
+        <div style="margin-top:6px">
+          <div>设备指纹（HWID）：<code id="license-hwid">—</code></div>
+          <div>软件版本：<code id="license-app-ver">—</code></div>
+        </div>
+      </details>
       <div id="license-expire-line" style="display:none">当前授权到期：<code id="license-expire">—</code></div>
     </div>
   </div>
@@ -976,25 +981,23 @@ footer b{color:var(--muted);font-weight:600}
         </div>
         <p class="hint" id="remoteHint" style="line-height:1.8;margin-top:2px">填好后到「配音引擎」下拉里选 <b style="color:var(--gold)">dots.tts（云 GPU · 远程）</b> 即可用云显卡克隆。部署见 <code>server/</code> 目录的部署文档。</p></div>
 
-      <!-- ═══ 免费 Edge TTS（Cloudflare Worker · OpenAI 兼容接口 · 预设合成音色 · 非克隆） ═══ -->
-      <div class="sp" id="edgeTtsAnchor"><span class="f">🌐 免费 Edge TTS（Cloudflare Worker · 预设合成音色，不是克隆）</span>
-        <p class="hint" style="margin:2px 0 10px;line-height:1.8">
-          调用 <a href="https://github.com/wangwangit/tts" target="_blank" style="color:var(--gold)">wangwangit/tts（MIT）</a> 部署到 Cloudflare 的 Worker，背后是 <b>Microsoft Edge Read Aloud</b>。
-          <b style="color:#e08c58">建议部署到你自己的 Cloudflare 免费账户</b>；作者公共地址仅适合临时试用，
-          不保证稳定；免费额度归属你的账户。稳定性及生成内容授权不由本软件承诺。
-        </p>
+      <!-- ═══ 免费 Edge TTS（Cloudflare Worker） ═══ -->
+      <div class="sp" id="edgeTtsAnchor"><span class="f">🌐 Edge TTS 服务端</span>
         <div class="row" style="gap:6px">
-          <input type="text" id="edgeEp" placeholder="Worker 服务根地址，如 https://xxx.workers.dev（软件自动拼 /v1/audio/speech）" style="flex:1">
-          <button class="btn line" style="flex:none" onclick="saveEdgeEndpoint()">💾 保存</button>
-          <button class="btn" style="flex:none" onclick="testEdgeEndpoint()">🔌 测试连接</button>
+          <input type="text" id="edgeEp" placeholder="https://xxx.workers.dev" style="flex:1">
+          <button class="btn line" style="flex:none" onclick="saveEdgeEndpoint()">保存</button>
+          <button class="btn" style="flex:none" onclick="testEdgeEndpoint()">测试</button>
+          <button class="btn line" style="flex:none" onclick="document.getElementById('edgeTtsHelp').open=!document.getElementById('edgeTtsHelp').open">?</button>
         </div>
-        <p class="hint" style="margin-top:8px;line-height:1.8">
-          自建步骤（5 分钟）：
-          <a href="https://github.com/wangwangit/tts" target="_blank" style="color:var(--gold);text-decoration:underline">📖 wangwangit/tts（MIT）</a> ·
-          <a href="https://deploy.workers.cloudflare.com/?url=https://github.com/wangwangit/tts" target="_blank" style="color:var(--gold);text-decoration:underline">🚀 Deploy to Cloudflare Workers</a> ·
-          注册 <a href="https://dash.cloudflare.com/sign-up" target="_blank" style="color:var(--gold);text-decoration:underline">Cloudflare 免费账户</a> → 点 Deploy → 拿到 xxx.workers.dev 填入上方 → 引擎选 <b style="color:var(--gold)">Edge TTS（免费云端 · 预设音色 · 不支持克隆）</b>。
-        </p>
-        <p class="hint" id="edgeHint" style="line-height:1.8;margin-top:2px;color:var(--faint)">—— 未加载 ——</p>
+        <details id="edgeTtsHelp" style="margin-top:6px">
+          <summary style="cursor:pointer;color:var(--faint);font-size:12px">怎么获取地址</summary>
+          <p class="hint" style="margin-top:6px;line-height:1.6;font-size:12px">
+            部署 <a href="https://github.com/wangwangit/tts" target="_blank" style="color:var(--gold)">wangwangit/tts</a>
+            到自己的 <a href="https://dash.cloudflare.com/sign-up" target="_blank" style="color:var(--gold)">Cloudflare 免费账户</a>，
+            拿到 <code>xxx.workers.dev</code> 填入上方即可。
+          </p>
+        </details>
+        <p class="hint" id="edgeHint" style="line-height:1.6;margin-top:4px;color:var(--faint);font-size:12px">—— 未加载 ——</p>
       </div>
 
       <!-- ═══ 云 GPU 会话（优云智算 / 通用 SSH）：一键唤醒 · 一键关机 · 空闲自动关（DPAPI 本机加密） ═══ -->
@@ -3174,9 +3177,7 @@ renderMyColors();loadTpls();renderOverlays();loadState();loadComponents();loadSe
   const btnAct = document.getElementById('license-btn-activate');
   const btnRef = document.getElementById('license-btn-refresh');
   const hwid   = document.getElementById('license-hwid');
-  const appId  = document.getElementById('license-app-id');
   const appVer = document.getElementById('license-app-ver');
-  const server = document.getElementById('license-server');
   const expLine= document.getElementById('license-expire-line');
   const expEl  = document.getElementById('license-expire');
 
@@ -3185,10 +3186,11 @@ renderMyColors();loadTpls();renderOverlays();loadState();loadComponents();loadSe
     msg.className = 'lic-msg' + (kind ? (' ' + kind) : '');
   }
   function fillInfo(st){
-    hwid.textContent   = st.device_name || '—';
-    appId.textContent  = st.app_id || '—';
-    appVer.textContent = st.app_version || '—';
-    server.textContent = st.server || '—';
+    // HWID 从设备实际值改用截断哈希，防止暴露原始机器名（避免社工 / 定位）
+    const dn = String(st.device_name || '');
+    if (hwid) hwid.textContent = dn ? (dn.substring(0, 4) + '****' + dn.substring(dn.length - 2)) : '—';
+    if (appVer) appVer.textContent = st.app_version || '—';
+    // 不再回填 app_id / server —— 避免未激活状态就暴露服务端地址
     if(st.expire_at){
       expEl.textContent = st.expire_at + ' UTC';
       expLine.style.display = '';

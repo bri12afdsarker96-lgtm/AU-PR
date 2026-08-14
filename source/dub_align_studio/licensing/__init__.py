@@ -67,12 +67,24 @@ class LicenseManager:
         return self.store.get()
 
     def is_active(self) -> bool:
-        """当前是否有效授权（本地判定，快速）——供路由 gate 用。"""
+        """当前是否有效授权（本地判定，快速）——供路由 gate 用。
+
+        策略（用户明确要求）：
+          - 激活后本地就算「已激活」，二次启动**不再问激活码**
+          - 只有以下情况才回退到激活界面：
+            * 从未激活（activated=False 或 code 为空）
+            * 心跳明确判定失效（INVALID_ACTIONS：expired/banned/session_invalid 等）
+          - 「network_lost」、拿不到 session_token 都视为**离线中**，不锁人
+            （网络恢复后心跳会自然恢复；到期时服务端会告诉 client）
+        """
         st = self.store.get()
-        if not st.activated or not st.session_token:
+        # 从未激活 → 挡（首次输码）
+        if not st.activated or not st.code:
             return False
+        # 服务端明确说失效 → 挡（引导重新激活）
         if st.last_action in INVALID_ACTIONS:
             return False
+        # 其余情况（含 session_token 空 / network_lost）→ 放行
         return True
 
     def rasp_scan(self) -> "rasp.RaspReport":

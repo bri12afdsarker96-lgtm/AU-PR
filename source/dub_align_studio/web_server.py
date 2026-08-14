@@ -1024,10 +1024,13 @@ class _Handler(BaseHTTPRequestHandler):
             "heartbeat_interval": st.heartbeat_interval,
             "last_action": st.last_action,
             "last_error": st.last_error,
-            "device_name": _licensing_pkg.get_manager()._device,
-            "app_id": _licensing_pkg.APP_ID,
+            # 已激活才返回设备名 / server；未激活不给（避免识别 + 定位服务端）
+            "device_name": (
+                _licensing_pkg.get_manager()._device if ui_active else ""
+            ),
             "app_version": _licensing_pkg.APP_VERSION,
-            "server": _licensing_pkg.get_manager().config.server,
+            # app_id 和 server 完全不再从 API 返回（防止逆向者用来伪造激活服务端）
+            # 前端只用 device_name + app_version 展示，够用。
             # 只返回激活码前后 4 位便于用户确认，不泄露全码
             "code_hint": (
                 (st.code[:4] + "…" + st.code[-4:])

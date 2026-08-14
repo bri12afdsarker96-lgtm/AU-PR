@@ -89,7 +89,7 @@ def run_with_native_window(port: int = 8760) -> Optional[int]:
     # 3) 主线程创建窗口 + 阻塞
     icon = _find_icon()
     try:
-        webview.create_window(
+        win = webview.create_window(
             title="水星配音对齐工作室",
             url=url,
             width=1400,
@@ -98,6 +98,45 @@ def run_with_native_window(port: int = 8760) -> Optional[int]:
             resizable=True,
             confirm_close=False,
         )
+
+        # 拦截 target="_blank" / window.open() —— 让新页面留在同一个 webview 窗口
+        # 而不是跳到系统浏览器（用户抱怨"批量带货配音"跳浏览器 Chrome 就是这个）
+        def _redirect_new_window(new_win):  # noqa: ARG001
+            try:
+                new_win.destroy()   # 立刻关掉 pywebview 帮我们新开的第二窗
+            except Exception:  # noqa: BLE001
+                pass
+
+        try:
+            win.events.new_window.connect(_redirect_new_window)  # webview 5.x
+        except Exception:  # noqa: BLE001
+            pass
+
+        # 同时注入 JS 把所有 <a target="_blank"> 改成同窗口
+        # 以及把 window.open() 改成 location.assign
+        def _inject_same_window():
+            try:
+                win.evaluate_js(
+                    "(function(){"
+                    "  document.querySelectorAll('a[target=_blank]')"
+                    "    .forEach(a=>{a.target='_self';});"
+                    "  const _open = window.open;"
+                    "  window.open = function(u){ if(u){ window.location.assign(u); } };"
+                    "  const mo = new MutationObserver(()=>{"
+                    "    document.querySelectorAll('a[target=_blank]')"
+                    "      .forEach(a=>{a.target='_self';});"
+                    "  });"
+                    "  mo.observe(document.body||document.documentElement,"
+                    "             {childList:true,subtree:true});"
+                    "})();"
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+        try:
+            win.events.loaded += _inject_same_window   # webview 5.x
+        except Exception:  # noqa: BLE001
+            pass
         # icon 只在部分平台生效（Windows 用 exe 图标就够），传上无害
         start_kwargs = {}
         if icon is not None:
