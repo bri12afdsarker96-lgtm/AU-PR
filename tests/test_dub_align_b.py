@@ -1,0 +1,206 @@
+"""Dub Align Studio M1.5 测试：帧收口 / 单段滤镜 / Mock 尺子（纯逻辑）+ 端到端 B 渲染（ffmpeg 门控）。"""
+
+import shutil
+import tempfile
+import unittest
+from pathlib import Path
+
+from dub_align_studio import frames, timing
+from dub_align_studio.render_b import (
+    RenderConfig,
+    _require_binaries,
+    _staged_font,
+    render_b,
+    shot_video_filter,
+)
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "需要 ffmpeg/ffprobe")
+class RenderAuditRegressionTests(unittest.TestCase):
+    """复审确认的两处渲染 bug 回归：B#1 水印不能被字幕覆盖丢弃；B#2 进度条整秒 master 不掉末帧。"""
+
+    def _make(self, work, sec, fps):
+        import subprocess
+        m = work / "m.wav"
+        subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono",
+                        "-t", str(sec), str(m)], capture_output=True)
+        vids = []
+        for i in (1, 2):
+            v = work / f"{i}.mp4"
+            subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", f"color=c=0x101010:s=360x640:d={sec/2}",
+                            "-r", str(fps), str(v)], capture_output=True)
+            vids.append(v)
+        return m, vids
+
+    def test_progressbar_framelock_on_exact_second_master(self):
+        from dub_align_studio.progressbar import ProgressBar
+        w = Path(tempfile.mkdtemp()); m, vids = self._make(w, 6.0, 30)   # 6.0s×30fps=180 整帧
+        lines = [timing.LineTiming(index=1, text="甲", duration=3.0),
+                 timing.LineTiming(index=2, text="乙", duration=3.0)]
+        r = render_b(m, lines, vids, w / "成片.mp4", config=RenderConfig(width=360, height=640, fps=30),
+                     progress_bar=ProgressBar(text="看全集", position="顶部"))
+        self.assertTrue(r.frame_locked, "进度条不应因色块源少一帧而砍掉成片末帧")
+        self.assertEqual(r.total_frames, r.expected_frames)
+
+    def test_watermark_survives_subtitles(self):
+        # B#1 根因：字幕分支曾用 = 覆盖 burn_filters 把水印丢了（note 却仍谎报「已加水印」）。
+        # 故不能只看 note——渲染字幕(底部)+水印(四角跳，无进度条)，扫**顶部角**（字幕永不在此），
+        # 若某帧顶部有亮字即证明水印真的进了链；若被丢弃则顶部全黑。
+        import subprocess
+        from dub_align_studio.subtitles import SubtitleStyle
+        from dub_align_studio.watermark import Watermark
+        w = Path(tempfile.mkdtemp()); m, vids = self._make(w, 4.0, 25)
+        out = w / "成片.mp4"
+        lines = [timing.LineTiming(index=1, text="第一句", duration=2.0),
+                 timing.LineTiming(index=2, text="第二句", duration=2.0)]
+        r = render_b(m, lines, vids, out, config=RenderConfig(width=360, height=640, fps=25),
+                     subtitle_style=SubtitleStyle(position="底部"),
+                     watermark=Watermark(text="@水印", seed=1, interval_seconds=1.0, opacity=0.95, margin_px=20))
+        self.assertIn("已加动态水印", r.subtitle_note)
+
+        def top_bright(frame):
+            raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(out), "-vf",
+                                  f"select=eq(n\\,{frame}),crop=360:80:0:0,format=gray", "-frames:v", "1",
+                                  "-f", "rawvideo", "-"], capture_output=True).stdout
+            return sum(1 for b in raw if b > 150)
+        self.assertTrue(any(top_bright(f) > 5 for f in range(0, 100, 7)),
+                        "字幕在底部、顶部本应只有水印；顶部全黑 = 水印被丢弃（B#1 回归）")
+
+
+class FfmpegPreflightTests(unittest.TestCase):
+    """3050 实测：配音成功后渲染成片抛裸 FileNotFoundError [WinError 2]。
+    根因是本机无 ffmpeg/ffprobe；应给看得懂的中文指引，且不裸抛。"""
+
+    _MISSING = RenderConfig(ffmpeg="ffmpeg_no_such_bin_xyz", ffprobe="ffprobe_no_such_bin_xyz")
+
+    def test_preflight_names_missing_binaries(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            _require_binaries(self._MISSING)
+        msg = str(ctx.exception)
+        self.assertIn("ffmpeg", msg)
+        self.assertIn("ffprobe", msg)
+        self.assertNotIn("WinError", msg)
+
+    def test_render_b_fails_friendly_before_touching_files(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            render_b(
+                master_wav="x.wav", lines=[timing.LineTiming(index=1, text="a", duration=1.0)],
+                videos=["v.mp4"], output_path="o.mp4", config=self._MISSING,
+            )
+        self.assertIn("ffmpeg", str(ctx.exception))
+        # 不能是裸 FileNotFoundError 冒泡
+        self.assertNotIsInstance(ctx.exception, FileNotFoundError)
+
+
+class StagedFontTests(unittest.TestCase):
+    """字幕字体落到含 & / 非 ASCII 的路径时，Windows drawtext 加载失败→□□□。
+    _staged_font 应把它复制到一条纯 ASCII、不含 & 的路径再交给 ffmpeg。"""
+
+    def test_ascii_font_returned_asis(self):
+        base = Path(tempfile.mkdtemp())
+        f = base / "font.ttf"
+        f.write_bytes(b"FONTDATA")
+        # 纯 ASCII 且无 & → 原样返回，不复制
+        self.assertEqual(_staged_font(f, base), f)
+
+    def test_ampersand_path_is_restaged_to_safe_path(self):
+        root = Path(tempfile.mkdtemp())
+        bad = root / "AU&PR" / "字体"
+        bad.mkdir(parents=True)
+        src = bad / "SmileySans.ttf"
+        src.write_bytes(b"FONTDATA123")
+        work = root / "out" / "成片_segments"
+        work.mkdir(parents=True)
+        staged = _staged_font(src, work)
+        self.assertNotEqual(staged, src)
+        self.assertNotIn("&", str(staged))     # 关键：坏字符已去除
+        self.assertTrue(str(staged).isascii())  # 关键：落点纯 ASCII
+        self.assertEqual(staged.read_bytes(), b"FONTDATA123")  # 内容一致
+
+
+class QuantizeToFramesTests(unittest.TestCase):
+    def test_sum_locks_to_master_total(self):
+        # 三行变长时长，master 实测 18.5s @30fps → 总帧数必须精确 555。
+        f = frames.quantize_to_frames([6.0, 7.5, 5.0], 30, total_seconds=18.5)
+        self.assertEqual(sum(f), 555)
+        self.assertEqual(f, [180, 225, 150])
+
+    def test_last_segment_absorbs_rounding_residual(self):
+        # 逐行含舍入误差，末段吸收残差使总帧数对齐 round(total*fps)。
+        f = frames.quantize_to_frames([5.017, 5.017, 5.017], 30, total_seconds=15.051)
+        self.assertEqual(sum(f), round(15.051 * 30))
+
+    def test_every_segment_at_least_one_frame(self):
+        f = frames.quantize_to_frames([0.0, 0.0, 5.0], 30, total_seconds=5.0)
+        self.assertTrue(all(n >= 1 for n in f))
+        self.assertEqual(sum(f), 150)
+
+    def test_empty_and_fps_guard(self):
+        self.assertEqual(frames.quantize_to_frames([], 30), [])
+        with self.assertRaises(ValueError):
+            frames.quantize_to_frames([5.0], 0)
+
+
+class ShotVideoFilterTests(unittest.TestCase):
+    def test_trim_branch_has_no_slowdown(self):
+        # 画面比音频长 → 裁剪，不变速（无 setpts 慢放因子）。
+        parts, note = shot_video_filter(10.0, 6.0, 1080, 1920, 30, "裁剪多余画面")
+        joined = ",".join(parts)
+        self.assertIn("setpts=PTS-STARTPTS", joined)
+        self.assertNotIn("/0.", joined)  # 无放慢
+        self.assertIn("scale=1080:1920", joined)
+        self.assertIn("pad=1080:1920", joined)
+        self.assertIn("setsar=1", joined)
+        self.assertIn("fps=30", joined)
+
+    def test_short_source_slows_down(self):
+        # 画面比音频短 → 放慢补足，出现 setpts 除以 speed。
+        parts, note = shot_video_filter(4.0, 7.5, 1080, 1920, 30, "裁剪多余画面")
+        joined = ",".join(parts)
+        self.assertIn("setpts=(PTS-STARTPTS)/", joined)
+        self.assertIn("tpad=stop_mode=clone", joined)
+
+    def test_always_normalizes_canvas(self):
+        for src, tgt in [(10.0, 6.0), (4.0, 7.5), (5.0, 5.0)]:
+            parts, _ = shot_video_filter(src, tgt, 720, 1280, 30)
+            joined = ",".join(parts)
+            self.assertIn("scale=720:1280", joined)
+            self.assertIn("fps=30", joined)
+
+
+class MockAlignerTests(unittest.TestCase):
+    def test_measure_produces_per_line_timings(self):
+        aligner = timing.MockAligner(durations=[6.0, 7.5, 5.0])
+        out = aligner.measure(Path("master.wav"), ["一", "二", "三"])
+        self.assertEqual([t.duration for t in out], [6.0, 7.5, 5.0])
+        self.assertEqual([t.index for t in out], [1, 2, 3])
+        self.assertEqual(out[1].text, "二")
+
+    def test_length_mismatch_raises(self):
+        with self.assertRaises(ValueError):
+            timing.MockAligner(durations=[6.0]).measure(Path("m.wav"), ["一", "二"])
+
+    def test_total_and_floor(self):
+        out = timing.MockAligner(durations=[6.0, 7.5, 5.0]).measure(Path("m"), ["a", "b", "c"])
+        self.assertAlmostEqual(timing.total_duration(out), 18.5)
+        self.assertEqual(timing.floor_violations(out), [])
+        low = timing.MockAligner(durations=[3.0, 7.5, 5.0]).measure(Path("m"), ["a", "b", "c"])
+        self.assertEqual(timing.floor_violations(low), [1])  # 3s < 5s 下限
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "需要 ffmpeg/ffprobe")
+class EndToEndBRenderTests(unittest.TestCase):
+    def test_verify_renders_frame_locked_film_with_audio(self):
+        from dub_align_studio import cli
+
+        workdir = Path(tempfile.mkdtemp(prefix="dub_align_b_test_"))
+        try:
+            self.assertEqual(cli.verify(workdir=workdir, keep=True), 0)
+            out = workdir / "成片.mp4"
+            self.assertTrue(out.exists())
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    unittest.main()

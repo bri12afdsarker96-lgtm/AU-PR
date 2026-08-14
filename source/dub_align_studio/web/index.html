@@ -1,0 +1,3098 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>水星配音对齐工作室</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23E4B963'/%3E%3Cpath d='M16 6 26 16 16 26 6 16Z' fill='%23221A07'/%3E%3C/svg%3E">
+<style>
+:root{
+  --bg:#100E0B; --bg2:#161310; --panel:#1B1812; --panel2:#211D15; --field:#262117;
+  --line:#2E2921; --line2:#3C352A;
+  --gold:#E4B963; --gold-hi:#F5D68F; --gold-deep:#8F7439; --ink:#221A07;
+  --text:#EFEAE0; --muted:#9A917F; --faint:#6E675A;
+  --ok:#6FBF8F; --bad:#E0685F; --info:#8FA3E8;
+  --ok-bg:#15251C; --bad-bg:#2B1715;
+  --r:16px; --rs:11px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{color-scheme:dark}
+body{
+  background:
+    radial-gradient(1100px 480px at 78% -8%, rgba(228,185,99,.06), transparent 62%),
+    radial-gradient(700px 420px at -5% 30%, rgba(228,185,99,.03), transparent 55%),
+    var(--bg);
+  color:var(--text);
+  font:15.5px/1.75 "PingFang SC","Microsoft YaHei UI","Noto Sans SC",system-ui,sans-serif;
+  min-height:100vh;
+}
+.wrap{max-width:1720px;width:95%;margin:0 auto;padding:0 12px}
+::selection{background:rgba(228,185,99,.25)}
+
+/* ───────── 顶栏 ───────── */
+header{border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20;
+  background:color-mix(in srgb,var(--bg) 86%,transparent);backdrop-filter:blur(16px)}
+.bar{display:flex;align-items:center;gap:15px;padding:17px 0 15px}
+.mark{width:38px;height:38px;border-radius:11px;flex:none;position:relative;
+  background:linear-gradient(140deg,var(--gold-hi),var(--gold) 55%,var(--gold-deep));
+  box-shadow:0 6px 24px rgba(228,185,99,.28), inset 0 1px 0 rgba(255,255,255,.35)}
+.mark::before{content:"";position:absolute;inset:0;display:block;margin:auto;width:14px;height:14px;
+  background:var(--ink);clip-path:polygon(50% 0,100% 50%,50% 100%,0 50%)}
+.brand{line-height:1.25}
+.brand b{font-size:19px;letter-spacing:1px;font-weight:700}
+.brand i{display:block;font-style:normal;font-size:10px;color:var(--faint);letter-spacing:4.5px;margin-top:2px}
+.flags{margin-left:auto;display:flex;gap:8px}
+.flag{font-size:12px;color:var(--gold);letter-spacing:1.5px;padding:5px 13px;border-radius:99px;
+  border:1px solid rgba(228,185,99,.32);background:rgba(228,185,99,.06)}
+
+nav{display:flex;gap:4px;padding-bottom:13px}
+nav button{appearance:none;border:0;background:transparent;color:var(--muted);cursor:pointer;
+  font:600 14.5px/1 inherit;letter-spacing:2px;padding:10px 19px;border-radius:99px;transition:.16s}
+nav button:hover{color:var(--text);background:var(--panel)}
+nav button.on{color:var(--ink);background:linear-gradient(135deg,var(--gold-hi),var(--gold));
+  box-shadow:0 4px 16px rgba(228,185,99,.22)}
+nav button:focus-visible,.btn:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+
+/* ───────── 论点条：对齐时间轴 ───────── */
+.thesis{padding:26px 0 6px}
+.thesis h1{font-size:25px;font-weight:700;letter-spacing:.5px;text-wrap:balance}
+.thesis h1 em{font-style:normal;color:var(--gold)}
+.thesis p{color:var(--muted);font-size:14px;margin-top:4px;letter-spacing:.5px}
+.rig{margin:18px 0 22px;background:linear-gradient(180deg,var(--panel2),var(--panel));
+  border:1px solid var(--line);border-radius:var(--r);padding:18px 20px 14px;
+  box-shadow:0 14px 40px rgba(0,0,0,.35)}
+.rig .lab{display:flex;justify-content:space-between;font-size:12px;color:var(--faint);letter-spacing:2px;margin-bottom:8px}
+.rig .lab b{color:var(--gold);font-weight:600}
+canvas#wave{width:100%;height:64px;display:block;border-radius:8px}
+.lane{display:flex;gap:5px;margin-top:10px;min-height:44px}
+.lane .hintline{color:var(--faint);font-size:11px;letter-spacing:1.5px;align-self:center;margin:0 auto}
+.seg{position:relative;height:44px;border-radius:9px;cursor:default;flex-grow:1;overflow:hidden;
+  background:linear-gradient(180deg,#2A2318,#221D13);border:1px solid var(--line2);transition:.18s}
+.seg:hover{border-color:var(--gold);transform:translateY(-2px);box-shadow:0 8px 20px rgba(0,0,0,.4)}
+.seg small{position:absolute;left:10px;top:6px;font-size:11.5px;color:var(--faint);letter-spacing:1px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:90%}
+.seg b{position:absolute;left:10px;bottom:6px;font-size:13px;color:var(--gold);font-weight:600;
+  font-variant-numeric:tabular-nums}
+.seg::after{content:"";position:absolute;right:0;top:0;bottom:0;width:1px;background:rgba(228,185,99,.25)}
+.rig .foot{display:flex;gap:18px;margin-top:11px;font-size:12.5px;color:var(--faint);letter-spacing:1px;flex-wrap:wrap}
+.rig .foot span b{color:var(--muted);font-weight:600}
+
+/* ───────── 通用 ───────── */
+main{padding-bottom:56px}
+section{display:none}section.on{display:block}
+.grid{display:grid;gap:16px}
+.g2{grid-template-columns:4fr 3fr}
+.g2e{grid-template-columns:1fr 1fr}
+@media(max-width:920px){.g2,.g2e,.g3ov{grid-template-columns:1fr!important}}
+.card{background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--line);
+  border-radius:var(--r);padding:21px 23px;box-shadow:0 12px 34px rgba(0,0,0,.28)}
+.card h2{font-size:13.5px;color:var(--gold);letter-spacing:3px;font-weight:700;
+  display:flex;align-items:center;gap:10px;margin-bottom:16px}
+.card h2::after{content:"";height:1px;flex:1;background:linear-gradient(90deg,var(--line2),transparent)}
+.f{display:block;font-size:12.5px;color:var(--muted);letter-spacing:1.5px;margin-bottom:6px}
+.sp{margin-bottom:14px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.row>*{min-width:0}
+.row>input[type=text]{flex:1 1 180px}
+.row>select{flex:1 1 140px;width:auto}
+textarea,input[type=text],input[type=number],select{width:100%;background:var(--field);color:var(--text);
+  border:1px solid var(--line);border-radius:var(--rs);padding:11px 14px;font:inherit;outline:none;transition:.15s}
+textarea:focus,input:focus,select:focus{border-color:var(--gold-deep);box-shadow:0 0 0 3px rgba(228,185,99,.09)}
+textarea{resize:vertical;min-height:118px;line-height:1.9}
+select{appearance:none;padding-right:34px;
+  background-image:linear-gradient(45deg,transparent 50%,var(--gold) 50%),linear-gradient(135deg,var(--gold) 50%,transparent 50%);
+  background-position:calc(100% - 19px) 55%,calc(100% - 14px) 55%;background-size:5px 5px;background-repeat:no-repeat}
+input[type=range]{accent-color:var(--gold);width:100%}
+input[type=checkbox]{accent-color:var(--gold);width:15px;height:15px}
+input[type=file]{color:var(--muted);font-size:12px}
+input[type=file]::file-selector-button{appearance:none;cursor:pointer;border:1px solid var(--line2);
+  border-radius:8px;background:var(--field);color:var(--gold);font:600 12px/1 inherit;
+  padding:9px 15px;margin-right:12px;letter-spacing:1px}
+.mini{font-size:13px;color:var(--muted)}
+.val{min-width:46px;text-align:center;flex:none;font-size:13px;color:var(--gold);
+  font-variant-numeric:tabular-nums;background:var(--field);border:1px solid var(--line);border-radius:8px;padding:4px 7px}
+
+.btn{appearance:none;cursor:pointer;border:1px solid var(--line2);border-radius:var(--rs);
+  background:var(--field);color:var(--text);font:600 14px/1 inherit;letter-spacing:1.5px;
+  padding:12px 19px;transition:.16s;white-space:nowrap}
+.btn:hover{border-color:var(--gold-deep);color:var(--gold)}
+.btn:active{transform:translateY(1px) scale(.985);filter:brightness(1.08)}
+/* busy 态：点了在跑的按钮转圈+禁点，杜绝「点了像没点」 */
+.btn.busy{opacity:.65;cursor:progress;pointer-events:none}
+.btn.busy::after{content:"";display:inline-block;width:11px;height:11px;margin-left:8px;
+  vertical-align:-1px;border:2px solid currentColor;border-right-color:transparent;
+  border-radius:50%;animation:spin .6s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+/* 通用点击脉冲：任何可点元素按下瞬间闪一圈金光，绝不「点了像没点」 */
+@keyframes tap-pulse{0%{box-shadow:0 0 0 0 rgba(228,185,99,.5)}100%{box-shadow:0 0 0 9px rgba(228,185,99,0)}}
+.tapped{animation:tap-pulse .42s ease-out}
+/* 轻提示 toast：无即时可见结果的操作用它回执 */
+#toasts{position:fixed;left:50%;bottom:30px;transform:translateX(-50%);z-index:9999;
+  display:flex;flex-direction:column;gap:8px;align-items:center;pointer-events:none}
+.toast{background:var(--panel2);border:1px solid var(--gold-deep);color:var(--text);
+  padding:10px 18px;border-radius:10px;font-size:13.5px;box-shadow:0 10px 28px rgba(0,0,0,.45);
+  opacity:0;transform:translateY(10px);transition:.24s;max-width:82vw}
+.toast.show{opacity:1;transform:none}
+.toast.ok{border-color:var(--ok);color:var(--ok)}
+.toast.bad{border-color:var(--bad);color:var(--bad)}
+.btn.gold{background:linear-gradient(135deg,var(--gold-hi),var(--gold) 60%,#D9A94E);color:var(--ink);
+  border-color:transparent;font-weight:800;box-shadow:0 8px 26px rgba(228,185,99,.25),inset 0 1px 0 rgba(255,255,255,.4)}
+.btn.gold:hover{filter:brightness(1.05);color:var(--ink)}
+.btn.big{width:100%;padding:16px;font-size:15px;letter-spacing:8px;border-radius:13px}
+.btn.line{background:transparent;border-color:rgba(228,185,99,.38);color:var(--gold)}
+.steps{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}
+
+.console{margin-top:14px;background:#0B0906;border:1px solid var(--line);border-radius:var(--rs);
+  padding:15px 17px;height:238px;overflow:auto;white-space:pre-wrap;word-break:break-all;
+  font:13px/1.9 ui-monospace,Consolas,"Cascadia Mono",monospace;color:#CEC8B8}
+.console .dim{color:var(--faint)}
+.console::-webkit-scrollbar{width:9px}.console::-webkit-scrollbar-thumb{background:var(--line2);border-radius:9px}
+
+table{width:100%;border-collapse:collapse;font-size:14px}
+th{color:var(--gold);text-align:left;font-weight:600;letter-spacing:1.5px;font-size:12.5px;padding:8px 10px;border-bottom:1px solid var(--line2)}
+td{padding:10px;border-bottom:1px solid var(--line)}
+td.mut{color:var(--muted)} tr:hover td{background:rgba(228,185,99,.035)}
+.x{color:var(--bad);cursor:pointer;font-weight:700;padding:2px 9px;border-radius:7px}
+.x:hover{background:var(--bad-bg)}
+.empty{color:var(--faint);text-align:center;padding:26px 0;font-size:12px}
+.badge{font-size:11px;padding:2px 11px;border-radius:99px;border:1px solid var(--line2);color:var(--muted);font-variant-numeric:tabular-nums}
+
+/* ───────── 手机预览（文本框页） ───────── */
+.g3ov{display:grid;grid-template-columns:minmax(280px,.95fr) minmax(380px,1.35fr) minmax(280px,.85fr);gap:16px;align-items:start}
+@media(max-width:1280px){.g3ov{grid-template-columns:minmax(280px,1fr) 1.3fr}.g3ov>*:last-child{grid-column:1/-1}}
+.phone{width:260px;max-width:100%;aspect-ratio:9/16;flex:none;margin:0 auto;position:relative;border-radius:22px;overflow:hidden;
+  border:1px solid var(--line2);box-shadow:0 20px 50px rgba(0,0,0,.5), inset 0 0 0 1px rgba(255,255,255,.04);
+  background:linear-gradient(160deg,#3B3242 0%,#241F2E 34%,#151218 78%)}
+.phone::before{content:"";position:absolute;inset:0;
+  background:radial-gradient(240px 150px at 60% 30%, rgba(228,185,99,.16), transparent 60%)}
+.phone .scan{position:absolute;left:0;right:0;height:1px;background:rgba(255,255,255,.05)}
+.ov{position:absolute;left:50%;transform:translateX(-50%);text-align:center;width:88%;
+  font-weight:800;line-height:1.35;text-shadow:0 0 2px #000,0 0 2px #000,2px 2px 0 #000,-2px 2px 0 #000,2px -2px 0 #000,-2px -2px 0 #000;
+  transition:.2s;pointer-events:none;word-break:break-all}
+.ov.boxed{background:rgba(0,0,0,.55);padding:.35em .5em;border-radius:.18em;text-shadow:none}
+.ov.ghost{opacity:.94;outline:1px dashed rgba(228,185,99,.6);outline-offset:3px}
+.phone .hud{position:absolute;right:9px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:11px;opacity:.5}
+.phone .hud i{width:22px;height:22px;border-radius:50%;background:rgba(255,255,255,.14);display:block}
+.sw{width:27px;height:27px;border-radius:9px;border:1px solid var(--line2);cursor:pointer;flex:none;transition:.15s}
+.sw:hover{transform:scale(1.14)}
+.sw.on{outline:2px solid var(--gold);outline-offset:1px}
+
+/* ───────── 音色卡 ───────── */
+.vlist{display:flex;flex-direction:column;gap:10px}
+/* 克隆音频列表（分段试听/克隆存档）行数多时锁高度、内部滚轮滑动，不再把整块面板撑爆 */
+#chunkList,#clList{max-height:360px;overflow-y:auto;overflow-x:hidden;padding-right:4px}
+#chunkList::-webkit-scrollbar,#clList::-webkit-scrollbar{width:8px}
+#chunkList::-webkit-scrollbar-thumb,#clList::-webkit-scrollbar-thumb{background:var(--line2);border-radius:4px}
+.vcard{border:1px solid var(--line);border-radius:var(--rs);padding:14px 16px;background:var(--panel2);
+  display:flex;align-items:center;gap:13px;transition:.16s}
+.vcard:hover{border-color:var(--gold-deep)}
+.vwave{display:flex;align-items:center;gap:2px;height:26px;flex:none}
+.vwave i{width:3px;border-radius:2px;background:var(--gold);opacity:.75}
+.vcard b{font-size:13.5px;display:block}
+.vcard small{color:var(--faint);font-size:11px;display:block;margin-top:1px;letter-spacing:.5px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:250px}
+.vcard .x{margin-left:auto}
+
+/* ───────── 自检 ───────── */
+.check{display:flex;align-items:center;gap:13px;padding:13px 4px;border-bottom:1px solid var(--line)}
+.check:last-child{border-bottom:0}
+.dot{width:9px;height:9px;border-radius:50%;flex:none}
+.dot.ok{background:var(--ok);box-shadow:0 0 10px rgba(111,191,143,.5)}
+.dot.no{background:var(--bad);box-shadow:0 0 10px rgba(224,104,95,.4)}
+.check b{font-size:14.5px;min-width:140px;font-weight:600}
+.check span{color:var(--muted);font-size:13px;overflow:hidden;text-overflow:ellipsis}
+.pill{margin-left:auto;flex:none;font-size:10.5px;letter-spacing:1.5px;padding:3px 11px;border-radius:99px}
+.pill.ok{color:var(--ok);background:var(--ok-bg);border:1px solid rgba(111,191,143,.3)}
+.pill.no{color:var(--bad);background:var(--bad-bg);border:1px solid rgba(224,104,95,.3)}
+
+.modal{position:fixed;inset:0;z-index:50;display:none;place-items:center;background:rgba(0,0,0,.6);backdrop-filter:blur(4px)}
+.modal.on{display:grid}
+.modal .box{width:min(560px,92vw);max-height:78vh;display:flex;flex-direction:column;background:var(--panel2);border:1px solid var(--line2);border-radius:var(--r);padding:18px 20px;box-shadow:0 30px 80px rgba(0,0,0,.6)}
+.modal .cur{font-size:12px;color:var(--gold);margin:8px 0;word-break:break-all;font-variant-numeric:tabular-nums}
+.modal .list{flex:1;overflow:auto;border:1px solid var(--line);border-radius:var(--rs);background:var(--field)}
+.modal .item{padding:9px 14px;font-size:13px;cursor:pointer;border-bottom:1px solid var(--line)}
+.modal .item:hover{background:var(--hover, #22222C);color:var(--gold)}
+.modal .foot{display:flex;gap:10px;margin-top:12px;justify-content:flex-end}
+footer{border-top:1px solid var(--line);margin-top:20px;padding:22px 0 30px;
+  text-align:center;font-size:11px;color:var(--faint);letter-spacing:2px}
+footer b{color:var(--muted);font-weight:600}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+
+<header><div class="wrap">
+  <div class="bar">
+    <div class="mark" aria-hidden="true"></div>
+    <div class="brand"><b>水星配音对齐工作室</b><i>MERCURY&nbsp;DUB&nbsp;ALIGN</i></div>
+    <div class="flags">
+      <span class="flag" id="verFlag" title="版本 · 打包时间 · 提交号">v—</span>
+      <!-- 云 GPU 顶栏灯：点即跳工具箱定位面板；文案由 loadCloudGpu() 实时刷 -->
+      <span class="flag" id="cloudBadge" title="点击到「工具箱」调整云 GPU 会话"
+            style="cursor:pointer;background:#333;color:#ccc" onclick="jumpToCloud()">☁ 未启用</span>
+      <span class="flag">整篇克隆</span><span class="flag">逐行对齐</span><span class="flag">本地离线</span></div>
+  </div>
+  <nav id="nav">
+    <button data-p="p1" class="on">一键成片</button>
+    <button data-p="p2">文本框</button>
+    <button data-p="p6">封面工厂</button>
+    <button data-p="p3">音色库</button>
+    <button data-p="p5">字体库</button>
+    <button data-p="p4">工具箱自检</button>
+    <!-- 独立子系统入口——不是 SPA 切换，直接跳同源新页 -->
+    <button onclick="window.open('/bulk_dub','_blank')"
+            title="Excel 批量带货配音：独立页面 / 独立队列 / 不影响一键成片">
+      📊 Excel 批量带货
+    </button>
+  </nav>
+</div></header>
+
+<main class="wrap">
+
+<!-- ════ 一键成片 ════ -->
+<section id="p1" class="on">
+  <div class="thesis">
+    <h1>音频<em>整条不切</em>，画面<em>按行对齐</em>。</h1>
+    <p>整篇克隆出连贯配音 → 逐行量出真实时长 → 每句画面裁剪 / 变速对齐 → 一句一画面，帧级收口。</p>
+  </div>
+
+  <div class="rig">
+    <div class="lab"><b>MASTER.WAV · 连贯配音主轨</b><span id="rigTotal">—</span></div>
+    <canvas id="wave" height="64"></canvas>
+    <div class="lane" id="lane"><span class="hintline">运行「② 量时长」或「生成成片」后，这里显示每行的真实时长</span></div>
+    <div class="foot">
+      <span>行边界由 whisper 量出 · <b>只量不切</b></span>
+      <span>画面策略：<b>裁剪 / 放慢 / 定格</b></span>
+      <span>Σ 行时长 = <b>master 总长</b></span>
+    </div>
+    <div class="row" id="mediaRow" style="margin-top:12px;display:none">
+      <span class="mini" style="flex:none;color:var(--gold)">🎧 master 试听</span>
+      <audio id="masterAudio" controls preload="none" style="flex:1 1 260px;min-width:220px;height:36px"></audio>
+      <a class="btn" id="filmBtn" target="_blank" style="display:none;text-decoration:none">🎬 预览成片</a>
+      <button class="btn" onclick="openFolder()">📂 打开输出目录</button>
+    </div>
+
+    <!-- 音轨混音：总音量 / BGM(循环) / 音效(拖动定位) —— 用户反馈④⑤ -->
+    <div style="margin-top:14px;border-top:1px solid var(--line);padding-top:14px">
+      <div class="grid g2e" style="gap:14px">
+        <div>
+          <span class="f">🔊 配音总音量 <span class="val" id="mVolV">120%</span>
+            <span class="mini" style="color:var(--faint);margin-left:8px">默认 120%（新用户默认基准；旧预设按保存值还原）</span></span>
+          <input type="range" id="mVol" min="0" max="200" step="5" value="120" oninput="onMixChange()">
+        </div>
+        <div>
+          <span class="f">🎬 原视频音效音量 <span class="val" id="oVolV">100%</span>
+            <span class="mini" style="color:var(--faint);margin-left:8px">分镜自带音效；拉到 0 = 关掉原声</span></span>
+          <input type="range" id="oVol" min="0" max="200" step="5" value="100" oninput="onMixChange()">
+          <p class="mini" style="color:#e08c58;margin:6px 0 0;line-height:1.6">
+            ⓘ <b>仅生成/重烧成片时生效</b>；网页「混音试听」不含分镜原音（试听是前端 Web Audio 合成 master+BGM+音效，无法读真实分镜视频）。
+          </p>
+        </div>
+      </div>
+      <div class="grid g2e" style="gap:14px;margin-top:10px">
+        <div style="grid-column:1/-1">
+          <span class="f">🎵 背景音乐 BGM（比视频短会自动循环到片尾）</span>
+          <div class="row">
+            <select id="bgmSel" onchange="onMixChange()" style="flex:1 1 140px"></select>
+            <button class="btn" style="padding:9px 12px;flex:none" onclick="bgmUp.click()" title="上传BGM">＋</button>
+            <input type="file" id="bgmUp" accept="audio/*" style="display:none" onchange="uploadAsset(this,'bgm')">
+          </div>
+        </div>
+      </div>
+      <div class="row" id="bgmCtl" style="margin-top:10px;display:none">
+        <span class="mini" style="flex:none">BGM 音量 <span class="val" id="bVolV">35%</span></span>
+        <input type="range" id="bVol" min="0" max="150" step="5" value="35" style="flex:1 1 120px" oninput="onMixChange()">
+        <label class="row mini" style="gap:6px;flex:none"><input type="checkbox" id="bLoop" checked onchange="onMixChange()">循环到片尾</label>
+      </div>
+
+      <div style="margin-top:14px">
+        <div class="row" style="margin-bottom:6px">
+          <span class="f" style="margin:0;flex:none">🎚 音效（拖动色块调整触发位置，试听时按位置发声）</span>
+          <select id="sfxSel" style="flex:1 1 120px"></select>
+          <button class="btn" style="padding:8px 12px;flex:none" onclick="addSfx()">＋ 加音效</button>
+          <button class="btn" style="padding:8px 12px;flex:none" onclick="sfxUp.click()" title="上传音效">上传</button>
+          <input type="file" id="sfxUp" accept="audio/*" style="display:none" onchange="uploadAsset(this,'sfx')">
+        </div>
+        <div id="sfxTrack" style="position:relative;height:40px;border-radius:9px;background:linear-gradient(180deg,#221D13,#1A160F);border:1px solid var(--line2);overflow:hidden">
+          <div class="hintline" id="sfxHint" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--faint);font-size:11px;letter-spacing:1px">还没有音效 — 选一个点「＋ 加音效」，然后拖动定位</div>
+        </div>
+        <div id="sfxRows" style="margin-top:8px"></div>
+        <div style="margin-top:10px">
+          <span id="assetToggle" style="cursor:pointer;color:var(--gold);font-size:12px;user-select:none" onclick="toggleAssets()">▸ 🗂 素材库（音效/BGM 上传一次即永久入库，可复用可删除）</span>
+          <div id="assetList" style="display:none;margin-top:6px"></div>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:12px">
+        <button class="btn gold" id="mixPlay" onclick="toggleMixPreview()">▶ 混音试听（配音＋BGM＋音效）</button>
+        <span class="mini" style="color:var(--faint)">试听即所听；点「生成成片」时按此混流烧入</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid g2">
+    <div class="card">
+      <h2>文案与配置</h2>
+      <div class="sp"><span class="f">待合成文案 · 一行一句（长短不限）</span>
+        <div class="row" style="margin-bottom:8px">
+          <button class="btn" onclick="pickDoc('xlsx')">📊 导入表格(xlsx)</button>
+          <span class="mini" style="flex:none">列</span>
+          <select id="xlsxCol" style="width:76px;flex:none"></select>
+          <label class="row mini" style="gap:6px;flex:none"><input type="checkbox" id="xlsxHeader" checked>跳过表头(首行)</label>
+          <button class="btn" onclick="pickDoc('txt')">📄 导入TXT</button>
+        </div>
+        <textarea id="text" placeholder="第一句台词……&#10;第二句台词……&#10;第三句台词……&#10;也可点上方按钮从 xlsx（默认 B 列）或 TXT 导入"></textarea></div>
+      <div class="grid g2e sp">
+        <div><span class="f">配音引擎</span><select id="engine" onchange="onEngineChange()"></select></div>
+        <!-- 普通引擎（dots/fish/mock）：音色下拉，读取克隆音色库 -->
+        <div id="voiceRow"><span class="f">音色</span>
+          <div class="row"><select id="voice"></select><button class="btn" onclick="loadState()" title="刷新">↻</button></div></div>
+        <!-- Edge TTS：预设声线；不读音色库，也不需要参考音频 -->
+        <div id="edgeRow" style="display:none">
+          <span class="f">Edge 声线 <span class="mini" style="color:var(--faint)">（预设合成音色 · 不是声音克隆）</span></span>
+          <select id="edgeVoice"></select>
+        </div>
+      </div>
+      <!-- Edge TTS 专属参数：仅在选 edge_tts 时显示 -->
+      <div class="grid g2e sp" id="edgeParamsRow" style="display:none">
+        <div><span class="f">Edge 音调 <span class="val" id="edgePitchV">0</span></span>
+          <input type="range" id="edgePitch" min="-50" max="50" step="1" value="0"
+                 oninput="document.getElementById('edgePitchV').textContent=this.value"></div>
+        <div><span class="f">Edge 风格</span>
+          <select id="edgeStyle"></select></div>
+      </div>
+      <p class="mini" id="edgeNotice" style="display:none;color:#e08c58;margin:-4px 0 8px;line-height:1.7">
+        ⚠ Edge TTS 使用预设合成音色，<b>不读取参考音频</b>；这是第三方非官方 Edge 接口，
+        稳定性及内容使用授权不由本软件承诺。若未配置服务地址，去「工具箱 · 免费 Edge TTS」填写。
+      </p>
+      <div class="row" id="edgeTryRow" style="display:none;margin:-2px 0 8px">
+        <button class="btn line" id="edgeTryBtn" onclick="tryEdgeVoice(this)">🎧 用当前 Edge 声线试听</button>
+        <span class="mini" style="color:var(--faint)">合成一句短话验证声线/音调/风格</span>
+      </div>
+      <div class="grid g2e sp">
+        <div><span class="f">计时尺子</span><select id="aligner"></select></div>
+        <div><span class="f">画面比例</span><select id="aspect"></select></div>
+      </div>
+      <div class="sp"><span class="f">分镜目录 <span class="mini" style="color:var(--faint)">（输出目录默认跟随此目录）</span></span>
+        <div class="row"><input type="text" id="shots" placeholder="D:\素材\分镜（1.mp4、2.mp4 …）" oninput="mirrorOut();scheduleShotsCount()">
+        <button class="btn" onclick="pickDir('shots')">📁 选择</button></div>
+        <div class="mini" id="shotsCount" style="margin-top:5px"></div></div>
+      <div class="sp"><span class="f">素材模式（第 i 行文案用什么画面）</span>
+        <select id="matMode">
+          <option value="flat">平铺顺序 · 目录下 1.mp4、2.mp4…，第 i 行用第 i 个</option>
+          <option value="folder_order">文件夹顺序 · 第 i 行用第 i 个子文件夹（行多则从头循环）</option>
+          <option value="keyword">关键字匹配 · 子文件夹名↔每行文案打分选夹（无匹配按顺序兜底）</option>
+        </select>
+        <p class="mini" style="color:var(--faint);margin-top:5px">夹内按 Seed 确定性随机选片（换 Seed 同文案换一套画面，矩阵去重）；
+          选片结果写「输出目录\选片清单.csv」，重渲染复用同一份——删除该文件即重新选片。</p></div>
+      <div class="sp"><span class="f">输出目录 <span class="mini" style="color:var(--faint)">（配音克隆/成片等全部产物默认写这里 · 默认=分镜目录，可改）</span></span>
+        <div class="row"><input type="text" id="outdir" placeholder="默认跟随分镜目录，可自定义" oninput="_outdirManual=true">
+        <button class="btn" onclick="pickDir('outdir')">📁 选择</button></div></div>
+      <div class="grid g2e sp">
+        <div><span class="f">停顿上限（秒）· 0 = 不压缩</span>
+          <div class="row"><input type="range" id="pause" min="0" max="1.5" step="0.05" value="0.2" oninput="pv.textContent=(+this.value).toFixed(2)"><span class="val" id="pv">0.20</span></div></div>
+        <div><span class="f">语速 · 1.0 = 原速</span>
+          <div class="row"><input type="range" id="speed" min="0.5" max="2" step="0.05" value="1" oninput="sv.textContent=(+this.value).toFixed(2)"><span class="val" id="sv">1.00</span></div></div>
+      </div>
+      <p class="mini" id="engineCapHint" style="color:var(--faint);margin:-4px 0 8px;line-height:1.7">
+        当前引擎能力：<span id="engineCapText">加载中…</span>
+      </p>
+      <div class="row" style="gap:22px;flex-wrap:wrap">
+        <label class="row mini" style="gap:7px"><input type="checkbox" id="burn" checked>烧录字幕</label>
+        <span class="mini" style="color:var(--faint)">字幕位置/字号/字体/进度条 → 下方「烧录列表」设置</span>
+        <span class="row mini" style="gap:7px" title="素材选择（换 Seed = 同文案换一套画面）永远生效；TTS 复现性按引擎能力，dots.tts 云端支持、Edge/fish/dots 本地视 SDK 支持情况而定">Seed <input type="number" id="seed" value="42" style="width:92px"></span>
+        <span class="mini" style="color:var(--faint)">Seed：素材选择始终生效；TTS 可复现性按引擎能力（<span id="engineSeedHint">加载中…</span>）</span>
+      </div>
+      <div class="row" style="margin-top:14px;border-top:1px solid var(--line);padding-top:14px">
+        <span class="f" style="margin:0;flex:none">💾 作品参数预设</span>
+        <select id="cfgSel" style="flex:1 1 120px"></select>
+        <button class="btn" style="padding:9px 13px;flex:none" onclick="applyConfig()">载入</button>
+        <button class="btn" style="padding:9px 13px;flex:none" onclick="delConfig()">删除</button>
+        <button class="btn gold" style="padding:9px 13px;flex:none" onclick="saveConfig()">存为预设</button>
+      </div>
+      <p class="mini" style="color:var(--faint);margin-top:6px">保存当前引擎/比例/字幕样式/音量/BGM/音效等全部参数，一键复用，统一作品调性。</p>
+    </div>
+
+    <div class="card">
+      <h2>执行</h2>
+      <div class="row" style="gap:10px;align-items:stretch">
+        <button class="btn gold big" style="flex:1;margin:0" onclick="enqueueTask(true)" title="进入生成任务队列后台克隆（串行·一次只跑一个，避免 GPU 抢占卡死）">▶&nbsp;&nbsp;生 成 成 片</button>
+        <button class="btn line" style="flex:none;padding:0 16px;white-space:nowrap" onclick="enqueueTask()" title="把当前整份配置冻结成一个任务加入队列，后台顺序克隆；之后可继续改设置提交下一个，互不影响">＋ 加入队列</button>
+      </div>
+      <label class="row mini" style="gap:7px;margin-top:8px;cursor:pointer;color:var(--faint)">
+        <input type="checkbox" id="reuseDub">
+        <span>复用已有配音（改<b>音量 / BGM / 字幕 / 进度条</b>后再点「生成成片」，<b>跳过克隆</b>只重渲染，秒出）</span></label>
+      <div class="steps" style="margin-top:8px">
+        <button class="btn line" onclick="run('dub')">① 配音</button>
+        <button class="btn line" onclick="run('timing')">② 量时长</button>
+        <button class="btn line" onclick="run('render')" title="只重渲染：套用新音量/BGM/字幕/进度条，不重新克隆">③ 渲染</button>
+        <button class="btn line" onclick="showPage('p2');syncPv()" title="到文本框页调字幕样式/加文字层并导出">④ 去文本框调样式/导出 →</button>
+      </div>
+      <p class="mini" style="color:var(--faint);margin-top:6px">字幕按<b>标点逐句、按时间轴</b>自动烧录（每行按字数占比排时）；样式调整与最终导出在「文本框」页完成。只改音量/BGM/字幕/进度条不想重配音时，勾上方「复用已有配音」或直接点「③ 渲染」。</p>
+      <div id="progWrap" style="display:none;margin-top:12px">
+        <div class="row" style="justify-content:space-between">
+          <span class="mini" id="progStage" style="color:var(--gold)">准备中…</span>
+          <span class="mini" id="progPct" style="color:var(--gold);font-variant-numeric:tabular-nums">0%</span>
+        </div>
+        <div style="height:10px;border-radius:6px;background:var(--field);border:1px solid var(--line);overflow:hidden;margin-top:5px">
+          <div id="progBar" style="height:100%;width:0%;background:linear-gradient(90deg,var(--gold-hi),var(--gold));transition:width .3s"></div>
+        </div>
+      </div>
+      <div class="console" id="mainlog"><span class="dim">—— 就绪 · 运行日志将在这里滚动 ——</span></div>
+
+      <!-- 配音分段：逐段试听 + 单段重配（避免整篇重来的死循环，用户反馈②） -->
+      <div id="chunkPanel" style="display:none;margin-top:16px">
+        <div class="row" style="justify-content:space-between;margin-bottom:8px">
+          <span class="f" style="margin:0;color:var(--gold)">🎬 配音分段（逐段试听 · 某段不满意只重配这一段）</span>
+          <button class="btn" style="padding:6px 12px;flex:none" onclick="loadChunks()">↻ 刷新</button>
+        </div>
+        <p class="mini" style="color:var(--faint);margin:-2px 0 8px"><b>配音进行中每完成一段就出现在这里</b>，可立即试听；重配某段后自动重拼整条 master，其余段不动、不用整篇重来（重配请等当前任务跑完再点）。</p>
+        <div id="chunkList" class="vlist"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 烧录列表（④⑥）：字幕样式 + 视频进度条，点「生成成片」时套用；不加字幕样式则用默认 -->
+  <div class="card" style="margin-top:16px">
+    <h2>烧录列表 · 生成成片时套用</h2>
+    <p class="mini" style="color:var(--faint);margin:-4px 0 10px">「生成成片」时按这里的样式一次烧入。<b>不设字幕样式则用默认：思源黑体 · 描边 6px</b>。到「文本框」页可对已生成的成片二次精修文字层并重烧。</p>
+    <!-- ③ 烧录预设：只存/取「字幕样式 + 视频进度条」这两块，独立于作品预设 -->
+    <div class="row sp" style="gap:8px;background:var(--field);border:1px solid var(--line);border-radius:10px;padding:9px 11px">
+      <span class="f" style="margin:0;flex:none">🎨 烧录预设</span>
+      <select id="burnPreset" style="flex:1 1 130px"></select>
+      <button class="btn" style="padding:8px 12px;flex:none" onclick="applyBurnPreset()">载入</button>
+      <button class="btn" style="padding:8px 12px;flex:none" onclick="delBurnPreset()">删除</button>
+      <button class="btn gold" style="padding:8px 12px;flex:none" onclick="saveBurnPreset()">存为预设</button>
+      <span class="mini" style="color:var(--faint);flex:none">只含字幕样式 + 进度条</span>
+    </div>
+
+    <!-- 字幕样式 -->
+    <div class="row sp" style="gap:20px;flex-wrap:wrap;align-items:flex-end">
+      <div style="flex:none;min-width:150px"><span class="f">字幕位置</span><select id="subPos" onchange="syncPv()"></select></div>
+      <div style="flex:none"><span class="f">字幕字号 <span class="val" id="subSizeV" style="padding:2px 8px">64</span></span>
+        <input type="range" id="subsize" min="32" max="140" step="4" value="64" style="width:150px" oninput="syncPv()"></div>
+      <div style="flex:none;min-width:170px"><span class="f">字幕字体（在「字体库」页下载或自备）</span>
+        <select id="subFont" onchange="syncPv()"></select></div>
+      <div style="flex:none"><span class="f">字幕颜色</span>
+        <div class="row" id="subSwatches">
+          <div class="sw on" data-c="#FFFFFF" style="background:#FFFFFF"></div>
+          <div class="sw" data-c="#FFE14D" style="background:#FFE14D"></div>
+          <div class="sw" data-c="#E4B963" style="background:#E4B963"></div>
+          <div class="sw" data-c="#FF5A4D" style="background:#FF5A4D"></div>
+          <div class="sw" data-c="#111111" style="background:#111"></div>
+          <span id="subMyColors" style="display:contents"></span>
+          <input type="text" id="subColor" value="#FFFFFF" style="width:104px;flex:none" oninput="syncPv(true)">
+        </div></div>
+      <div style="flex:none"><span class="f">描边</span>
+        <div class="row" style="gap:8px"><input type="number" id="subBorder" value="6" min="0" max="20" style="width:74px" oninput="syncPv()">
+        <span class="mini" style="color:var(--faint)">像素 · 0=无</span></div></div>
+    </div>
+
+    <!-- 视频进度条 -->
+    <div style="border-top:1px solid var(--line);margin-top:14px;padding-top:14px">
+      <h2 style="font-size:15px">视频进度条 <label class="mini" style="float:right;font-weight:400;cursor:pointer"><input type="checkbox" id="pbEnable"> 启用</label></h2>
+      <p class="mini" style="color:var(--faint);margin:-4px 0 12px">
+        底色条带 + 半透明进度图层<b>随播放丝滑从左往右</b>（片尾正好走满）；<b>文字在进度条内</b>显示（可用「 | 」分段）。顶部时贴满上沿。</p>
+      <div class="sp"><span class="f">进度条文字（自定义内容）</span>
+        <input type="text" id="pbText" placeholder="例：全文在哪里看？ | 完整版《负面天道》 | 追更不迷路" style="width:100%"></div>
+      <div class="row sp" style="gap:20px;flex-wrap:wrap;align-items:flex-end">
+        <div style="flex:none"><span class="f">位置</span>
+          <select id="pbPos" style="width:120px"><option value="顶部">顶部</option><option value="底部">底部</option></select></div>
+        <div style="flex:none"><span class="f">字号</span>
+          <input type="number" id="pbSize" value="40" min="20" max="120" style="width:82px"></div>
+        <div style="flex:none"><span class="f">条带高（0=自动）</span>
+          <input type="number" id="pbStripH" value="0" min="0" max="400" style="width:82px" title="0=按字号自动"></div>
+        <div style="flex:none"><span class="f">条带底色</span>
+          <div class="row" style="gap:6px">
+            <input type="color" id="pbTrack" value="#000000" style="width:44px;height:30px;padding:2px;flex:none" oninput="$('pbTrackHex').value=this.value">
+            <input type="text" id="pbTrackHex" value="#000000" style="width:88px" oninput="if(/^#[0-9a-fA-F]{6}$/.test(this.value))$('pbTrack').value=this.value"></div></div>
+        <div style="flex:none"><span class="f">条带透明 <span class="val" id="pbTrackOpV" style="padding:1px 6px">0.45</span></span>
+          <input type="range" id="pbTrackOp" min="0" max="1" step="0.05" value="0.45" style="width:120px" oninput="$('pbTrackOpV').textContent=(+this.value).toFixed(2)"></div>
+        <div style="flex:none"><span class="f">进度条颜色</span>
+          <div class="row" style="gap:6px">
+            <input type="color" id="pbFill" value="#FFC24B" style="width:44px;height:30px;padding:2px;flex:none" oninput="$('pbFillHex').value=this.value">
+            <input type="text" id="pbFillHex" value="#FFC24B" style="width:88px" oninput="if(/^#[0-9a-fA-F]{6}$/.test(this.value))$('pbFill').value=this.value"></div></div>
+        <div style="flex:none"><span class="f">进度透明 <span class="val" id="pbFillOpV" style="padding:1px 6px">0.38</span></span>
+          <input type="range" id="pbFillOp" min="0" max="1" step="0.05" value="0.38" style="width:120px" oninput="$('pbFillOpV').textContent=(+this.value).toFixed(2)"></div>
+        <div style="flex:none"><span class="f">文字颜色</span>
+          <div class="row" style="gap:6px">
+            <input type="color" id="pbColor" value="#FFFFFF" style="width:44px;height:30px;padding:2px;flex:none" oninput="$('pbColorHex').value=this.value">
+            <input type="text" id="pbColorHex" value="#FFFFFF" style="width:88px" oninput="if(/^#[0-9a-fA-F]{6}$/.test(this.value))$('pbColor').value=this.value"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 生成任务队列（⑨ 串行后台）：加入队列后台顺序克隆，可继续提交下一个，互不影响 -->
+  <div class="card" id="genQueueCard" style="margin-top:16px;display:none">
+    <h2>生成任务队列 · 后台顺序克隆
+      <button class="btn" style="float:right;padding:6px 12px;font-weight:400" onclick="clearQueueDone()">清除已完成</button>
+      <button class="btn" id="queuePauseBtn" style="float:right;padding:6px 12px;font-weight:400;margin-right:8px" onclick="pauseResumeQueue()">⏸ 暂停队列</button></h2>
+    <p class="mini" style="color:var(--faint);margin:-4px 0 12px">点「＋加入队列」把当前配置<b>整份冻结</b>成一个任务；队列在后台一个个克隆，期间你可照常改设置、提交下一个、或去「文本框」精修别的成片——<b>已入队任务参数不受影响</b>。完成的成片自动进「文本框」页的待编辑队列。</p>
+    <div id="genQueueList" class="vlist"></div>
+  </div>
+</section>
+
+<!-- ════ 文本框 ════ -->
+<section id="p2">
+  <div class="thesis">
+    <h1>画面上的每一行字，<em>所见即成片</em>。</h1>
+    <p>顶部书名 · 中部旁白 · 底部引导语 —— 位置、字号、颜色、背景框实时预览，渲染时逐帧烧入（画在字幕上层）。</p>
+  </div>
+
+  <div class="g3ov">
+    <div class="card">
+      <h2>实时预览 <span class="mini" style="float:right;font-weight:400;color:var(--faint)">真视频 · 可播放/拖动</span></h2>
+      <div class="phone" id="phone">
+        <video id="pvVideo" playsinline preload="metadata"
+               style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#000;display:none"></video>
+        <div class="scan" style="top:33%"></div><div class="scan" style="top:66%"></div>
+        <div class="hud"><i></i><i></i><i></i></div>
+        <!-- 预览进度条（跟随视频时间，位置/颜色随烧录列表设置） -->
+        <div id="pvBar" style="display:none;position:absolute;left:0;right:0;height:26px;overflow:hidden;pointer-events:none">
+          <div id="pvBarFill" style="position:absolute;left:0;top:0;bottom:0;width:0%"></div>
+          <div id="pvBarText" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:700;white-space:nowrap"></div>
+        </div>
+        <!-- 动态水印预览：四角跳动（画在底层，不遮字幕/进度条） -->
+        <div id="pvWm" style="display:none;position:absolute;white-space:nowrap;pointer-events:none;font-weight:700;transition:all .4s ease;z-index:0"></div>
+      </div>
+      <div class="row" id="pvTransport" style="margin-top:10px;gap:10px;display:none">
+        <button class="btn gold" id="pvPlay" style="padding:6px 12px;flex:none" onclick="pvToggle()">▶</button>
+        <span class="val" id="pvCur" style="flex:none;font-variant-numeric:tabular-nums">0:00</span>
+        <input type="range" id="pvSeek" min="0" max="1000" value="0" style="flex:1" oninput="pvScrub()">
+        <span class="val" id="pvDur" style="flex:none;font-variant-numeric:tabular-nums">0:00</span>
+      </div>
+      <p style="text-align:center;font-size:10.5px;color:var(--faint);letter-spacing:2px;margin-top:10px" id="pvInfo">实时预览</p>
+      <p id="pvNoVideo" class="mini" style="text-align:center;color:var(--faint);margin-top:4px">还没有可预览的成片 —— 在右侧「待编辑队列」点一条载入，或先在「一键成片」生成。</p>
+      <div class="row" style="margin-top:8px">
+        <span class="mini" style="flex:none">预览大小</span>
+        <input type="range" id="pvScale" min="40" max="100" step="2" value="70" style="flex:1 1 120px" oninput="syncPv()">
+        <span class="val" id="pvScaleV">70%</span>
+      </div>
+    </div>
+
+    <!-- 主列：编辑文本框 -->
+    <div class="card">
+      <h2>编辑文本框</h2>
+      <div class="row sp" style="gap:8px">
+        <span class="f" style="margin:0;flex:none">📐 样式模板</span>
+        <select id="tplSel" style="flex:1 1 110px"></select>
+        <button class="btn" style="padding:8px 11px;flex:none" onclick="applyTpl()">载入</button>
+        <button class="btn" style="padding:8px 11px;flex:none" onclick="renameTpl()">重命名</button>
+        <button class="btn" style="padding:8px 11px;flex:none" onclick="delTpl()">删除</button>
+        <button class="btn gold" style="padding:8px 11px;flex:none" onclick="saveTpl()">存为模板</button>
+      </div>
+      <div class="sp"><span class="f">文本内容（<b>按回车换行 = 字幕分行位置</b>，烧录按此分行）</span>
+        <textarea id="edText" rows="2" style="width:100%;resize:vertical" placeholder="下载知乎搜书名《…》看后续" oninput="syncPv()"></textarea></div>
+      <div class="grid g2e sp">
+        <div><span class="f">位置</span><select id="edPos" onchange="syncPv()"></select></div>
+        <div><span class="f">字号 <span class="val" id="edSizeV" style="padding:2px 8px">72</span></span>
+          <input type="range" id="edSize" min="32" max="160" step="4" value="72" oninput="syncPv()"></div>
+      </div>
+      <div class="sp"><span class="f">字体</span><select id="edFont" onchange="syncPv()"></select></div>
+      <div class="sp"><span class="f">颜色（输入色号点 ★ 存色；自定义色块点右上角 ✕ 删除）</span>
+        <div class="row" id="swatches">
+          <div class="sw on" data-c="#FFFFFF" style="background:#FFFFFF"></div>
+          <div class="sw" data-c="#FFE14D" style="background:#FFE14D"></div>
+          <div class="sw" data-c="#E4B963" style="background:#E4B963"></div>
+          <div class="sw" data-c="#FF5A4D" style="background:#FF5A4D"></div>
+          <div class="sw" data-c="#111111" style="background:#111"></div>
+          <span id="myColors" style="display:contents"></span>
+          <input type="text" id="edColor" value="#FFFFFF" style="width:104px;flex:none" oninput="syncPv(true)">
+          <button class="btn" style="padding:8px 12px;flex:none" title="保存当前色号" onclick="saveColor()">★ 存色</button>
+        </div></div>
+      <div class="row sp" style="gap:20px;flex-wrap:wrap">
+        <label class="row mini" style="gap:7px"><input type="checkbox" id="edBox" onchange="syncPv()">半透明背景框</label>
+        <span class="row mini" style="gap:7px">描边 <input type="number" id="edBorder" value="3" style="width:64px" oninput="syncPv()"></span>
+      </div>
+      <div class="grid g2e sp">
+        <div><span class="f">开始（秒）</span><input type="number" id="edStart" value="0" step="0.5"></div>
+        <div><span class="f">结束（秒 · 0 = 片尾）</span><input type="number" id="edEnd" value="0" step="0.5"></div>
+      </div>
+      <button class="btn gold" onclick="addOverlay()">＋ 添加到列表</button>
+      <div class="row" id="ovEditBar" style="display:none;gap:8px;margin-top:8px">
+        <button class="btn gold" id="ovUpdBtn" style="flex:1" onclick="updateOverlay()">✔ 更新此条</button>
+        <button class="btn line" style="flex:none" onclick="cancelOvEdit()">✖ 取消编辑</button>
+      </div>
+    </div>
+
+    <!-- 右列：待编辑队列 + 已添加（窄列堆叠） -->
+    <div>
+      <div class="card" style="margin-bottom:16px">
+        <h2>待编辑队列 <span class="badge" id="eqN">0</span>
+          <button class="btn" style="float:right;padding:6px 10px;font-weight:400" onclick="loadEditQueue()">↻</button></h2>
+        <p class="mini" style="color:var(--faint);margin:-4px 0 10px">一键成片烧完字幕的成片自动进这里，<b>12 小时</b>无操作自动移除。点一条即载入下方预览与编辑，重烧只影响它。</p>
+        <div id="eqList" class="vlist"></div>
+      </div>
+      <div class="card">
+        <h2>已添加文本框 <span class="badge" id="ovN">0</span></h2>
+        <table><thead><tr><th>文本</th><th>位置</th><th>字号</th><th>颜色</th><th></th></tr></thead>
+          <tbody id="ovList"></tbody></table>
+        <p style="font-size:11px;color:var(--faint);margin-top:12px;letter-spacing:.5px">重烧成片时全部烧入（字幕样式在「一键成片」页的烧录列表设置）。</p>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- 动态水印（满宽一行）：四角随机跳动，画在字幕/进度条下层不遮挡它们 -->
+  <div class="card" style="margin-top:16px">
+    <h2>动态水印 <label class="mini" style="float:right;font-weight:400;cursor:pointer"><input type="checkbox" id="wmEnable" onchange="syncPv()"> 启用</label></h2>
+    <p class="mini" style="color:var(--faint);margin:-4px 0 12px">自定义一行水印文字，烧录时<b>在四角（左上/右上/左下/右下）之间按时间随机跳动</b>（防搬运）。它画在<b>最底层</b>，不遮挡字幕与进度条。</p>
+    <div class="sp"><span class="f">水印文字</span>
+      <input type="text" id="wmText" placeholder="例：@你的账号名 / 原创搬运必究" style="width:100%" oninput="syncPv()"></div>
+    <div class="row sp" style="gap:20px;flex-wrap:wrap;align-items:flex-end">
+      <div style="flex:none"><span class="f">字号</span>
+        <input type="number" id="wmSize" value="36" min="16" max="120" style="width:82px" oninput="syncPv()"></div>
+      <div style="flex:none"><span class="f">切换间隔（秒）</span>
+        <input type="number" id="wmInterval" value="3" min="0.5" max="30" step="0.5" style="width:90px" title="每隔多少秒换一个角"></div>
+      <div style="flex:none"><span class="f">边距</span>
+        <input type="number" id="wmMargin" value="40" min="0" max="300" style="width:82px" oninput="syncPv()"></div>
+      <div style="flex:none"><span class="f">描边</span>
+        <input type="number" id="wmBorder" value="2" min="0" max="20" style="width:74px"></div>
+      <div style="flex:none"><span class="f">文字颜色</span>
+        <div class="row" style="gap:6px">
+          <input type="color" id="wmColor" value="#FFFFFF" style="width:44px;height:30px;padding:2px;flex:none" oninput="$('wmColorHex').value=this.value;syncPv()">
+          <input type="text" id="wmColorHex" value="#FFFFFF" style="width:88px" oninput="if(/^#[0-9a-fA-F]{6}$/.test(this.value)){$('wmColor').value=this.value;syncPv()}"></div></div>
+      <div style="flex:none"><span class="f">透明度 <span class="val" id="wmOpV" style="padding:1px 6px">0.50</span></span>
+        <input type="range" id="wmOpacity" min="0.1" max="1" step="0.05" value="0.5" style="width:120px" oninput="$('wmOpV').textContent=(+this.value).toFixed(2);syncPv()"></div>
+    </div>
+  </div>
+
+  <!-- 样式确认·导出（满宽一行）-->
+  <div class="card" style="margin-top:16px">
+    <h2>样式确认 · 导出</h2>
+    <p class="mini" style="color:var(--faint);margin:-4px 0 10px">
+      字幕由渲染端<b>按标点逐句、按时间轴</b>自动烧录（本页只管字幕样式与手加文字层）。
+      调整样式/文字层后点下方按钮<b>按当前样式重烧成片</b>。剪映草稿 / Premiere 工程<b>只在你点对应按钮时才导出</b>，不再自动生成。</p>
+    <div class="row" style="gap:12px;flex-wrap:wrap;align-items:stretch">
+      <button class="btn gold big" style="flex:2 1 260px;white-space:normal;line-height:1.5;letter-spacing:2px" onclick="run('finalize')">✔ 按当前样式重烧成片<br><span style="font-size:12px;font-weight:400">只出成片 · 不自动导草稿</span></button>
+      <a id="filmBtn2" class="btn line" style="display:none;flex:1 1 120px;align-items:center;justify-content:center" href="#" target="_blank">▶ 打开成片</a>
+      <button class="btn line" style="flex:1 1 140px" onclick="run('capcut')" title="按当前成片导出剪映草稿（自包含，素材已复制进草稿包）">导出剪映草稿</button>
+      <button class="btn line" style="flex:1 1 150px" onclick="run('premiere')" title="导出 Premiere 可导入的 XML 交换工程（自包含素材）。用 PR「文件→导入」选该 XML，不是「打开项目」；导入后可另存为 .prproj。字幕另导入成片.srt">导出 Premiere 工程</button>
+      <button class="btn line" style="flex:1 1 150px;border-color:#7a5a2a" onclick="cleanupCache()" title="删掉生成过程中的中间产物（master_chunks / 成片_segments），保留成片与各交接包">🧹 清理缓存</button>
+    </div>
+  </div>
+</section>
+
+<!-- ════ 封面工厂 ════ -->
+<section id="p6">
+<style>
+/* 封面工厂：PS 式图层面板 */
+.lrow{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line);
+  border-radius:9px;margin-bottom:6px;background:var(--panel2);cursor:grab;user-select:none;font-size:13px}
+.lrow.sel{border-color:var(--gold);box-shadow:0 0 0 1px var(--gold) inset}
+.lrow.dragover{border-style:dashed;border-color:var(--gold-hi)}
+.lrow .lbtn{cursor:pointer;flex:none;opacity:.9;width:22px;text-align:center}
+.lrow .lbtn.off{opacity:.32}
+.lrow .lname{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lrow .lname input{width:100%;font-size:13px;padding:2px 6px}
+.lrow .ltype{flex:none;font-size:11px;color:var(--faint);border:1px solid var(--line);border-radius:5px;padding:1px 6px}
+.cvwrap{position:relative;background:
+  repeating-conic-gradient(#23201a 0 25%,#191612 0 50%) 0 0/22px 22px;border-radius:12px;overflow:hidden;
+  border:1px solid var(--line2)}
+.cvwrap canvas{display:block;width:100%;height:auto;cursor:crosshair}
+.grid9{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;width:132px}
+.grid9 button{padding:8px 0;font-size:13px}
+</style>
+  <div class="thesis">
+    <h1>一张底图，<em>一套模板，账号封面统一</em>。</h1>
+    <p>导入图片 → 加自定义文字层 → 存为模板复刻 —— 图层面板对齐 PS 习惯（显隐 · 锁定 · 拖拽排序 · 双击重命名），按你设定的像素导出。</p>
+  </div>
+
+  <div class="g3ov">
+    <!-- 左：画布 -->
+    <div class="card">
+      <h2>画布</h2>
+      <div class="row sp" style="gap:8px">
+        <button class="btn gold" style="flex:none" onclick="$('cvImgFile').click()">🖼 导入底图</button>
+        <input type="file" id="cvImgFile" accept="image/*" style="display:none" onchange="cvImportImg(this)">
+        <select id="cvPreset" style="flex:1 1 110px" onchange="cvApplyPreset()">
+          <option value="1920x1080">横版 1920×1080 (16:9)</option>
+          <option value="1080x1920">竖版 1080×1920 (9:16)</option>
+          <option value="1080x1080">方形 1080×1080 (1:1)</option>
+          <option value="1280x720">横版 1280×720</option>
+          <option value="900x1200">竖版 900×1200 (3:4)</option>
+          <option value="custom">自定义…</option>
+        </select>
+        <span class="row mini" style="gap:5px;flex:none">
+          <input type="number" id="cvW" value="1920" min="16" max="8192" style="width:76px" onchange="cvSetSize()">×
+          <input type="number" id="cvH" value="1080" min="16" max="8192" style="width:76px" onchange="cvSetSize()">px</span>
+      </div>
+      <div class="cvwrap sp"><canvas id="cvCanvas" width="1920" height="1080"></canvas></div>
+      <p class="mini" style="color:var(--faint);margin-top:8px">画布上直接<b>拖动</b>文字定位；方向键微调（Shift=10px）；Delete 删除选中层（锁定层不受影响）。</p>
+      <div class="row" style="gap:8px;margin-top:10px">
+        <select id="cvFmt" style="flex:none;width:110px"><option value="png">PNG</option><option value="jpg">JPG</option></select>
+        <button class="btn gold big" style="flex:1" onclick="cvExport()">⬇ 按当前尺寸导出封面</button>
+      </div>
+    </div>
+
+    <!-- 中：文字层属性 -->
+    <div class="card">
+      <h2>文字层</h2>
+      <button class="btn gold" onclick="cvAddText()">＋ 添加文字层</button>
+      <div id="cvProps" style="display:none">
+        <div class="sp"><span class="f">文字内容（可多行）</span>
+          <textarea id="cvText" rows="2" style="width:100%" oninput="cvProp('text',this.value)"></textarea></div>
+        <div class="grid g2e sp">
+          <div><span class="f">字号 <span class="val" id="cvSizeV">96</span></span>
+            <input type="range" id="cvSize" min="16" max="400" step="2" value="96" oninput="cvProp('size',+this.value);$('cvSizeV').textContent=this.value"></div>
+          <div><span class="f">对齐</span>
+            <div class="row" style="gap:6px">
+              <button class="btn" id="alL" style="flex:1;padding:8px 0" onclick="cvProp('align','left')">⇤ 左</button>
+              <button class="btn" id="alC" style="flex:1;padding:8px 0" onclick="cvProp('align','center')">↔ 中</button>
+              <button class="btn" id="alR" style="flex:1;padding:8px 0" onclick="cvProp('align','right')">⇥ 右</button>
+            </div></div>
+        </div>
+        <div class="sp"><span class="f">字体（与「字体库」同步）</span><select id="cvFont" onchange="cvProp('font',this.value)"></select></div>
+        <div class="grid g2e sp">
+          <div><span class="f">颜色</span><div class="row" style="gap:6px">
+            <input type="color" id="cvColor" value="#FFFFFF" style="width:44px;height:36px;padding:2px" oninput="cvProp('color',this.value)">
+            <input type="text" id="cvColorT" value="#FFFFFF" style="flex:1" oninput="cvProp('color',this.value)"></div></div>
+          <div><span class="f">描边 <span class="val" id="cvBorderV">6</span>px</span>
+            <div class="row" style="gap:6px">
+              <input type="range" id="cvBorder" min="0" max="40" value="6" style="flex:1" oninput="cvProp('border',+this.value);$('cvBorderV').textContent=this.value">
+              <input type="color" id="cvBorderC" value="#000000" style="width:44px;height:32px;padding:2px" oninput="cvProp('borderColor',this.value)"></div></div>
+        </div>
+        <div class="grid g2e sp">
+          <div><span class="f">字重 / 斜体</span>
+            <div class="row" style="gap:8px">
+              <select id="cvWeight" style="flex:1" onchange="cvProp('weight',+this.value)">
+                <option value="400">常规</option><option value="700" selected>加粗</option><option value="900">特粗</option>
+              </select>
+              <label class="row mini" style="gap:6px;flex:none"><input type="checkbox" id="cvItalic" onchange="cvProp('italic',this.checked)">斜体 I</label>
+            </div></div>
+          <div><span class="f">不透明度 <span class="val" id="cvOpacityV">100</span>%</span>
+            <input type="range" id="cvOpacity" min="0" max="100" value="100" oninput="cvProp('opacity',+this.value/100);$('cvOpacityV').textContent=this.value"></div>
+        </div>
+        <div class="grid g2e sp">
+          <div><span class="f">字间距 <span class="val" id="cvSpacingV">0</span>px</span>
+            <input type="range" id="cvSpacing" min="0" max="120" value="0" oninput="cvProp('spacing',+this.value);$('cvSpacingV').textContent=this.value"></div>
+          <div><span class="f">行距 <span class="val" id="cvLinehV">1.24</span></span>
+            <input type="range" id="cvLineh" min="0.8" max="3" step="0.04" value="1.24" oninput="cvProp('lineh',+this.value);$('cvLinehV').textContent=this.value"></div>
+        </div>
+        <div class="sp"><span class="f">旋转 <span class="val" id="cvRotV">0</span>°</span>
+          <input type="range" id="cvRot" min="-180" max="180" value="0" oninput="cvProp('rot',+this.value);$('cvRotV').textContent=this.value"></div>
+        <div class="row sp" style="gap:10px;flex-wrap:wrap;align-items:center">
+          <label class="row mini" style="gap:6px;flex:none"><input type="checkbox" id="cvShadow" onchange="cvProp('shadow',this.checked)">投影</label>
+          <input type="color" id="cvShadowC" value="#000000" style="width:38px;height:30px;padding:2px;flex:none" oninput="cvProp('shadowColor',this.value)">
+          <span class="row mini" style="gap:4px;flex:none">X<input type="number" id="cvShadowX" value="6" style="width:56px" onchange="cvProp('shadowX',+this.value)"></span>
+          <span class="row mini" style="gap:4px;flex:none">Y<input type="number" id="cvShadowY" value="6" style="width:56px" onchange="cvProp('shadowY',+this.value)"></span>
+          <span class="row mini" style="gap:4px;flex:none">模糊<input type="number" id="cvShadowB" value="12" min="0" style="width:56px" onchange="cvProp('shadowBlur',+this.value)"></span>
+        </div>
+        <div class="row sp" style="gap:10px;flex-wrap:wrap;align-items:center">
+          <label class="row mini" style="gap:6px;flex:none"><input type="checkbox" id="cvGrad" onchange="cvProp('grad',this.checked)">渐变填充</label>
+          <input type="color" id="cvGradA" value="#FFD75E" style="width:38px;height:30px;padding:2px;flex:none" oninput="cvProp('gradA',this.value)">
+          <span class="mini" style="flex:none">→</span>
+          <input type="color" id="cvGradB" value="#FF7A3C" style="width:38px;height:30px;padding:2px;flex:none" oninput="cvProp('gradB',this.value)">
+          <select id="cvGradDir" style="width:92px;flex:none" onchange="cvProp('gradDir',this.value)">
+            <option value="v">垂直</option><option value="h">水平</option></select>
+          <span class="mini" style="color:var(--faint)">开渐变时替代纯色</span>
+        </div>
+        <div class="row sp" style="gap:14px;align-items:flex-start">
+          <div><span class="f">快捷定位（也可画布拖动）</span>
+            <div class="grid9" id="cvGrid9"></div></div>
+          <div style="flex:1"><span class="f">精确位置（画布百分比）</span>
+            <div class="row" style="gap:6px">X <input type="number" id="cvX" min="0" max="100" style="width:72px" onchange="cvProp('x',+this.value/100)">%
+              Y <input type="number" id="cvY" min="0" max="100" style="width:72px" onchange="cvProp('y',+this.value/100)">%</div>
+            <label class="row mini" style="gap:7px;margin-top:10px"><input type="checkbox" id="cvBoxed" onchange="cvProp('boxed',this.checked)">半透明背景框</label></div>
+        </div>
+        <button class="btn" style="margin-top:4px" onclick="cvDupLayer()">⧉ 复制此层（Ctrl+J）</button>
+      </div>
+      <p class="mini" id="cvNoSel" style="color:var(--faint);margin-top:10px">先「添加文字层」或在右侧图层面板选中一层。</p>
+    </div>
+
+    <!-- 右：图层面板 + 模板 -->
+    <div>
+      <div class="card" style="margin-bottom:16px">
+        <h2>图层 <span class="badge" id="cvLayerN">0</span></h2>
+        <p class="mini" style="color:var(--faint);margin:-4px 0 8px">上面的层压住下面的层（同 PS）。👁 显隐 · 🔒 锁定（可选中不可动）· 拖动排序 · 双击改名。</p>
+        <div id="cvLayers"></div>
+      </div>
+      <div class="card">
+        <h2>封面模板</h2>
+        <p class="mini" style="color:var(--faint);margin:-4px 0 8px">存「画布尺寸 + 全部文字层」；换一张底图载入模板即复刻同款排版，保持账号封面统一。</p>
+        <div class="row sp" style="gap:8px">
+          <select id="cvTplSel" style="flex:1 1 110px"></select>
+          <button class="btn" style="padding:8px 11px;flex:none" onclick="cvTplLoad()">载入</button>
+          <button class="btn" style="padding:8px 11px;flex:none" onclick="cvTplRename()">重命名</button>
+          <button class="btn" style="padding:8px 11px;flex:none" onclick="cvTplDel()">删除</button>
+        </div>
+        <button class="btn gold" onclick="cvTplSave()">★ 当前设计存为模板</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ════ 音色库 ════ -->
+<section id="p3">
+  <div class="thesis">
+    <h1>一段参考音频，<em>就是一个声音</em>。</h1>
+    <p>5–30 秒干净人声 + 逐字转写（可空，填了克隆相似度更高）；dots.tts 与 fish-speech 共用同一音色库。</p>
+  </div>
+  <div class="grid g2e">
+    <div class="card">
+      <h2>设计新音色</h2>
+      <p class="mini" style="margin:-6px 0 10px;line-height:1.7">💡 一个音色 = <b style="color:var(--gold)">参考音频 + 引擎/模型 + 一套合成参数</b>。
+        登记 5–30 秒干净人声，选好引擎并调参，保存后即为专属声线；参数随音色存档、可打包迁移。不选音色时用默认声线。</p>
+      <div class="grid g2e sp">
+        <div><span class="f">音色名称</span><input type="text" id="vName" placeholder="晚棠 / 青梧 / 主播甲 …"></div>
+        <div><span class="f">引擎 / 模型</span><select id="vEngine"></select></div>
+      </div>
+      <div class="sp"><span class="f">参考音频（5–30 秒干净人声）</span><input type="file" id="vFile" accept="audio/*"></div>
+      <div class="sp"><span class="f">参考音频转写（可空，填了克隆更像）</span>
+        <textarea id="vTrans" style="min-height:64px" placeholder="参考音频里说的那句话的逐字文本"></textarea></div>
+      <div style="border-top:1px solid var(--line);padding-top:12px;margin-top:4px">
+        <span class="f" style="color:var(--gold)">🎛 合成参数（对照 dots.tts / fish-speech 设置面板）</span>
+        <div class="grid g2e" style="gap:12px">
+          <div><span class="f">扩散步数 num_steps <span class="val" id="pStepV">10</span><span class="mini" style="color:var(--faint)"> 越大越稳越慢</span></span>
+            <input type="range" id="pSteps" min="4" max="32" step="1" value="10" oninput="pStepV.textContent=this.value"></div>
+          <div><span class="f">引导强度 guidance <span class="val" id="pGuideV">1.2</span><span class="mini" style="color:var(--faint)"> 越大越贴参考</span></span>
+            <input type="range" id="pGuide" min="0.5" max="3" step="0.1" value="1.2" oninput="pGuideV.textContent=(+this.value).toFixed(1)"></div>
+          <div><span class="f">语速 speed <span class="val" id="pSpeedV">1.0</span></span>
+            <input type="range" id="pSpeed" min="0.6" max="1.6" step="0.05" value="1" oninput="pSpeedV.textContent=(+this.value).toFixed(2)"></div>
+          <div><span class="f">随机种子 seed（固定可复现）</span><input type="number" id="pSeed" value="42" style="width:100%"></div>
+        </div>
+      </div>
+      <div class="row" style="margin-top:14px">
+        <button class="btn gold" onclick="saveVoice()">💾 保存为音色</button>
+        <span class="mini" style="color:var(--faint)">保存后可在下方卡片「🎧 合成试听」用真实引擎听效果</span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>已登记音色 <span class="badge" id="vCount">0</span></h2>
+      <p class="mini" id="vRootHint" style="margin:-8px 0 12px;font-size:11px;color:var(--faint)"></p>
+      <div class="row" style="margin-bottom:12px">
+        <a class="btn" href="/api/voices/export" download="音色包.zip" style="text-decoration:none">📦 导出音色包</a>
+        <button class="btn" onclick="vPack.click()">📥 导入音色包</button>
+        <button class="btn gold" onclick="batchVoices()" title="选一个文件夹：每个音频=一个音色（文件名即名字，同名.txt自动作转写），一次拖放录入十几个">📂 批量导入文件夹</button>
+        <input type="hidden" id="vBatchDir">
+        <input type="file" id="vPack" accept=".zip" style="display:none" onchange="importVoicePack(this)">
+      </div>
+      <div class="vlist" id="vList"></div>
+    </div>
+    <div class="card" style="grid-column:1/-1">
+      <h2>克隆音频存档 <span class="badge" id="clCount">0</span>
+        <button class="btn" style="margin-left:auto;padding:7px 14px" onclick="loadClones()">↻ 刷新</button></h2>
+      <p class="hint" id="clHint">每次「① 配音」成功后，master 自动存档到 总目录/克隆音频（时间戳_引擎_音色）；可试听、可删除，文件可直接复用。</p>
+      <div class="vlist" id="clList"><p class="empty">读取中…</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ════ 自检 ════ -->
+<section id="p4">
+  <div class="thesis">
+    <h1>缺什么，<em>一眼看清</em>。</h1>
+    <p>真组件未就绪时给出补齐指引；端到端渲染自检不依赖 GPU。</p>
+  </div>
+  <div class="grid g2e">
+    <div class="card">
+      <h2>组件工具箱 <button class="btn" style="margin-left:auto;padding:7px 14px" onclick="loadComponents()">↻ 刷新</button></h2>
+      <div class="check" style="border-bottom:1px solid var(--line);margin-bottom:12px;padding-top:0">
+        <span class="dot ok"></span><b>版本</b>
+        <span id="verInfo" style="font-variant-numeric:tabular-nums">读取中…</span>
+      </div>
+      <div class="sp"><span class="f">数据总目录（组件/模型/音色库/克隆音频/字体 全部存放于此；整个文件夹可拷到其他电脑直接使用）</span>
+        <div class="row" style="margin-bottom:8px"><input type="text" id="compRoot">
+          <button class="btn" onclick="pickDir('compRoot')">📁 选择</button></div>
+        <div class="row">
+          <button class="btn line" onclick="saveCompRoot()">💾 保存总目录</button>
+          <button class="btn gold" style="flex:1" onclick="run('envcheck','checklog')">🩺 环境自检</button></div>
+        <p class="hint" style="margin-top:8px"><span id="pathToggle" style="cursor:pointer;color:var(--gold);user-select:none" onclick="togglePaths()">▸ 下载/存档存到哪里？（点击展开）</span></p>
+        <p class="hint" id="pathHint" style="display:none;line-height:1.9;margin-top:4px"></p></div>
+      <div class="sp"><span class="f">☁ 云配音（远程 GPU）——本机太慢时，把配音克隆甩给云显卡；其余全在本地，本地路径照旧</span>
+        <div class="row" style="margin-bottom:8px">
+          <input type="text" id="remoteEp" placeholder="云服务器地址，如 https://xxx.example.com（不含 /synthesize）">
+        </div>
+        <div class="row" style="margin-bottom:8px">
+          <input type="password" id="remoteKey" placeholder="API Key（留空=不改；已设置会显示 ✓）">
+          <button class="btn line" style="flex:none" onclick="saveRemote()">💾 保存云配置</button>
+          <button class="btn" style="flex:none" onclick="testRemote()">🔌 测试连接</button>
+        </div>
+        <p class="hint" id="remoteHint" style="line-height:1.8;margin-top:2px">填好后到「配音引擎」下拉里选 <b style="color:var(--gold)">dots.tts（云 GPU · 远程）</b> 即可用云显卡克隆。部署见 <code>server/</code> 目录的部署文档。</p></div>
+
+      <!-- ═══ 免费 Edge TTS（Cloudflare Worker · OpenAI 兼容接口 · 预设合成音色 · 非克隆） ═══ -->
+      <div class="sp" id="edgeTtsAnchor"><span class="f">🌐 免费 Edge TTS（Cloudflare Worker · 预设合成音色，不是克隆）</span>
+        <p class="hint" style="margin:2px 0 10px;line-height:1.8">
+          调用 <a href="https://github.com/wangwangit/tts" target="_blank" style="color:var(--gold)">wangwangit/tts（MIT）</a> 部署到 Cloudflare 的 Worker，背后是 <b>Microsoft Edge Read Aloud</b>。
+          <b style="color:#e08c58">建议部署到你自己的 Cloudflare 免费账户</b>；作者公共地址仅适合临时试用，
+          不保证稳定；免费额度归属你的账户。稳定性及生成内容授权不由本软件承诺。
+        </p>
+        <div class="row" style="gap:6px">
+          <input type="text" id="edgeEp" placeholder="Worker 服务根地址，如 https://xxx.workers.dev（软件自动拼 /v1/audio/speech）" style="flex:1">
+          <button class="btn line" style="flex:none" onclick="saveEdgeEndpoint()">💾 保存</button>
+          <button class="btn" style="flex:none" onclick="testEdgeEndpoint()">🔌 测试连接</button>
+        </div>
+        <p class="hint" style="margin-top:8px;line-height:1.8">
+          自建步骤（5 分钟）：
+          <a href="https://github.com/wangwangit/tts" target="_blank" style="color:var(--gold);text-decoration:underline">📖 wangwangit/tts（MIT）</a> ·
+          <a href="https://deploy.workers.cloudflare.com/?url=https://github.com/wangwangit/tts" target="_blank" style="color:var(--gold);text-decoration:underline">🚀 Deploy to Cloudflare Workers</a> ·
+          注册 <a href="https://dash.cloudflare.com/sign-up" target="_blank" style="color:var(--gold);text-decoration:underline">Cloudflare 免费账户</a> → 点 Deploy → 拿到 xxx.workers.dev 填入上方 → 引擎选 <b style="color:var(--gold)">Edge TTS（免费云端 · 预设音色 · 不支持克隆）</b>。
+        </p>
+        <p class="hint" id="edgeHint" style="line-height:1.8;margin-top:2px;color:var(--faint)">—— 未加载 ——</p>
+      </div>
+
+      <!-- ═══ 云 GPU 会话（优云智算 / 通用 SSH）：一键唤醒 · 一键关机 · 空闲自动关（DPAPI 本机加密） ═══ -->
+      <div class="sp" id="cloudGpuAnchor"><span class="f">🖥 云 GPU 会话（SSH 唤醒 / 关机 · 可选 CompShare 云 API 停机不计费）</span>
+        <p class="hint" style="margin:2px 0 10px">
+          密码经 <b>Windows DPAPI</b> 加密后仅存本机（换机需重设）；
+          任务活跃时不触发自动关，空闲 <b><span id="cgIdleMinDisp">5</span></b> 分钟才关。
+          <span id="cgCredWarn" style="color:#e08c58;display:none">·（当前机器无 DPAPI，密码降级明文存储）</span>
+        </p>
+        <div class="row" style="gap:12px;margin-bottom:8px;flex-wrap:wrap">
+          <span class="mini" style="flex:none">停机方式</span>
+          <label class="row mini" style="gap:6px"><input type="radio" name="cgProvider" value="ssh" checked onchange="onProviderChange()">SSH · sudo shutdown</label>
+          <label class="row mini" style="gap:6px"><input type="radio" name="cgProvider" value="compshare" onchange="onProviderChange()">CompShare 云 API · StopUHostInstance（真正停机不计费）</label>
+        </div>
+        <p class="hint" style="margin:6px 0 8px;line-height:1.8">
+          <b style="color:var(--gold)">对齐优云智算控制台：</b>
+          实例卡里点「ssh登录指令 ssh*****」旁的📋 → 粘贴的字符串形如 <code>ssh -p <b>34567</b> root@<b>117.50.190.54</b></code>，
+          <b>-p</b> 后是端口，<b>@</b> 后是主机；密码到「密码 *****」点👁/📋看明文。
+        </p>
+        <div class="grid g2e" style="gap:8px">
+          <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:60px">主机</span>
+            <input type="text" id="cgHost" placeholder="控制台「基础网络（外网）」的 IP，如 117.50.190.54" style="flex:1"></div>
+          <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:60px">端口</span>
+            <input type="number" id="cgPort" value="22" min="1" max="65535" style="width:80px" title="从「ssh登录指令」的 -p 后取；容器实例通常不是 22"></div>
+          <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:60px">用户</span>
+            <input type="text" id="cgUser" value="root" style="flex:1"></div>
+          <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:60px">密码</span>
+            <input type="password" id="cgPass" placeholder="控制台「密码」字段的明文（首次必填一次）" style="flex:1"></div>
+        </div>
+        <div class="row" style="gap:6px;margin-top:8px"><span class="mini" style="flex:none;width:60px">密钥</span>
+          <input type="text" id="cgKey" placeholder="（可选）私钥路径，如 C:\Users\me\.ssh\id_ed25519（有则优先密码）" style="flex:1"></div>
+        <div class="row" style="gap:6px;margin-top:8px"><span class="mini" style="flex:none;width:60px">唤醒命令</span>
+          <input type="text" id="cgWake" placeholder="机器开机后要跑的命令，比如：nohup bash /root/start_dots.sh &（关机状态 SSH 连不上，需先控制台点启动）" style="flex:1"></div>
+        <div class="row" style="gap:6px;margin-top:8px"><span class="mini" style="flex:none;width:60px">关机命令</span>
+          <input type="text" id="cgSleep" value="sudo shutdown -h now" style="flex:1"></div>
+        <div class="row" style="gap:6px;margin-top:8px"><span class="mini" style="flex:none;width:60px">探活 URL</span>
+          <input type="text" id="cgHealth" placeholder="判定服务已上线的 URL，如 http://外网IP:8080/health；没 /health 就填服务根地址" style="flex:1"></div>
+        <div class="row" style="gap:12px;margin-top:8px;flex-wrap:wrap">
+          <label class="row mini" style="gap:6px"><input type="checkbox" id="cgEnabled">启用云 GPU 会话</label>
+          <label class="row mini" style="gap:6px"><input type="checkbox" id="cgAuto" checked>空闲自动关机</label>
+          <span class="mini">空闲阈值(分钟) <input type="number" id="cgIdleMin" value="5" min="1" max="240" style="width:60px" oninput="document.getElementById('cgIdleMinDisp').textContent=this.value"></span>
+          <button class="btn line" style="flex:none" onclick="saveCloudGpu()">💾 保存云 GPU 配置</button>
+        </div>
+        <!-- CompShare 云 API（默认折起；provider=compshare 时展开） -->
+        <div id="cgCsBox" style="display:none;border-top:1px dashed var(--line);margin-top:10px;padding-top:10px">
+          <p class="hint" style="margin:0 0 8px;line-height:1.8">
+            <b style="color:#e08c58">⚠ 未验证：</b>
+            优云智算的 GPU 容器实例 API 规格尚未在软件里对齐，此处默认按 UCloud OpenAPI（<code>api.ucloud.cn</code> · <code>StopUHostInstance</code>）尝试。
+            若报错，会自动回退 SSH shutdown 兜底；把返回的 <code>RetCode/Message</code> 反馈可按真实文档改。
+          </p>
+          <p class="hint" style="margin:0 0 8px;line-height:1.8">
+            <b style="color:var(--gold)">对齐控制台三处即可：</b>
+            <b>Public Key / Private Key</b> 到「API 密钥」页点📋复制；
+            <b>Instance ID</b> 到实例卡「ID: uhost-xxxxxxxx」点📋复制。
+            <a href="https://console.compshare.cn/light-gpu/api-keys" target="_blank" style="color:var(--gold);text-decoration:underline">🔑 打开 API 密钥页</a> ·
+            <a href="https://console.compshare.cn/light-gpu/instance" target="_blank" style="color:var(--gold);text-decoration:underline">🖥 打开实例列表</a>
+          </p>
+          <div class="grid g2e" style="gap:8px">
+            <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:88px">API Endpoint</span>
+              <input type="text" id="csEndpoint" value="https://api.ucloud.cn/" style="flex:1"
+                     title="默认 UCloud 网关；若优云智算文档给了独立 endpoint 请覆盖"></div>
+            <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:88px">Instance ID</span>
+              <input type="text" id="csInstance" placeholder="如 uhost-1tx6jx1ufb1a（图1「ID:」旁点📋）" style="flex:1"></div>
+            <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:88px">Public Key</span>
+              <input type="text" id="csPub" placeholder="控制台「API 密钥」→「公钥」列点📋" style="flex:1"></div>
+            <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:88px">Private Key</span>
+              <input type="password" id="csSec" placeholder="控制台「API 密钥」→「私钥」列点📋（DPAPI 本机加密）" style="flex:1"></div>
+          </div>
+          <!-- 高级：Region/Zone/Project 容器实例通常不需要；控制台文档若要求再填 -->
+          <p style="margin:10px 0 4px">
+            <span id="cgAdvToggle" style="cursor:pointer;color:var(--faint);font-size:12px;user-select:none" onclick="toggleCsAdv()">▸ 高级：Region / Zone / Project（容器实例通常留空即可）</span>
+          </p>
+          <div id="cgCsAdv" style="display:none">
+            <div class="grid g2e" style="gap:8px">
+              <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:88px">Region</span>
+                <input type="text" id="csRegion" placeholder="如 cn-bj2（华北二 A）；控制台文档若要求再填" style="flex:1"></div>
+              <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:88px">Zone</span>
+                <input type="text" id="csZone" placeholder="如 cn-bj2-04；仅 Start/Stop Action 可能需要" style="flex:1"></div>
+              <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:88px">Project Id</span>
+                <input type="text" id="csProject" placeholder="（可选）项目 ID；个人默认项目留空" style="flex:1"></div>
+            </div>
+          </div>
+          <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap">
+            <button class="btn line" style="flex:none" onclick="cloudStartApi()">▶ 云 API 开机（Start）</button>
+            <span class="mini" style="color:var(--faint)">机器已关时 SSH 连不上，只有云 API 能远程拉起来</span>
+          </div>
+        </div>
+        <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap">
+          <span class="badge" id="cgBadge" style="background:#333;color:#ccc">未启用</span>
+          <button class="btn gold" style="flex:none" onclick="cloudWake()">▶ 唤醒服务器</button>
+          <button class="btn" style="flex:none" onclick="cloudSleep()">⏹ 立即关机</button>
+          <button class="btn line" style="flex:none" onclick="cloudPauseAuto(30)">⏸ 暂停自动关 30 分钟</button>
+          <button class="btn line" style="flex:none" onclick="cloudPauseAuto(0)">▶ 取消暂停</button>
+        </div>
+        <!-- 唤醒进度条：wake_state.stage != idle 时展示 -->
+        <div id="cgWakeBox" style="display:none;margin-top:10px;padding:10px 12px;border-radius:8px;background:#1e2432;border:1px solid var(--line2)">
+          <div class="row" style="gap:8px">
+            <span class="mini" style="flex:none">唤醒进度</span>
+            <span class="mini" id="cgWakeStage" style="flex:none;color:var(--gold);font-weight:700">—</span>
+            <span class="mini" id="cgWakeElapsed" style="flex:none;color:var(--faint)">0s</span>
+            <span class="mini" id="cgWakeMsg" style="flex:1;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+          </div>
+        </div>
+        <p class="hint" id="cgHint" style="margin-top:6px;line-height:1.7">—— 未加载 ——</p>
+      </div>
+      <p class="hint">缺什么点击即可下载/安装（多源 + SHA256 校验 + 断点续传）；<b style="color:var(--gold)">多个下载可同时进行</b>，互不阻塞，进度在下方与各行实时显示。</p>
+      <div id="compList"><p class="empty">读取中…</p></div>
+      <div class="console" id="dlog" style="height:150px;margin-top:14px"><span class="dim">—— 下载/安装日志 · 多任务并行 ——</span></div>
+    </div>
+
+    <div class="card">
+      <h2>链路自检</h2>
+      <div class="row" style="margin-bottom:12px">
+        <button class="btn line" onclick="run('probe','checklog')">探测组件（详细）</button>
+        <button class="btn line" onclick="run('verify','checklog')">端到端渲染自检</button>
+      </div>
+      <div class="console" id="checklog" style="height:262px"><span class="dim">—— 就绪 ——</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ════ 字体库（独立入口） ════ -->
+<section id="p5">
+  <div class="thesis">
+    <h1>字体，<em>决定第一眼</em>。</h1>
+    <p>按用途分类的自媒体常用开源字体，点击即下载；也可上传自备 ttf/otf/ttc。字幕与文本框的字体在「文本框」页选择。</p>
+  </div>
+  <div class="card">
+    <h2>字体库 <span class="badge" id="fontCount">0</span>
+      <button class="btn" style="margin-left:auto;padding:7px 14px" onclick="fontUp.click()">📥 上传字体(ttf/otf/zip)</button>
+      <input type="file" id="fontUp" accept=".ttf,.otf,.ttc,.zip" style="display:none" onchange="uploadFont(this)">
+      <button class="btn" style="padding:7px 14px" onclick="loadFonts()">↻ 刷新</button></h2>
+    <p class="hint" id="fontDirHint">全部下载源逐一核实真实存在（GitHub 高口碑开源字体，可商用/免费）；缺哪个点哪个。</p>
+    <div id="fontList"><p class="empty">读取中…</p></div>
+  </div>
+</section>
+
+<div class="modal" id="dirModal">
+  <div class="box">
+    <h2 style="font-size:13px;color:var(--gold);letter-spacing:2px" id="dirTitle">选择文件夹</h2>
+    <div class="cur" id="dirCur">—</div>
+    <div class="list" id="dirList"></div>
+    <div class="foot">
+      <button class="btn" onclick="dirModal.classList.remove('on')">取消</button>
+      <button class="btn gold" id="dirChoose" onclick="chooseDir()">✔ 选择此文件夹</button>
+    </div>
+  </div>
+</div>
+
+<footer><b>水星配音对齐工作室</b> <span id="verFoot"></span> · 整篇克隆 → 逐行对齐 → 一键成片 · 非商用 · 本地离线运行</footer>
+</main>
+
+<script>
+const $=id=>document.getElementById(id);
+/* ── 全局点击反馈：任何可点元素按下即闪一圈金光（杜绝「点了像没点」） ── */
+document.addEventListener('pointerdown',e=>{
+  const el=e.target.closest('.btn,nav button,.sw,.lbtn,.x,.item,[onclick]');
+  if(!el||el.classList.contains('busy'))return;
+  el.classList.remove('tapped'); void el.offsetWidth; el.classList.add('tapped');
+  setTimeout(()=>el.classList.remove('tapped'),440);
+},true);
+/* ── 轻提示 toast：给「无即时可见结果」的操作一个回执 ── */
+function toast(msg,kind){
+  let box=$('toasts');
+  if(!box){box=document.createElement('div');box.id='toasts';document.body.appendChild(box);}
+  const t=document.createElement('div');t.className='toast'+(kind?(' '+kind):'');t.textContent=msg;
+  box.appendChild(t);requestAnimationFrame(()=>t.classList.add('show'));
+  setTimeout(()=>{t.classList.remove('show');setTimeout(()=>t.remove(),300);},2200);
+}
+/* 点击后台动作时给按钮短暂 busy 态（有 event 时用 event.currentTarget） */
+function _busy(ms){
+  const el=(typeof event!=='undefined'&&event)?event.currentTarget:null;
+  if(!el||!el.classList)return;
+  el.classList.add('busy');setTimeout(()=>el.classList.remove('busy'),ms||900);
+}
+let overlays=[], logTarget='mainlog', POSITIONS=[];
+const ASPECT_CANVAS={'9:16 竖屏':[1080,1920],'16:9 横屏':[1920,1080],'1:1 方形':[1080,1080],'4:3':[1440,1080],'3:4':[1080,1440]};
+const SUB_POS_RATIO={'顶部':0.06,'中上':0.30,'中部':0.48,'中下':0.68,'底部':0.885};
+const ENGINE_LABEL={dots_local:'dots.tts（本地 · 48kHz）',dots_remote:'dots.tts（云 GPU · 远程）',fish_local:'fish-speech（本地服务）',mock:'mock（测试）',edge_tts:'Edge TTS（免费云端 · 预设音色 · 不支持克隆）'};
+const still=matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/* ── 页签（支持 #p2 hash 直达） ── */
+function showPage(p){
+  document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('on',x.dataset.p===p));
+  document.querySelectorAll('main section').forEach(s=>s.classList.toggle('on',s.id===p));
+  if(p==='p2'&&typeof loadEditQueue==='function')loadEditQueue();  // 进文本框刷新待编辑队列
+}
+$('nav').addEventListener('click',e=>{const b=e.target.closest('button');if(b){showPage(b.dataset.p);syncPv();}});
+window.addEventListener('resize',()=>syncPv());
+if(/^#p[1-5]$/.test(location.hash))showPage(location.hash.slice(1));
+
+/* ── 声波主轨（确定性伪随机；reduced-motion 静帧） ── */
+const cv=$('wave'),cx=cv.getContext('2d');
+let seed=7;const rnd=()=>{seed=(seed*16807)%2147483647;return seed/2147483647};
+const bars=[];for(let i=0;i<160;i++)bars.push(.18+.82*Math.pow(rnd(),1.6));
+function draw(t){
+  const w=cv.width=cv.clientWidth*devicePixelRatio,h=cv.height=64*devicePixelRatio;
+  cx.clearRect(0,0,w,h);const bw=w/bars.length;
+  for(let i=0;i<bars.length;i++){
+    const pulse=still?1:(1+.16*Math.sin(t/650+i*.35));
+    const bh=bars[i]*h*.86*pulse;
+    const g=cx.createLinearGradient(0,(h-bh)/2,0,(h+bh)/2);
+    g.addColorStop(0,'rgba(245,214,143,.95)');g.addColorStop(1,'rgba(143,116,57,.55)');
+    cx.fillStyle=g;cx.beginPath();cx.roundRect(i*bw+bw*.22,(h-bh)/2,bw*.56,bh,bw*.28);cx.fill();
+  }
+  if(!still)requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+
+/* ── 时间轴行块：显示真实计时 ── */
+function renderLane(timings){
+  const lane=$('lane');lane.innerHTML='';
+  if(!timings||!timings.length){
+    lane.innerHTML='<span class="hintline">运行「② 量时长」或「生成成片」后，这里显示每行的真实时长</span>';
+    $('rigTotal').textContent='—';return;
+  }
+  let total=0;
+  timings.forEach(t=>total+=t.duration);
+  window._masterSeconds=total; renderSfxPins();
+  total=0;
+  timings.forEach(t=>{total+=t.duration;
+    const el=document.createElement('div');el.className='seg';el.style.flexGrow=Math.max(t.duration,1);
+    el.innerHTML=`<small>行 ${t.index} · ${esc(t.text.slice(0,14))}</small><b>${t.duration.toFixed(2)}s</b>`;
+    el.title=`行 ${t.index} · ${t.duration.toFixed(3)}s\n${t.text}`;lane.appendChild(el);});
+  $('rigTotal').textContent=`${total.toFixed(3)} s · ${Math.round(total*30)} 帧 · 收口 ≤1 帧`;
+}
+const esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+/* ── 状态加载 ── */
+async function loadState(){
+  const s=await (await fetch('/api/state')).json();
+  POSITIONS=s.positions;
+  if(s.version){$('verFlag').textContent=s.version.split(' · ')[0];$('verFlag').title=s.version;
+    $('verFoot').textContent='· '+s.version+' ';document.title='水星配音对齐工作室 '+s.version.split(' · ')[0];
+    const vi=$('verInfo');if(vi)vi.textContent=s.version;}
+  window._cloudOnly=!!s.cloud_only;
+  if(window._cloudOnly){document.title='水星配音对齐工作室（云配版）';
+    const vf=$('verFoot');if(vf)vf.textContent+='· 云配版 ';
+    const vi=$('verInfo');if(vi)vi.textContent=(vi.textContent||'')+'（轻量云配版：配音走云 GPU，本机无需独显；本地模型组件已隐藏）';}
+  const engs=s.engines.filter(k=>k!=='fish_local');  // 隐藏 fish-speech（会顶掉 dots.tts 的 CUDA torch）
+  fill('engine',engs.map(k=>[k,ENGINE_LABEL[k]||k]));
+  $('engine').value=engs.includes('dots_local')?'dots_local':engs[0];
+  // Edge TTS 预设声线/风格常量（不进音色库；引擎切换控件的显示切换）
+  _fillEdgeChoices(s);
+  // v0.7.71 P0-1：缓存 /api/state 返回的引擎能力矩阵，供 onEngineChange 显示提示
+  window._engineCaps = s.engine_capabilities || {};
+  onEngineChange();
+  fill('aligner',s.aligners.map(k=>[k,k==='whisper'?'whisper（推荐）':k]));
+  fill('aspect',s.aspects.map(k=>[k,k]));
+  fill('edPos',s.positions.map(k=>[k,k]));
+  {const rel=s.voices.filter(v=>v.released),draft=s.voices.filter(v=>!v.released);
+   const sel=$('voice');sel.innerHTML='';
+   const add=(v,t)=>{const o=document.createElement('option');o.value=v;o.textContent=t;return o;};
+   sel.appendChild(add('','默认声线（引擎自带）'));
+   if(rel.length){const g=document.createElement('optgroup');g.label='★ 发行音色';
+     rel.forEach(v=>g.appendChild(add(v.voice_id,'★ '+v.name)));sel.appendChild(g);}
+   if(draft.length){const g=document.createElement('optgroup');g.label='草稿';
+     draft.forEach(v=>g.appendChild(add(v.voice_id,v.name)));sel.appendChild(g);}}
+  window._voices=s.voices;
+  fill('vEngine',engs.map(k=>[k,ENGINE_LABEL[k]||k]));
+  $('vEngine').value=engs.includes('dots_local')?'dots_local':engs[0];
+  $('voice').onchange=applyVoiceDefaults;
+  fill('subPos', Object.keys(SUB_POS_RATIO).map(k=>[k,k])); $('subPos').value='底部';
+  fill('xlsxCol', 'ABCDEFGH'.split('').map(c=>[c,c+' 列'])); $('xlsxCol').value='B';
+  $('aspect').addEventListener('change',()=>syncPv());
+  // ② 记住上一轮使用的音色 + 画面比例：下拉填好后回填上次值，并在切换时持久化
+  try{
+    const lv=localStorage.getItem('dubLastVoice');
+    if(lv!==null && [...$('voice').options].some(o=>o.value===lv))$('voice').value=lv;
+    const la=localStorage.getItem('dubLastAspect');
+    if(la && [...$('aspect').options].some(o=>o.value===la))$('aspect').value=la;
+  }catch(e){}
+  $('voice').addEventListener('change',()=>{try{localStorage.setItem('dubLastVoice',$('voice').value)}catch(e){}});
+  $('aspect').addEventListener('change',()=>{try{localStorage.setItem('dubLastAspect',$('aspect').value)}catch(e){}});
+  loadBurnPresets();   // ③ 烧录预设列表
+  if($('text'))$('text').addEventListener('input',scheduleShotsCount);   // A 文案变→更新分镜匹配
+  if($('matMode'))$('matMode').addEventListener('change',updateShotsCount);
+  $('vRootHint').textContent='库目录：'+s.voice_root;
+  $('vCount').textContent=s.voices.length;
+  const list=$('vList');list.innerHTML='';
+  if(!s.voices.length)list.innerHTML='<p class="empty">还没有音色 — 在左侧登记</p>';
+  [...s.voices].sort((a,b)=>(b.released?1:0)-(a.released?1:0)).forEach((v,k)=>{
+    const el=document.createElement('div');el.className='vcard';
+    if(v.released)el.style.borderColor='var(--gold)';
+    const eng=(ENGINE_LABEL[v.engine]||v.engine||'').split('（')[0];
+    const pp=v.params||{};
+    const meta=`${eng} · 步${pp.num_steps??'-'} · 引导${pp.guidance_scale??'-'} · 速${pp.speed??'-'}`;
+    el.innerHTML=`<div class="vwave"></div><div style="min-width:0;flex:1 1 120px"><b>${v.released?'<span style="color:var(--gold)">★ </span>':''}${esc(v.name)}</b>
+      <small>${v.transcript?'「'+esc(v.transcript)+'」':'（未填转写 · 纯音色克隆）'}</small>
+      <small style="color:var(--gold)">${esc(meta)}</small></div>
+      <button class="btn" style="padding:7px 11px;flex:none" title="试听参考音频"
+        onclick="playUrl('/api/voices/${encodeURIComponent(v.voice_id)}/audio',this)">▶ 原声</button>
+      <button class="btn line" style="padding:7px 11px;flex:none" title="用该音色引擎+参数合成一句试听"
+        onclick="tryVoice('${encodeURIComponent(v.voice_id)}','${esc(v.engine||'')}',this)">🎧 合成试听</button>
+      <button class="btn ${v.released?'':'gold'}" style="padding:7px 11px;flex:none"
+        title="发行=已定稿投产，成片页置顶；未发行=草稿"
+        onclick="setReleased('${encodeURIComponent(v.voice_id)}',${v.released?'false':'true'})">${v.released?'↩ 取消发行':'★ 发行'}</button>
+      <span class="x" style="flex:none" onclick="delVoice('${encodeURIComponent(v.voice_id)}')">✕</span>`;
+    list.appendChild(el);
+    const wv=el.querySelector('.vwave');let ss=13+k*7;const r=()=>{ss=(ss*16807)%2147483647;return ss/2147483647};
+    for(let i=0;i<14;i++){const b=document.createElement('i');b.style.height=(22*(.25+.75*r())).toFixed(0)+'px';wv.appendChild(b);}
+  });
+  syncPv();
+}
+function fill(id,pairs){const el=$(id);if(!el)return;el.innerHTML='';pairs.forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;el.appendChild(o);});}
+
+/* ── 组件工具箱（点击即下载/安装） ── */
+async function loadComponents(){
+  try{
+    const s=await (await fetch('/api/components')).json();
+    const box=$('compList');box.innerHTML='';
+    s.components.forEach(c=>{
+      if(c.key==='fish_speech')return;  // 隐藏 fish-speech：它会顶掉 dots.tts 的 CUDA torch；dots.tts 已够用（2026-07-26）
+      const el=document.createElement('div');el.className='check';el.dataset.key=c.key;
+      let action='';
+      if(c.installed){
+        action='<span class="pill ok">已就绪</span>';
+      }else{
+        const label=c.kind==='download'?'下载':'安装';
+        action=`<button class="btn line" style="padding:8px 16px" onclick="installComponent('${c.key}')">${label}</button>`;
+      }
+      el.innerHTML=`<span class="dot ${c.installed?'ok':'no'}"></span>
+        <b>${esc(c.name)}</b>
+        <span title="${esc(c.detail)}">${esc(c.purpose)}</span>
+        <span class="tstat" style="margin-left:auto;flex:none;font-size:12px;color:var(--gold)"></span>
+        <span class="tact" style="flex:none">${action}</span>`;
+      box.appendChild(el);});
+    window._comps=s.components;
+    updateTaskUi(window._tasks||[]);
+  }catch(e){$('compList').innerHTML='<p class="empty">读取失败，请点「↻ 刷新」。</p>';}
+}
+async function postRun(payload){
+  const j=await (await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(payload)})).json();
+  if(j.error){alert(j.error);return false;}
+  return true;
+}
+async function installComponent(key){ if(rootUnsaved())return; _busy(1200); if(await postRun({action:'component',component_key:key})){toast('开始下载/安装 · '+key,'ok');pollAll();} }
+async function runFish(action){ if(await postRun({action}))pollAll(); }
+async function stopComponent(key){
+  if(!confirm('停止「'+key+'」的安装？（已下载部分保留，重装走国内镜像会更快）'))return;
+  await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({action:'component_stop',component_key:key})});
+  setTimeout(()=>{pollAll();loadComponents();},800);
+}
+
+/* ── ⑧ 待编辑队列 + ⑦ 真视频预览 ── */
+let _curEdit=null, _editItems=[];
+async function loadEditQueue(){
+  try{_editItems=(await (await fetch('/api/edit_queue')).json()).items||[];}catch(e){return;}
+  const list=$('eqList');if(!list)return;
+  if($('eqN'))$('eqN').textContent=_editItems.length;
+  if(!_editItems.length){list.innerHTML='<p class="empty" style="color:var(--faint);font-size:12px;padding:6px 2px">还没有成片进队列 —— 先在「一键成片」生成。</p>';return;}
+  list.innerHTML=_editItems.map(it=>{
+    const sel=(it.id===_curEdit)?' style="border-color:var(--gold);box-shadow:0 0 0 1px var(--gold);cursor:pointer"':' style="cursor:pointer"';
+    return `<div class="row" data-id="${it.id}"${sel} onclick="selectEditItem('${it.id}')">
+      <span style="flex:1;min-width:0"><b>${esc(it.title)}</b><div class="mini" style="color:var(--faint)">已烧字幕 · 点此载入编辑</div></span>
+      <button class="btn" style="padding:4px 10px;flex:none" onclick="event.stopPropagation();removeEditItem('${it.id}')">移除</button></div>`;
+  }).join('');
+}
+async function removeEditItem(id){
+  await fetch('/api/edit_queue',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({action:'remove',id})});
+  if(_curEdit===id)_curEdit=null;
+  toast('已移出待编辑队列');
+  loadEditQueue();
+}
+function selectEditItem(id){
+  const it=_editItems.find(x=>x.id===id); if(!it)return;
+  _curEdit=id;
+  const film=it.film_path, out=it.output_dir, title=it.title||'成片';
+  if($('outdir')){$('outdir').value=out;_outdirManual=true;}   // 重烧/导出作用到这条成片
+  fetch('/api/edit_queue',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({action:'touch',id})});   // 点开编辑=续期 12h
+  // B 还原该成片生成时的烧录设置 → 「按当前样式重烧」与首次一致
+  const s=it.settings||{};
+  // 还原该成片原本的分镜来源，重烧才会套回同一批画面（flat 模式不复用选片清单）
+  if(s.shots_dir&&$('shots'))$('shots').value=s.shots_dir;
+  if(s.material_mode&&$('matMode'))$('matMode').value=s.material_mode;
+  if(s.seed!=null&&$('seed'))$('seed').value=s.seed;
+  if(s.sub)applySubObj(s.sub);
+  if(s.burn!=null&&$('burn'))$('burn').checked=!!s.burn;
+  if(s.pb)applyPbObj(s.pb);
+  if(s.wm)applyWmObj(s.wm);
+  if(Array.isArray(s.overlays)){overlays=s.overlays;renderOverlays();}
+  if(s.aspect&&$('aspect')&&[...$('aspect').options].some(o=>o.value===s.aspect))$('aspect').value=s.aspect;
+  if(s.audio&&typeof restoreAudio==='function')restoreAudio(s.audio);
+  loadPreviewVideo('/api/audio?path='+encodeURIComponent(film));
+  // ⑦ 配音切到这条队列任务：主轨播放器指向该任务的 master.wav（预览视频本身也带该任务的配音）
+  const sep=out.includes('\\')?'\\':'/';
+  const murl='/api/audio?path='+encodeURIComponent(out+sep+'master.wav');
+  if($('masterAudio')){$('masterAudio').src=murl;$('masterAudio').dataset.src=murl;}
+  if($('mediaRow'))$('mediaRow').style.display='flex';
+  loadEditQueue(); syncPv();
+  if($('pvInfo'))$('pvInfo').textContent='编辑中 · '+title;
+  toast('已载入 · '+title+'（配音+烧录设置已切到本任务）','ok');
+}
+function loadPreviewVideo(url){
+  const v=$('pvVideo');if(!v)return;
+  if(!v.dataset.bound){
+    v.dataset.bound='1';
+    v.addEventListener('timeupdate',pvTick);
+    v.addEventListener('loadedmetadata',pvTick);
+    v.addEventListener('play',pvTick); v.addEventListener('pause',pvTick);
+  }
+  v.style.display='block'; if($('pvTransport'))$('pvTransport').style.display='flex';
+  if($('pvNoVideo'))$('pvNoVideo').style.display='none';
+  if(v.dataset.src!==url){v.src=url;v.dataset.src=url;v.load();}
+  stylePvBar();
+}
+function pvToggle(){const v=$('pvVideo');if(!v||!v.src)return; if(v.paused)v.play();else v.pause();}
+function pvScrub(){const v=$('pvVideo');if(!v||!v.duration)return; v.currentTime=(+$('pvSeek').value/1000)*v.duration; pvTick();}
+function _fmt(s){s=Math.max(0,s|0);return (s/60|0)+':'+String(s%60).padStart(2,'0');}
+function _rgba(hex,op){const m=/^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec((hex||'').trim());
+  if(!m)return `rgba(0,0,0,${op})`; return `rgba(${parseInt(m[1],16)},${parseInt(m[2],16)},${parseInt(m[3],16)},${op})`;}
+// 预览进度条样式（位置/颜色/文字随烧录列表设置；宽度由 pvTick 随播放推进）
+function stylePvBar(){
+  const bar=$('pvBar');if(!bar)return;
+  const on=$('pbEnable')&&$('pbEnable').checked && $('pvVideo')&&$('pvVideo').style.display!=='none';
+  bar.style.display=on?'block':'none'; if(!on)return;
+  const top=($('pbPos')?.value||'顶部')==='底部';
+  bar.style.top=top?'auto':'0'; bar.style.bottom=top?'0':'auto';
+  const ph=$('phone'); const h=Math.max(14,Math.round((ph?.clientHeight||480)*0.045));
+  bar.style.height=h+'px';
+  bar.style.background=_rgba($('pbTrack')?.value,+($('pbTrackOp')?.value||0.45));
+  const fill=$('pvBarFill'); if(fill)fill.style.background=_rgba($('pbFill')?.value,+($('pbFillOp')?.value||0.38));
+  const txt=$('pvBarText');
+  if(txt){txt.textContent=$('pbText')?.value||''; txt.style.color=($('pbColor')?.value||'#fff');
+    txt.style.fontSize=Math.max(9,Math.round(h*0.5))+'px';}
+}
+// 动态水印预览：四角跳动（与烧录同款，观感一致；真实随机顺序由后端 seed 决定）
+let _wmCorner=0, _wmTimer=null;
+function stylePvWm(){
+  const el=$('pvWm');if(!el)return;
+  const on=$('wmEnable')&&$('wmEnable').checked&&($('wmText')?.value||'').trim();
+  el.style.display=on?'block':'none'; if(!on){if(_wmTimer){clearInterval(_wmTimer);_wmTimer=null;}return;}
+  el.textContent=$('wmText').value.trim();
+  el.style.color=$('wmColor')?.value||'#fff';
+  el.style.opacity=(+($('wmOpacity')?.value||0.5));
+  const ph=$('phone'),cw=pvCanvas()[0],pvW=ph?.clientWidth||300;
+  el.style.fontSize=Math.max(8,((+$('wmSize')?.value||36)*pvW/cw)).toFixed(1)+'px';
+  el.style.textShadow=strokeShadow(((+$('wmBorder')?.value||0))*pvW/cw*0.9,'#000');
+  const m=Math.max(2,((+$('wmMargin')?.value||40)*pvW/cw));
+  const top=_wmCorner<2, left=(_wmCorner%2===0);
+  el.style.top=top?m+'px':'auto'; el.style.bottom=top?'auto':m+'px';
+  el.style.left=left?m+'px':'auto'; el.style.right=left?'auto':m+'px';
+  if(!_wmTimer){
+    const iv=Math.max(500,(+$('wmInterval')?.value||3)*1000);
+    _wmTimer=setInterval(()=>{_wmCorner=(_wmCorner+1+Math.floor(Math.random()*3))%4;stylePvWm();},iv);
+  }
+}
+function pvTick(){
+  const v=$('pvVideo');if(!v)return;
+  if($('pvPlay'))$('pvPlay').textContent=v.paused?'▶':'⏸';
+  stylePvBar();
+  if(v.duration){
+    if($('pvSeek')&&document.activeElement!==$('pvSeek'))$('pvSeek').value=Math.round(v.currentTime/v.duration*1000);
+    if($('pvCur'))$('pvCur').textContent=_fmt(v.currentTime);
+    if($('pvDur'))$('pvDur').textContent=_fmt(v.duration);
+    const fill=$('pvBarFill'); if(fill)fill.style.width=(v.currentTime/v.duration*100).toFixed(2)+'%';
+  }
+}
+
+/* ── 手机实时预览：已添加的 + 正在编辑的（虚线框） ── */
+const POS_RATIO={'顶部':6,'中上':30,'中部':47,'中下':66,'底部':84};
+function pvCanvas(){ return ASPECT_CANVAS[$('aspect')?.value] || [1080,1920]; }
+const loadedFaces=new Set();
+function ensureFace(fontFile){
+  if(!fontFile||loadedFaces.has(fontFile))return;
+  loadedFaces.add(fontFile);
+  const fam='studio-'+fontFile.replace(/[^\w-]/g,'_');
+  const face=new FontFace(fam,`url("/fonts/${encodeURIComponent(fontFile)}")`);
+  // 字体是异步加载：加载完成后强制重绘预览，否则选了字体但预览仍是旧字形（用户反馈①）
+  face.load().then(f=>{document.fonts.add(f);syncPv();if(typeof cvDraw==='function')cvDraw();}).catch(()=>{});
+}
+const CJK_FALLBACK='"PingFang SC","Microsoft YaHei UI","Noto Sans SC",sans-serif';
+function faceFamily(fontFile){
+  if(!fontFile)return '';
+  ensureFace(fontFile);
+  return "'studio-"+fontFile.replace(/[^\w-]/g,'_')+"', ";
+}
+// 描边预览：用多向 text-shadow 模拟 ffmpeg borderw（用户反馈②描边预览不生效）
+function strokeShadow(px,color){
+  if(px<=0)return 'none';
+  const r=Math.max(.5,px), c=color||'#000';
+  const pts=[];
+  for(let a=0;a<360;a+=45)pts.push(`${(Math.cos(a*Math.PI/180)*r).toFixed(2)}px ${(Math.sin(a*Math.PI/180)*r).toFixed(2)}px 0 ${c}`);
+  return pts.join(',');
+}
+function pvNode(o,ghost,pvW){
+  const el=document.createElement('div');
+  el.className='ov'+(o.boxed?' boxed':'')+(ghost?' ghost':'');
+  el.textContent=o.text||'（文本）';
+  el.style.whiteSpace='pre-line';  // 手动换行=字幕分行位置，预览同款呈现
+  el.style.top=(POS_RATIO[o.position]??47)+'%';
+  const fpx=Math.max(6,(o.font_size_px*pvW/pvCanvas()[0]));
+  el.style.fontSize=fpx.toFixed(1)+'px';
+  if(o.font_name)el.style.fontFamily=faceFamily(o.font_name)+CJK_FALLBACK;
+  el.style.color=o.color;
+  if(!o.boxed){  // 背景框模式不叠描边（与渲染端一致）
+    const bpx=(o.border_width||0)*pvW/pvCanvas()[0];
+    el.style.textShadow=strokeShadow(bpx*0.9,o.border_color||'#000');
+  }
+  return el;
+}
+function syncPv(fromInput){
+  if(!fromInput){const on=document.querySelector('.sw.on');if(on)$('edColor').value=on.dataset.c;}
+  $('edSizeV').textContent=$('edSize').value;
+  if($('subSizeV'))$('subSizeV').textContent=$('subsize').value;
+  const [cw,ch]=pvCanvas();
+  const phone=$('phone');
+  // 预览大小 = 预览卡可用宽度的百分比（40–100%），任意窗口尺寸下滑杆全程有效
+  const pct=+($('pvScale')?.value||70);
+  if($('pvScaleV'))$('pvScaleV').textContent=pct+'%';
+  const avail=Math.max(180,(phone.parentElement?.clientWidth||320)-46);
+  // 同时按高度封顶：9:16 竖屏在满卡宽下会高得离谱（用户反馈「大小不合理」）。
+  // 预览高度不超过视口的 ~68%，据此反推最大宽度，宽/高两者取小，任何比例都不过大。
+  const maxH=Math.max(320,Math.round((window.innerHeight||900)*0.68));
+  const wByH=Math.round(maxH*cw/ch);
+  const pvW=Math.min(Math.round(avail*pct/100),wByH);
+  phone.style.width=pvW+'px';
+  phone.style.aspectRatio=cw+'/'+ch;
+  const info=$('pvInfo'); if(info)info.textContent=`实时预览 · ${cw} × ${ch}（${$('aspect')?.value||'9:16 竖屏'}）`;
+  phone.querySelectorAll('.ov').forEach(x=>x.remove());
+  // 逐行字幕（_sub）有时间窗、成片按 enable 逐条显示——预览只画「当前选中的那一条」
+  // （点右侧列表行切换），不再无视时间轴全部堆叠；用户手加的文本框照常全显。
+  const subs=overlays.filter(o=>o._sub);
+  let showSub=null;
+  if(subs.length){
+    showSub=(ovEdit>=0&&overlays[ovEdit]&&overlays[ovEdit]._sub)?overlays[ovEdit]:subs[0];
+  }
+  overlays.forEach(o=>{ if(!o._sub||o===showSub) phone.appendChild(pvNode(o,false,pvW)); });
+  // 正在编辑的文本框：仅当有文字时才画虚线占位（空文本不显示「（文本）」提示，用户 2026-07-26 ②）
+  const eo=editorOverlay();
+  if(eo.text) phone.appendChild(pvNode(eo,true,pvW));
+  // 字幕位置示意：字幕样式已移到「一键成片」，这里只是位置参考。
+  // 载入真视频后不再画示意——真视频已有真字幕，避免和默认示意重叠误导（用户 2026-07-26 ①）。
+  const videoOn=$('pvVideo')&&$('pvVideo').style.display!=='none';
+  if($('burn')?.checked && !videoOn){
+    const sub=document.createElement('div');
+    sub.className='ov sub';
+    sub.style.top=((SUB_POS_RATIO[$('subPos')?.value]??0.885)*94)+'%';
+    sub.style.fontSize=Math.max(6,((+$('subsize')?.value||64)*pvW/cw)).toFixed(1)+'px';
+    sub.style.color=($('subColor')&&$('subColor').value.trim())||'#FFFFFF';sub.style.opacity='.92';
+    const sbw=(+$('subBorder')?.value||0)*pvW/cw;
+    sub.style.textShadow=strokeShadow(sbw*0.9,'#000');
+    const sf=$('subFont')?.value; if(sf)sub.style.fontFamily=faceFamily(sf)+CJK_FALLBACK;
+    sub.textContent='字幕示意 · '+($('subFont')?.selectedOptions[0]?.textContent||'默认');
+    phone.appendChild(sub);
+  }
+  stylePvBar();
+  stylePvWm();
+}
+function editorOverlay(){
+  return {text:$('edText').value.trim(),position:$('edPos').value||'中部',
+    font_name:$('edFont')?.value||'',
+    font_size_px:+$('edSize').value||72,color:$('edColor').value.trim()||'#FFFFFF',
+    border_width:+$('edBorder').value||0,boxed:$('edBox').checked,
+    start:+$('edStart').value||0,end:+$('edEnd').value||0};
+}
+document.getElementById('swatches').addEventListener('click',e=>{
+  const s=e.target.closest('.sw');if(!s)return;
+  document.querySelectorAll('#swatches .sw').forEach(x=>x.classList.toggle('on',x===s));
+  $('edColor').value=s.dataset.c;syncPv(true);
+});
+document.getElementById('subSwatches').addEventListener('click',e=>{
+  const s=e.target.closest('.sw');if(!s)return;
+  document.querySelectorAll('#subSwatches .sw').forEach(x=>x.classList.toggle('on',x===s));
+  $('subColor').value=s.dataset.c;syncPv(true);
+});
+function addOverlay(){
+  const o=editorOverlay();
+  if(!o.text){alert('请先填写文本内容');return;}
+  overlays.push(o);$('edText').value='';renderOverlays();syncPv();
+  toast('已添加文本框','ok');
+}
+/* ── 逐条编辑：点列表行载入编辑器（可改文字/手动换行分割/样式/时间窗），更新写回原条目 ── */
+let ovEdit=-1;
+function loadOverlay(i){
+  const o=overlays[i];if(!o)return;
+  ovEdit=i;
+  $('edText').value=o.text||'';
+  if(o.position)$('edPos').value=o.position;
+  $('edSize').value=o.font_size_px||72;$('edSizeV').textContent=$('edSize').value;
+  if($('edFont'))$('edFont').value=o.font_name||'';
+  $('edColor').value=o.color||'#FFFFFF';
+  $('edBorder').value=o.border_width??3;$('edBox').checked=!!o.boxed;
+  $('edStart').value=o.start||0;$('edEnd').value=o.end||0;
+  $('ovEditBar').style.display='flex';
+  $('ovUpdBtn').textContent='✔ 更新第 '+(i+1)+' 条';
+  renderOverlays();syncPv(true);
+}
+function updateOverlay(){
+  const o=overlays[ovEdit];if(!o){cancelOvEdit();return;}
+  const e=editorOverlay();
+  if(!e.text){alert('文本不能为空（不需要这条就点右侧 ✕ 删除）');return;}
+  // 保留 _sub 标记与原条目未编辑字段，覆盖编辑器里的全部可改项（含手动换行）
+  overlays[ovEdit]={...o,...e};
+  cancelOvEdit();
+  toast('已更新此条','ok');
+}
+function cancelOvEdit(){
+  ovEdit=-1;$('ovEditBar').style.display='none';$('edText').value='';
+  renderOverlays();syncPv();
+}
+function renderOverlays(){
+  $('ovN').textContent=overlays.length;
+  const tb=$('ovList');tb.innerHTML='';
+  if(!overlays.length){tb.innerHTML='<tr><td colspan="5" class="empty">还没有文本框 — 在左侧添加</td></tr>';return;}
+  overlays.forEach((o,i)=>{
+    const tr=document.createElement('tr');
+    if(i===ovEdit)tr.style.background='rgba(228,185,99,.12)';
+    tr.style.cursor='pointer';tr.title='点击载入编辑（文本框中按回车=字幕分行位置）';
+    const shown=esc(o.text.replace(/\n/g,'⏎').slice(0,14));
+    tr.innerHTML=`<td>${shown}</td><td class="mut">${o.position}</td>
+      <td class="mut">${o.font_size_px}</td><td><span style="color:${o.color}">${o.color}</span></td>
+      <td><span class="x">✕</span></td>`;
+    tr.onclick=()=>loadOverlay(i);
+    tr.querySelector('.x').onclick=(ev)=>{ev.stopPropagation();
+      overlays.splice(i,1);if(ovEdit===i)cancelOvEdit();else{if(ovEdit>i)ovEdit--;renderOverlays();syncPv();}};
+    tb.appendChild(tr);});
+}
+
+/* ── 音色 ── */
+async function saveVoice(){
+  const f=$('vFile').files[0];const name=$('vName').value.trim();
+  if(!name){alert('请填写音色名称');return;}
+  if(!f){alert('请选择参考音频');return;}
+  const q=new URLSearchParams({name,transcript:$('vTrans').value.trim(),filename:f.name,
+    engine:$('vEngine').value,
+    num_steps:$('pSteps').value,guidance_scale:$('pGuide').value,speed:$('pSpeed').value,seed:$('pSeed').value});
+  const j=await (await fetch('/api/voices?'+q,{method:'POST',body:f})).json();
+  if(j.error){alert(j.error);return;}
+  $('vName').value='';$('vTrans').value='';$('vFile').value='';
+  alert('已保存音色「'+name+'」。可在下方「🎧 合成试听」用引擎试听效果。');
+  loadState();
+}
+async function delVoice(id){if(confirm('删除该音色？')){await fetch('/api/voices/'+id,{method:'DELETE'});loadState();}}
+async function setReleased(id,val){ // 发行音色：定稿标记，成片页置顶（2026-07-25）
+  if(await postRun({action:'voice_release',voice_id:decodeURIComponent(id),released:val}))
+    setTimeout(loadState,600);
+}
+async function batchVoices(){ // 文件夹批量建音色：文件名=音色名，同名.txt=转写
+  await pickDir('vBatchDir');
+}
+// 用音色的引擎+参数合成一句试听（真实引擎；mock 无 GPU 也能走通）
+async function tryVoice(id,engine,btn){
+  const vid=decodeURIComponent(id);
+  const v=(window._voices||[]).find(x=>x.voice_id===vid)||{};const p=v.params||{};
+  btn.disabled=true;const orig=btn.textContent;btn.textContent='合成中…';
+  const ok=await postRun({action:'voice_try',voice_id:vid,engine:engine||'mock',
+    num_steps:p.num_steps,guidance_scale:p.guidance_scale,speed:p.speed,seed:p.seed,max_pause_seconds:p.max_pause_seconds});
+  if(!ok){btn.disabled=false;btn.textContent=orig;return;}
+  const t=setInterval(async()=>{
+    const s=await (await fetch('/api/job')).json();
+    if(s.done){clearInterval(t);btn.disabled=false;btn.textContent=orig;
+      if(s.try_audio)playUrl('/api/audio?path='+encodeURIComponent(s.try_audio),btn);
+      else alert((s.log||[]).slice(-1)[0]||'试听失败（真实引擎需先在工具箱装好/启动）');
+    }
+  },500);
+}
+// 选中音色时，把它的引擎与参数带入成片默认（音色即预设）
+function applyVoiceDefaults(){
+  const v=(window._voices||[]).find(x=>x.voice_id===$('voice').value);
+  if(!v)return;
+  if(v.engine&&[...$('engine').options].some(o=>o.value===v.engine))$('engine').value=v.engine;
+  const p=v.params||{};
+  if(p.speed!=null){$('speed').value=p.speed;$('sv').textContent=(+p.speed).toFixed(2);}
+  if(p.seed!=null)$('seed').value=p.seed;
+  if(p.max_pause_seconds!=null){$('pause').value=p.max_pause_seconds;$('pv').textContent=(+p.max_pause_seconds).toFixed(2);}
+}
+
+/* ── 任务（多槽并发：main 主流程互斥，组件/字体/fish 服务各自独立并行） ── */
+function _baseName(p){ p=(p||'').replace(/[\\/]+$/,''); const i=Math.max(p.lastIndexOf('\\'),p.lastIndexOf('/')); return i>=0?p.slice(i+1):p; }
+// 整份配置 → payload（run 与「加入队列」共用同一份，保证冻结的就是当前所见）
+function buildPayload(action){
+  const out=$('outdir').value.trim();
+  return {action,text:$('text').value,engine:$('engine').value,aligner:$('aligner').value,
+    material_mode:$('matMode')?$('matMode').value:'flat',
+    voice_id:$('voice').value,shots_dir:$('shots').value.trim(),output_dir:out,
+    title:_baseName(out)||'成片',
+    max_pause:+$('pause').value,speed:+$('speed').value,seed:+$('seed').value,
+    // Edge TTS 参数（其他引擎会忽略；带上不影响 dots/fish/mock）
+    edge_voice:($('edgeVoice')&&$('edgeVoice').value)||'',
+    edge_pitch:+($('edgePitch')&&$('edgePitch').value)||0,
+    edge_style:($('edgeStyle')&&$('edgeStyle').value)||'general',
+    burn_subtitles:$('burn').checked,subtitle_size:+$('subsize').value||64,
+    subtitle_position:$('subPos').value||'底部',subtitle_font:$('subFont')?.value||'',
+    subtitle_color:($('subColor')&&$('subColor').value.trim())||'#FFFFFF',
+    subtitle_border:+($('subBorder')&&$('subBorder').value)||0,
+    aspect:$('aspect').value,overlays,audio:collectAudio(),progressbar:collectProgressBar(),
+    watermark:collectWatermark(),
+    reuse_dub:$('reuseDub')?$('reuseDub').checked:false};
+}
+
+// 引擎切换：edge_tts 显示 Edge 声线/音调/风格，隐藏克隆音色；切回其他引擎恢复。
+// v0.7.71 P0-1：同步刷新"当前引擎能力"提示（原生 vs 软件后处理）。
+function onEngineChange(){
+  const isEdge=($('engine')&&$('engine').value==='edge_tts');
+  if($('voiceRow'))$('voiceRow').style.display=isEdge?'none':'';
+  if($('edgeRow'))$('edgeRow').style.display=isEdge?'':'none';
+  if($('edgeParamsRow'))$('edgeParamsRow').style.display=isEdge?'grid':'none';
+  if($('edgeNotice'))$('edgeNotice').style.display=isEdge?'block':'none';
+  if($('edgeTryRow'))$('edgeTryRow').style.display=isEdge?'flex':'none';
+  _updateEngineCapHint();
+}
+
+// 用 /api/state 返回的能力矩阵刷新"当前引擎能力"文案；未加载完时静默。
+function _updateEngineCapHint(){
+  const caps=(window._engineCaps||{})[$('engine')&&$('engine').value]||null;
+  const capEl=$('engineCapText'), seedEl=$('engineSeedHint');
+  if(!caps){
+    if(capEl)capEl.textContent='未知（未加载引擎能力清单）';
+    if(seedEl)seedEl.textContent='未知';
+    return;
+  }
+  const native=[];
+  if(caps.native_speed)native.push('语速');
+  if(caps.supports_seed)native.push('seed');
+  if(caps.supports_num_steps)native.push('步数');
+  if(caps.supports_guidance)native.push('引导强度');
+  if(caps.supports_edge_pitch)native.push('音调');
+  if(caps.supports_edge_style)native.push('风格');
+  if(caps.supports_voice_ref)native.push('参考音频克隆');
+  const post=[];
+  if(!caps.native_speed)post.push('语速（ffmpeg atempo，保持音调）');
+  post.push('停顿上限（silencedetect 压缩长静音）');
+  const detail=caps.detail?('· '+caps.detail):'';
+  if(capEl)capEl.innerHTML=
+    '原生：<b>'+(native.length?native.join('/'):'无')+'</b>'+
+    ' · 软件后处理：<b>'+post.join('/')+'</b> '+esc(detail);
+  if(seedEl)seedEl.textContent=caps.supports_seed
+    ?'本引擎 seed 影响 TTS 声音'
+    :'本引擎不承诺 seed 改变 TTS 声音，但素材选择照常';
+}
+
+// 「用当前 Edge 声线试听」：走 voice_try，engine=edge_tts，携带 edge_voice/pitch/style。
+async function tryEdgeVoice(btn){
+  const orig=btn.textContent; btn.disabled=true; btn.textContent='合成中…';
+  const ok=await postRun({action:'voice_try', engine:'edge_tts',
+    edge_voice:$('edgeVoice').value, edge_pitch:+$('edgePitch').value||0,
+    edge_style:$('edgeStyle').value||'general',
+    speed:+$('speed').value||1.0});
+  btn.disabled=false; btn.textContent=orig;
+  if(ok)pollAll();
+}
+// 用 /api/state 返回的常量填 Edge 下拉；state 加载后调用一次
+function _fillEdgeChoices(state){
+  const voices=state.edge_voices||[], styles=state.edge_styles||[];
+  const defaultStyle=state.edge_default_style||'general';
+  if($('edgeVoice')){
+    fill('edgeVoice', voices.map(v=>[v.id, v.name]));
+    if(voices.length && !$('edgeVoice').value)$('edgeVoice').value=voices[0].id;
+  }
+  if($('edgeStyle')){
+    fill('edgeStyle', styles.map(s=>[s, s]));
+    if(styles.includes(defaultStyle))$('edgeStyle').value=defaultStyle;
+  }
+}
+// 动态水印配置（未启用/空文字 → enabled:false，后端返回 None 不烧）
+function collectWatermark(){
+  if(!$('wmEnable')||!$('wmEnable').checked||!($('wmText')?.value||'').trim())return{enabled:false};
+  return {enabled:true,text:$('wmText').value.trim(),
+    font_size_px:+$('wmSize').value||36,
+    color:($('wmColor').value||'#FFFFFF').trim(),
+    opacity:+$('wmOpacity').value,
+    interval_seconds:+$('wmInterval').value||3,
+    margin_px:+$('wmMargin').value||40,
+    border_width:+$('wmBorder').value||0};
+}
+function applyWmObj(w){
+  if(!w)return;
+  if($('wmEnable'))$('wmEnable').checked=!!w.enabled;
+  if(w.text!=null)$('wmText').value=w.text;
+  if(w.font_size_px!=null)$('wmSize').value=w.font_size_px;
+  if(w.interval_seconds!=null)$('wmInterval').value=w.interval_seconds;
+  if(w.margin_px!=null)$('wmMargin').value=w.margin_px;
+  if(w.border_width!=null)$('wmBorder').value=w.border_width;
+  if(w.color!=null){$('wmColor').value=w.color;if($('wmColorHex'))$('wmColorHex').value=w.color;}
+  if(w.opacity!=null){$('wmOpacity').value=w.opacity;if($('wmOpV'))$('wmOpV').textContent=(+w.opacity).toFixed(2);}
+}
+const _ACTION_LABEL={run_all:'生成成片',dub:'配音',timing:'量时长',render:'渲染',
+  finalize:'按当前样式重烧成片',capcut:'导出剪映草稿',premiere:'导出 Premiere 工程',cleanup:'清理缓存'};
+async function run(action,target){
+  // 队列后台有任务在克隆时，点 ①配音/②量时长/③渲染 不另起会冲突/报错的单步任务，
+  // 而是跳到「生成任务队列」看那条任务的实时进度（用户反馈：点①配音应进入对应队列进度）。
+  if(['dub','timing','render'].includes(action)&&window._queueRunning){
+    focusRunningQueue(window._queueRunning);
+    return;
+  }
+  logTarget=target||'mainlog';
+  _busy(1400);
+  if(await postRun(buildPayload(action))){toast('已开始 · '+(_ACTION_LABEL[action]||action),'ok');pollAll();}
+}
+function focusRunningQueue(t){
+  const card=$('genQueueCard');
+  if(card){
+    card.scrollIntoView({behavior:'smooth',block:'center'});
+    card.style.transition='box-shadow .25s';
+    card.style.boxShadow='0 0 0 2px var(--gold)';
+    setTimeout(()=>{card.style.boxShadow='';},1400);
+  }
+  toast('「'+((t&&t.title)||'')+'」正在队列后台克隆'+((t&&t.stage)?' · '+t.stage:'')+'，进度见此','ok');
+}
+/* ── ⑨ 生成任务队列（串行后台）：生成成片=入队即跑；加入队列=排后面。二者同一条串行队列，
+      一次只克隆一个，杜绝 GPU 抢占卡死与「run_all 正在执行」冲突 ── */
+async function enqueueTask(primary){
+  if(!$('outdir').value.trim()){alert('请先选择「输出目录」（默认跟随分镜目录）。');return;}
+  if(!$('text').value.trim()){alert('请先填写「待合成文案」。');return;}
+  if(!$('shots').value.trim()){alert('请先选择「分镜目录」。');return;}
+  // C 输出覆盖防护：队列里已有未完成任务写同一输出目录 → 成片会互相覆盖，先确认
+  const out=$('outdir').value.trim();
+  try{
+    const cur=(await (await fetch('/api/queue')).json()).tasks||[];
+    if(cur.some(t=>(t.status==='pending'||t.status==='running')&&t.output_dir===out)){
+      if(!confirm('队列里已有任务写到同一「输出目录」：\n'+out+'\n\n它们的成片会互相覆盖。建议给每集用不同输出目录（或在输出目录后加子文件夹）。\n\n仍要加入吗？'))return;
+    }
+  }catch(e){}
+  const p=buildPayload('run_all'); p.action='add';
+  _busy(900);
+  const j=await (await fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(p)})).json();
+  if(j.error){alert(j.error);return;}
+  toast((primary?'已开始生成（进队列后台克隆）· ':'已加入队列 · ')+(j.title||''),'ok');
+  pollQueue();
+  if($('genQueueCard'))$('genQueueCard').scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+async function removeQueueTask(id){
+  await fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({action:'remove',id})}); toast('已移除队列任务'); pollQueue();
+}
+async function retryQueueTask(id){
+  await fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({action:'retry',id})}); toast('已重新排队重试','ok'); pollQueue();
+}
+async function clearQueueDone(){
+  await fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({action:'clear'})}); toast('已清除完成项'); pollQueue();
+}
+const _QSTAT={pending:['排队中','var(--faint)'],running:['克隆中','var(--gold)'],
+  done:['✅ 已完成','var(--ok)'],failed:['❌ 失败','var(--bad)'],cancelled:['⏹ 已取消','var(--faint)']};
+async function pollQueue(){
+  let s;try{s=await (await fetch('/api/queue')).json();}catch(e){return;}
+  const tasks=s.tasks||[], paused=!!s.paused;
+  const card=$('genQueueCard'),list=$('genQueueList');if(!card||!list)return;
+  card.style.display=(tasks.length||paused)?'block':'none';
+  const pauseBtn=$('queuePauseBtn');
+  if(pauseBtn)pauseBtn.textContent=paused?'▶ 继续队列':'⏸ 暂停队列';
+  const F=(id,l,col,extra='')=>`<button class="btn" style="padding:4px 10px;flex:none;${extra}" onclick="${l}('${id}')">${col}</button>`;
+  list.innerHTML=tasks.map(t=>{
+    const [lab,col]=_QSTAT[t.status]||[t.status,'var(--faint)'];
+    const pct=t.status==='running'?` ${t.progress||0}%`:'';
+    const stg=t.status==='running'&&t.stage?` · ${esc(t.stage)}`:'';
+    const dir=t.output_dir?`<div class="mini" style="color:var(--faint)">→ ${esc(t.output_dir)}</div>`:'';
+    const err=(t.status==='failed'||t.status==='cancelled')&&t.error?`<div class="mini" style="color:var(--bad)">${esc(t.error)}</div>`:'';
+    const stuck=t.stuck?`<div class="mini" style="color:var(--warn,#e0a83b)">⏳ 已 ${t.idle_seconds}s 无阶段进度（首次会加载模型、GPU 较慢时单行也需数十秒）。若确认卡死可点「取消」跳过。</div>`:'';
+    const btns=[];
+    if(t.status==='pending')btns.push(F(t.id,'removeQueueTask','移除'));
+    if(t.status==='running')btns.push(F(t.id,'cancelQueueTask','取消',t.stuck?'border-color:var(--gold);color:var(--gold)':''));
+    if(t.status==='failed'||t.status==='done'||t.status==='cancelled')btns.push(F(t.id,'retryQueueTask','重试','border-color:var(--gold)'));
+    return `<div class="row" style="gap:10px;align-items:center;border:1px solid ${t.stuck?'var(--gold)':'var(--line)'};border-radius:10px;padding:9px 12px">
+      <span style="flex:1;min-width:0"><b>${esc(t.title)}</b>${stg}${dir}${err}${stuck}</span>
+      <span class="mini" style="flex:none;color:${col}">${lab}${pct}</span>${btns.join('')}</div>`;
+  }).join('');
+  // 检测队列任务完成（running/pending → done/failed/cancelled）→ 补齐「执行」区完成态
+  tasks.forEach(t=>{
+    const prev=_prevQ[t.id];
+    if(prev&&prev!==t.status&&['done','failed','cancelled'].includes(t.status))onQueueDone(t);
+    _prevQ[t.id]=t.status;
+  });
+  Object.keys(_prevQ).forEach(id=>{ if(!tasks.some(t=>t.id===id))delete _prevQ[id]; });
+  // 把正在跑的队列任务镜像到「执行」区（main 槽有任务在跑时让位，避免互相盖日志/进度）
+  const running=tasks.find(t=>t.status==='running');
+  window._queueRunning=running||null;   // 供 ①②③ 步骤按钮判断：队列在跑时点它们跳去看进度而非另起冲突任务
+  if(running&&!window._mainBusy){
+    if(running.log&&running.log.length)paint(running.log);
+    const wrap=$('progWrap');
+    if(wrap){wrap.style.display='block';
+      $('progStage').textContent=running.stage||'进行中…';
+      $('progPct').textContent=(running.progress||0)+'%';
+      $('progBar').style.width=(running.progress||0)+'%';
+      $('progBar').style.background='linear-gradient(90deg,var(--gold-hi),var(--gold))';}
+  }
+}
+const _prevQ={};
+// 队列任务完成：补上「执行」区的成片按钮/master 试听/进度收尾/日志/分段（原先只钉在 main 槽）
+function onQueueDone(t){
+  const out=t.output_dir||'';
+  if(!window._mainBusy){
+    if(t.log&&t.log.length)paint(t.log);            // 镜像终态日志（含「✅ 成片完成」）
+    const wrap=$('progWrap');
+    if(wrap){wrap.style.display='block';
+      $('progStage').textContent=t.status==='done'?'✅ 完成':(t.status==='cancelled'?'⏹ 已取消':'❌ 未通过');
+      $('progPct').textContent=(t.status==='done'?100:(t.progress||0))+'%';
+      $('progBar').style.width=(t.status==='done'?100:(t.progress||0))+'%';
+      $('progBar').style.background=t.status==='done'?'linear-gradient(90deg,var(--gold-hi),var(--gold))':'var(--bad)';}
+  }
+  if(t.status==='done'&&out){
+    const sep=out.includes('\\')?'\\':'/';
+    if($('mediaRow'))$('mediaRow').style.display='flex';
+    const murl='/api/audio?path='+encodeURIComponent(out+sep+'master.wav');
+    if($('masterAudio')&&$('masterAudio').dataset.src!==murl){$('masterAudio').src=murl;$('masterAudio').dataset.src=murl;}
+    const film='/api/audio?path='+encodeURIComponent(out+sep+'成片.mp4');
+    if($('filmBtn')){$('filmBtn').href=film;$('filmBtn').style.display='';}
+    if($('filmBtn2')){$('filmBtn2').href=film;$('filmBtn2').style.display='';}
+    if(typeof loadClones==='function')loadClones();
+    toast('✅ 已完成 · '+esc(t.title)+'（可去「文本框」精修）','ok');
+  }else if(t.status==='failed'){
+    toast('❌ 失败 · '+esc(t.title),'bad');
+  }
+}
+async function pauseResumeQueue(){
+  const s=await (await fetch('/api/queue')).json();
+  const act=s.paused?'resume':'pause';
+  await fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:act})});
+  toast(act==='pause'?'队列已暂停（当前任务跑完不再启动新的）':'队列已继续'); pollQueue();
+}
+async function cancelQueueTask(id){
+  if(!confirm('取消这个任务？（正在克隆的会在当前步骤间隙中止，队列继续跑后面的）'))return;
+  await fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'cancel',id})});
+  toast('已发出取消'); pollQueue();
+}
+// 视频进度条配置（未启用 → enabled:false，后端返回 None 不烧）
+function collectProgressBar(){
+  if(!$('pbEnable')||!$('pbEnable').checked)return{enabled:false};
+  return {enabled:true,
+    text:$('pbText').value||'',
+    position:$('pbPos').value||'顶部',
+    font_size_px:+$('pbSize').value||40,
+    text_color:($('pbColor').value||'#FFFFFF').trim(),
+    track_color:($('pbTrack').value||'#000000').trim(),
+    track_opacity:+$('pbTrackOp').value,
+    fill_color:($('pbFill').value||'#FFC24B').trim(),
+    fill_opacity:+$('pbFillOp').value,
+    strip_height_px:+$('pbStripH').value||0};
+}
+// 清理缓存：二次确认后删掉生成过程中的中间产物（成片与交接包保留）
+function cleanupCache(){
+  if(!$('outdir').value.trim()){alert('请先选择「输出目录」。');return;}
+  if(!confirm('将删除本次成片生成过程中的中间产物：\n  · master_chunks/（逐行段+分段清单）\n  · 成片_segments/（无声分镜段+字幕临时件）\n\n保留：成片.mp4/.srt、master.wav、配音计时表、剪映草稿包、Premiere 工程（均自包含）。\n\n注意：清理后「重配此段」与「重新导出草稿/工程」将不可用。确定清理？'))return;
+  run('cleanup');
+}
+const _prevRun={};
+async function pollAll(){
+  let s;try{s=await (await fetch('/api/jobs')).json();}catch(e){return;}
+  const main=s.jobs.find(j=>j.id==='main');
+  window._mainBusy=!!(main&&main.running);   // main 槽在跑时，队列镜像让位，避免抢「执行」区
+  if(main&&main.log&&main.log.length&&(main.running||main.done)){
+    paint(main.log);
+    if(main.timings&&main.timings.length)renderLane(main.timings);
+    updateProgress(main);
+    // 配音进行中：分段清单每段落盘即刷新 → 分段面板边配边出现，可立即试听/重配已完成段
+    if(main.running&&['run_all','dub','rechunk'].includes(main.action))loadChunks();
+    if(_prevRun.main&&!main.running&&main.done)onMainDone(main);
+    _prevRun.main=main.running;
+  }
+  const tasks=s.jobs.filter(j=>j.id!=='main');
+  window._tasks=tasks;
+  renderDlog(tasks);updateTaskUi(tasks);
+  let comps=false,fonts=false;
+  tasks.forEach(j=>{
+    if(_prevRun[j.id]&&!j.running){ if(j.id.startsWith('font:'))fonts=true; else comps=true; }
+    _prevRun[j.id]=j.running;
+  });
+  if(comps)loadComponents();
+  if(fonts){loadFonts();loadComponents();}
+  pollQueue();
+}
+// 生成成片进度条：显示阶段文字 + 百分比
+function updateProgress(main){
+  const wrap=$('progWrap');if(!wrap)return;
+  const isFilm=['run_all','render','dub','timing','capcut','finalize','premiere','cleanup'].includes(main.action);
+  if(main.running&&isFilm){
+    wrap.style.display='block';
+    $('progStage').textContent=main.stage||'进行中…';
+    $('progPct').textContent=(main.progress||0)+'%';
+    $('progBar').style.width=(main.progress||0)+'%';
+  }else if(main.done&&isFilm){
+    $('progStage').textContent=main.ok?'✅ 完成':'❌ 未通过';
+    $('progPct').textContent=(main.ok?100:(main.progress||0))+'%';
+    $('progBar').style.width=(main.ok?100:(main.progress||0))+'%';
+    $('progBar').style.background=main.ok?'linear-gradient(90deg,var(--gold-hi),var(--gold))':'var(--bad)';
+  }
+}
+function onMainDone(main){
+  if(!main.ok)return;
+  const out=$('outdir').value.trim();
+  if(['dub','run_all','render','timing','finalize'].includes(main.action)&&out){
+    const sep=out.includes('\\')?'\\':'/';
+    $('mediaRow').style.display='flex';
+    const url='/api/audio?path='+encodeURIComponent(out+sep+'master.wav');
+    if($('masterAudio').dataset.src!==url){$('masterAudio').src=url;$('masterAudio').dataset.src=url;}
+    if(['render','run_all','finalize'].includes(main.action)){
+      const film='/api/audio?path='+encodeURIComponent(out+sep+'成片.mp4');
+      $('filmBtn').href=film;$('filmBtn').style.display='';
+      if($('filmBtn2')){$('filmBtn2').href=film;$('filmBtn2').style.display='';}
+    }
+  }
+  if(['dub','run_all','rechunk','finalize'].includes(main.action)){loadClones();loadChunks();}
+  // 字幕已改为渲染端「标点逐句」按时间轴烧录（2026-07-25 定案）：
+  // 不再转入文本框页——文本框只负责字幕样式与用户手加的文字层。
+}
+function renderDlog(tasks){
+  const el=$('dlog');if(!el)return;
+  const active=tasks.filter(t=>t.running), done=tasks.filter(t=>!t.running&&t.done).slice(-3);
+  if(!active.length&&!done.length){return;}
+  const block=t=>{
+    const tail=(t.log||[]).slice(t.running?-5:-2).join('\n');
+    return `── ${t.label||t.id} ${t.running?'⏳':(t.ok?'✅':'❌')} ──\n${tail}`;
+  };
+  el.textContent=active.concat(done).map(block).join('\n');
+  el.scrollTop=el.scrollHeight;
+}
+function updateTaskUi(tasks){
+  document.querySelectorAll('#compList .check, #fontList .check').forEach(row=>{
+    const key=row.dataset.key;if(!key)return;
+    const inFonts=row.parentElement&&row.parentElement.id==='fontList';
+    const t=tasks.find(x=>x.id===(inFonts?'font:':'component:')+key);
+    const stat=row.querySelector('.tstat'), act=row.querySelector('.tact');
+    if(!stat)return;
+    if(t&&t.running){
+      const last=(t.log||[]).slice(-1)[0]||'';
+      const m=last.match(/下载进度 \d+%[^）]*）?/);
+      stat.textContent='⏳ '+(m?m[0]:'进行中…');
+      // 安装/pip 类允许「停止」掐断卡住的进程（下载类靠镜像+断点续传，不给停止避免误伤）
+      if(act&&!inFonts&&(key==='dots_tts'||key==='pycapcut'||key==='fish_speech'||key==='torch_cuda')){
+        act.innerHTML='<button class="btn" style="padding:8px 14px;border-color:var(--bad);color:var(--bad)" onclick="stopComponent(\''+key+'\')">■ 停止</button>';
+      }else if(act){act.querySelectorAll('button').forEach(b=>b.disabled=true);}
+    }else if(t&&t.done&&!t.ok){
+      stat.textContent='❌ 失败（详见下方日志）';stat.style.color='var(--bad)';
+      if(act)act.querySelectorAll('button').forEach(b=>b.disabled=false);
+    }else{
+      stat.textContent='';stat.style.color='var(--gold)';
+      if(act)act.querySelectorAll('button').forEach(b=>b.disabled=false);
+    }
+  });
+}
+function paint(lines){const el=$(logTarget);el.textContent=lines.join('\n');el.scrollTop=el.scrollHeight;}
+setInterval(pollAll,800);
+
+/* ── 试听（音色参考 / 克隆存档 / master） ── */
+let _player=null,_playingBtn=null;
+function playUrl(url,btn){
+  if(_playingBtn===btn&&_player&&!_player.paused){_player.pause();btn.textContent='▶ 试听';_playingBtn=null;return;}
+  if(_player)_player.pause();
+  if(_playingBtn)_playingBtn.textContent='▶ 试听';
+  _player=new Audio(url);_playingBtn=btn;btn.textContent='⏸ 暂停';
+  _player.onended=()=>{if(_playingBtn===btn){btn.textContent='▶ 试听';_playingBtn=null;}};
+  _player.play().catch(e=>{btn.textContent='▶ 试听';_playingBtn=null;alert('播放失败：'+e.message);});
+}
+// 配音分段：逐段试听 + 单段重配（用户反馈②，避免整篇重来死循环）
+async function loadChunks(){
+  const out=$('outdir').value.trim();const panel=$('chunkPanel');if(!panel)return;
+  if(!out){panel.style.display='none';return;}
+  try{
+    const s=await (await fetch('/api/chunks?output_dir='+encodeURIComponent(out))).json();
+    const box=$('chunkList');
+    if(!s.chunks||!s.chunks.length){panel.style.display='none';return;}
+    panel.style.display='block';box.innerHTML='';
+    s.chunks.forEach(c=>{
+      const el=document.createElement('div');el.className='vcard';
+      el.innerHTML=`<b style="flex:none;color:var(--gold)">段${c.index}</b>
+        <div style="flex:1 1 120px;min-width:0"><small style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block">${esc(c.text.slice(0,30))}</small>
+          <small style="color:var(--faint)">${(+c.seconds||0).toFixed(1)}s</small></div>
+        <button class="btn" style="padding:7px 11px;flex:none" ${c.url?'':'disabled'}
+          onclick="playUrl('${c.url}',this)">▶ 试听</button>
+        <button class="btn line" style="padding:7px 11px;flex:none" onclick="rechunkOne(${c.index})">🔄 重配此段</button>`;
+      box.appendChild(el);
+    });
+  }catch(e){panel.style.display='none';}
+}
+async function rechunkOne(index){
+  if(!confirm('只重新配音第 '+index+' 段？（用当前引擎/音色/参数重合成这一段并重拼 master，其余段不动）'))return;
+  const payload={action:'rechunk',chunk_index:index,text:$('text').value,engine:$('engine').value,
+    voice_id:$('voice').value,output_dir:$('outdir').value.trim(),
+    speed:+$('speed').value,seed:+$('seed').value,max_pause:+$('pause').value,
+    // Edge TTS 参数（其他引擎会忽略）——保证「重配此段」在 Edge 模式下也能带上声线/音调/风格
+    edge_voice:($('edgeVoice')&&$('edgeVoice').value)||'',
+    edge_pitch:+($('edgePitch')&&$('edgePitch').value)||0,
+    edge_style:($('edgeStyle')&&$('edgeStyle').value)||'general'};
+  if(await postRun(payload))pollAll();
+}
+async function loadClones(){
+  const box=$('clList');if(!box)return;
+  try{
+    const s=await (await fetch('/api/clones')).json();
+    $('clCount').textContent=s.clones.length;
+    box.innerHTML='';
+    if(!s.clones.length){box.innerHTML='<p class="empty">还没有克隆存档 — 执行「① 配音」后自动出现</p>';return;}
+    s.clones.forEach(c=>{
+      const el=document.createElement('div');el.className='vcard';
+      const when=new Date(c.mtime*1000).toLocaleString('zh-CN',{hour12:false});
+      el.innerHTML=`<div style="min-width:0"><b>${esc(c.file)}</b>
+          <small>${when} · ${c.size_mb} MB</small></div>
+        <button class="btn" style="margin-left:auto;padding:7px 13px;flex:none"
+          onclick="playUrl('/api/audio?path=${encodeURIComponent(c.path)}',this)">▶ 试听</button>
+        <span class="x" style="flex:none" onclick="delClone('${encodeURIComponent(c.file)}')">✕</span>`;
+      box.appendChild(el);});
+  }catch(e){box.innerHTML='<p class="empty">读取失败，请点「↻ 刷新」。</p>';}
+}
+async function delClone(file){
+  if(!confirm('删除该克隆存档？'))return;
+  await fetch('/api/clones/'+file,{method:'DELETE'});loadClones();
+}
+async function openFolder(){
+  const out=$('outdir').value.trim();
+  if(!out){alert('请先填写输出目录');return;}
+  const j=await (await fetch('/api/open_folder',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({path:out})})).json();
+  if(j.error)alert(j.error);
+}
+
+/* ── 目录选择浮层 ── */
+let dirTarget=null, dirCurrent='', dirFilesExt='', docKind='';
+// ① 输出目录默认跟随分镜目录（未手动改过时镜像）；手动改了就尊重手动值
+let _outdirManual=false;
+function mirrorOut(){ if(!_outdirManual){const s=$('shots').value.trim(); if(s&&$('outdir'))$('outdir').value=s;} }
+// A 文案行数 vs 分镜数量 实时校验：数量不匹配提前提醒，避免克隆完才在渲染前报错白等一轮
+let _shotsCountTimer=null;
+function scheduleShotsCount(){ clearTimeout(_shotsCountTimer); _shotsCountTimer=setTimeout(updateShotsCount,400); }
+async function updateShotsCount(){
+  const el=$('shotsCount'); if(!el)return;
+  const lines=($('text').value||'').split('\n').map(s=>s.trim()).filter(Boolean).length;
+  const dir=$('shots').value.trim();
+  if(!dir){ el.textContent=lines?`文案 ${lines} 行 · 请选择分镜目录`:''; el.style.color='var(--faint)'; return; }
+  let vids=0,subs=0;
+  try{
+    const s=await (await fetch('/api/browse?files=mp4,mov,mkv,avi,webm&path='+encodeURIComponent(dir))).json();
+    // 排除上一轮生成的成片（输出目录默认=分镜目录），别把它算成一个分镜
+    vids=(s.files||[]).filter(n=>n!=='成片.mp4').length; subs=(s.dirs||[]).length;
+  }catch(e){ el.textContent=''; return; }
+  const mode=$('matMode')?$('matMode').value:'flat';
+  if(mode==='flat'){
+    const ok = vids>=lines && lines>0;
+    el.textContent=`文案 ${lines} 行 · 分镜 ${vids} 个视频` + (lines? (ok?' ✓ 数量匹配':(vids<lines?` ⚠ 分镜不足（缺 ${lines-vids} 个，会在渲染前报错）`:'')) : '');
+    el.style.color = lines&&!ok ? 'var(--bad)' : 'var(--faint)';
+  }else{
+    // 文件夹顺序/关键字：子夹循环复用，只要有 1 个子夹就够，不按行数报「不足」
+    const ok = subs>=1 && lines>0;
+    const tail = !lines ? '' : (ok ? (subs<lines?' ✓ 子夹循环复用':' ✓ 数量匹配') : ' ⚠ 该模式需要按内容分好的子文件夹');
+    el.textContent=`文案 ${lines} 行 · 分镜 ${subs} 个子夹`+tail;
+    el.style.color = lines&&!ok ? 'var(--bad)' : 'var(--faint)';
+  }
+}
+function _joinPath(base,name){ return base.replace(/[\\/]+$/,'')+((base.includes('\\')||name.includes(':'))?'\\':'/')+name; }
+async function pickDir(targetId){
+  dirTarget=targetId; dirFilesExt=''; docKind='';   // 纯选目录
+  await browseDir($(targetId).value.trim()||'');
+  $('dirModal').classList.add('on');
+}
+// ① 导入表格/TXT：本机选文档 → 拿到真实路径 → 解析 + 把分镜/输出目录设为文档所在文件夹
+function pickDoc(kind){
+  docKind=kind; dirFilesExt=(kind==='xlsx'?'xlsx':'txt'); dirTarget='';
+  browseDir($('shots').value.trim()||$('outdir').value.trim()||'');
+  $('dirModal').classList.add('on');
+}
+async function browseDir(path){
+  const parts=[]; if(path)parts.push('path='+encodeURIComponent(path)); if(dirFilesExt)parts.push('files='+encodeURIComponent(dirFilesExt));
+  const s=await (await fetch('/api/browse'+(parts.length?('?'+parts.join('&')):''))).json();
+  if(s.error&&!(s.dirs||[]).length){alert(s.error);}
+  dirCurrent=s.path||'';
+  $('dirCur').textContent=dirCurrent||'（选择磁盘）';
+  const btn=$('dirChoose'); if(btn)btn.style.display=dirFilesExt?'none':'';   // 选文档模式：点文件即完成，无「选此目录」
+  const ttl=$('dirTitle'); if(ttl)ttl.textContent=dirFilesExt?('选择'+(docKind==='xlsx'?'表格(xlsx)':'TXT')+'文档（点文件即导入，目录自动设为其所在文件夹）'):'选择文件夹';
+  const list=$('dirList');list.innerHTML='';
+  if(!s.roots&&s.parent!==null&&s.parent!==undefined&&s.parent!==dirCurrent){
+    const up=document.createElement('div');up.className='item';up.textContent='⬆ 上一级';
+    up.onclick=()=>browseDir(s.parent||'');list.appendChild(up);
+  }
+  (s.dirs||[]).forEach(name=>{
+    const el=document.createElement('div');el.className='item';el.textContent='📁 '+name;
+    el.onclick=()=>browseDir(s.roots?name:_joinPath(dirCurrent,name));
+    list.appendChild(el);
+  });
+  (s.files||[]).forEach(name=>{
+    const el=document.createElement('div');el.className='item';el.style.color='var(--gold)';
+    el.textContent=(docKind==='xlsx'?'📊 ':'📄 ')+name;
+    el.onclick=()=>chooseDoc(_joinPath(dirCurrent,name));
+    list.appendChild(el);
+  });
+  if(!(s.dirs||[]).length&&!(s.files||[]).length){const e=document.createElement('div');e.className='item';e.style.color='var(--faint)';e.textContent=dirFilesExt?'（此文件夹没有该类型文档，进子文件夹找）':'（没有子文件夹）';list.appendChild(e);}
+}
+function chooseDir(){
+  if(dirTarget&&dirCurrent){ $(dirTarget).value=dirCurrent; if(dirTarget==='shots')mirrorOut(); }
+  $('dirModal').classList.remove('on');
+  if(dirTarget==='vBatchDir'&&$('vBatchDir').value.trim()){ // 批量建音色：选完目录直接开跑
+    postRun({action:'voice_batch',folder:$('vBatchDir').value.trim(),engine:'dots_local'}).then(ok=>{if(ok){pollAll();setTimeout(loadState,1500);}});
+  }
+}
+// 选中文档 → 按真实路径解析，并把分镜+输出目录默认设为文档所在文件夹（用户 2026-07-26 ①）
+async function chooseDoc(fullpath){
+  $('dirModal').classList.remove('on');
+  const q=new URLSearchParams({kind:docKind, column:$('xlsxCol').value,
+    header:(docKind==='xlsx'&&$('xlsxHeader')?.checked)?'1':'0', path:fullpath});
+  const j=await (await fetch('/api/script/parse?'+q,{method:'POST'})).json();
+  if(j.error){alert(j.error);return;}
+  $('text').value=j.lines.join('\n');
+  if(j.folder){ $('shots').value=j.folder; _outdirManual=false; if($('outdir'))$('outdir').value=j.folder; }
+  toast(`已导入 ${j.lines.length} 行 · 分镜/输出目录已设为文档所在文件夹`,'ok');
+}
+
+/* ── 设置：数据总目录 ── */
+let _savedRoot='';
+async function loadSettings(){
+  try{
+    const s=await (await fetch('/api/settings')).json();
+    _savedRoot=s.data_root||'';
+    $('compRoot').value=_savedRoot;
+    if($('remoteEp'))$('remoteEp').value=s.dots_remote_endpoint||'';
+    if($('remoteKey'))$('remoteKey').placeholder=s.dots_remote_api_key_set?'API Key 已设置 ✓（留空=不改，重填=覆盖）':'API Key（必填一次）';
+    if(s.paths){
+      $('pathHint').innerHTML=Object.entries(s.paths)
+        .map(([k,v])=>`　${k} → ${esc(v)}`).join('<br>');
+    }
+  }catch(e){}
+}
+async function saveRemote(){
+  const ep=$('remoteEp').value.trim(), key=$('remoteKey').value;
+  const body={dots_remote_endpoint:ep};
+  if(key!=='')body.dots_remote_api_key=key;   // 留空=不覆盖已存 Key
+  const j=await (await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body)})).json();
+  if(j.error){alert(j.error);return;}
+  $('remoteKey').value='';
+  toast('已保存云配音配置','ok');
+  loadSettings();loadState();
+}
+/* ── 云 GPU 会话（SSH 唤醒/关机 + CompShare 云 API 停机） ── */
+function _pickProvider(){
+  const r=document.querySelector('input[name="cgProvider"]:checked');
+  return r?r.value:'ssh';
+}
+function onProviderChange(){
+  const box=$('cgCsBox');
+  if(box)box.style.display=(_pickProvider()==='compshare')?'block':'none';
+}
+function toggleCsAdv(){
+  const el=$('cgCsAdv'), t=$('cgAdvToggle');
+  if(!el||!t)return;
+  const open=el.style.display==='none';
+  el.style.display=open?'block':'none';
+  t.textContent=(open?'▾':'▸')+' 高级：Region / Zone / Project（容器实例通常留空即可）';
+}
+async function loadCloudGpu(){
+  try{
+    const s=await (await fetch('/api/cloud/status')).json();
+    if(s.error){$('cgHint').textContent=s.error;return;}
+    // SSH 字段
+    if($('cgHost'))$('cgHost').value=s.host||'';
+    if($('cgPort'))$('cgPort').value=s.port||22;
+    if($('cgUser'))$('cgUser').value=s.user||'root';
+    if($('cgWake'))$('cgWake').value=s.wake_cmd||'';
+    if($('cgSleep'))$('cgSleep').value=s.sleep_cmd||'sudo shutdown -h now';
+    if($('cgHealth'))$('cgHealth').value=s.health_url||'';
+    if($('cgEnabled'))$('cgEnabled').checked=!!s.enabled;
+    if($('cgAuto'))$('cgAuto').checked=!!s.auto_sleep;
+    if($('cgIdleMin')){$('cgIdleMin').value=s.idle_minutes||5;$('cgIdleMinDisp').textContent=$('cgIdleMin').value;}
+    if($('cgPass'))$('cgPass').placeholder=s.has_password?'密码已存 ✓（留空=不改；重填=覆盖；DPAPI 本机加密）':'密码（首次必填一次）';
+    if($('cgCredWarn'))$('cgCredWarn').style.display=(s.credential_mode==='dpapi')?'none':'inline';
+    // Provider 单选
+    const prov=s.provider||'ssh';
+    document.querySelectorAll('input[name="cgProvider"]').forEach(r=>{r.checked=(r.value===prov);});
+    onProviderChange();
+    // CompShare 字段
+    if($('csEndpoint'))$('csEndpoint').value=s.cs_endpoint||'https://api.ucloud.cn/';
+    if($('csRegion'))$('csRegion').value=s.cs_region||'';
+    if($('csZone'))$('csZone').value=s.cs_zone||'';
+    if($('csProject'))$('csProject').value=s.cs_project_id||'';
+    if($('csInstance'))$('csInstance').value=s.cs_instance_id||'';
+    if($('csPub'))$('csPub').value=s.cs_public_key||'';
+    if($('csSec'))$('csSec').placeholder=s.has_cs_secret?'Private Key 已存 ✓（留空=不改；DPAPI 本机加密）':'Private Key（首次必填一次）';
+    // 状态徽标 + 顶栏灯（复用同一算法）
+    const label=_cloudLabel(s);
+    if($('cgBadge')){$('cgBadge').textContent=label.text;$('cgBadge').style.background=label.bg;$('cgBadge').style.color=label.fg;}
+    if($('cloudBadge')){$('cloudBadge').textContent='☁ '+label.text;$('cloudBadge').style.background=label.bg;$('cloudBadge').style.color=label.fg;
+      $('cloudBadge').title=label.tooltip;}
+    // 唤醒进度：stage != idle 时显示
+    const w=s.wake_state||{};
+    const box=$('cgWakeBox');
+    if(box){
+      const active=(w.stage&&w.stage!=='idle');
+      box.style.display=active?'block':'none';
+      if(active){
+        const zh={starting:'🚀 SSH 下发中',probing:'⏳ 探活中',ready:'✅ 就绪',failed:'❌ 失败'};
+        $('cgWakeStage').textContent=zh[w.stage]||w.stage;
+        $('cgWakeElapsed').textContent=Math.round(w.elapsed||0)+'s'+(w.attempts?(' · 探活 '+w.attempts+' 次'):'');
+        $('cgWakeMsg').textContent=w.message||'';
+      }
+    }
+    // 详细提示
+    const bits=[];
+    bits.push('停机方式：'+(prov==='compshare'?('CompShare 云 API '+(s.cs_ready?'✓':'（凭据/Region/Instance 缺）')):'SSH shutdown'));
+    bits.push(`空闲已 ${Math.round(s.idle_seconds||0)}s / 阈值 ${s.idle_minutes}min`);
+    if(s.last_action&&s.last_action.action)bits.push(`上次动作：${s.last_action.action} · ${s.last_action.ok?'成功':'失败'} · ${esc(s.last_action.message||'').slice(0,140)}`);
+    if(s.auto_paused&&s.idle_paused_until){
+      const remain=Math.max(0,s.idle_paused_until-Date.now()/1000);
+      bits.push(`暂停自动关 · 剩余 ${Math.round(remain/60)}min`);
+    }
+    if($('cgHint'))$('cgHint').innerHTML=bits.join(' · ');
+  }catch(e){if($('cgHint'))$('cgHint').textContent='加载状态失败：'+String(e);}
+}
+function _cloudLabel(s){
+  if(!s.enabled)return {text:'未启用',bg:'#333',fg:'#ccc',tooltip:'云 GPU 会话未启用，去「工具箱」开启'};
+  const w=s.wake_state||{};
+  if(w.stage==='starting'||w.stage==='probing')
+    return {text:'🚀 唤醒中',bg:'#4a3c1a',fg:'#fbeecd',tooltip:'正在唤醒服务器：'+(w.message||'')};
+  if(s.alive===true)return {text:'🟢 在线'+(s.auto_paused?' · 已暂停自动关':''),bg:'#1e5c3a',fg:'#dff5e6',tooltip:'服务已上线'};
+  if(s.alive===false)return {text:'⚫ 未响应',bg:'#5c1e1e',fg:'#f5dfe0',tooltip:'探活失败，可能已关机或服务未起'};
+  return {text:'🟡 已配置',bg:'#5c4a1e',fg:'#fbeecd',tooltip:'未配置探活 URL，无法判定在线状态'};
+}
+function jumpToCloud(){
+  // 顶栏灯点击 → 切到工具箱页 + 滚到面板 + 高亮
+  const btn=document.querySelector('#nav button[data-p="p4"]');
+  if(btn)btn.click();
+  const anchor=$('cloudGpuAnchor');
+  if(anchor){
+    setTimeout(()=>{anchor.scrollIntoView({behavior:'smooth',block:'start'});
+      anchor.style.transition='box-shadow .3s';anchor.style.boxShadow='0 0 0 2px var(--gold)';
+      setTimeout(()=>{anchor.style.boxShadow='';},1800);},80);
+  }
+}
+async function saveCloudGpu(){
+  const body={
+    enabled:$('cgEnabled').checked,
+    provider:_pickProvider(),
+    host:$('cgHost').value.trim(),
+    port:+$('cgPort').value||22,
+    user:$('cgUser').value.trim()||'root',
+    key_path:$('cgKey').value.trim(),
+    wake_cmd:$('cgWake').value,
+    sleep_cmd:$('cgSleep').value,
+    health_url:$('cgHealth').value.trim(),
+    idle_minutes:+$('cgIdleMin').value||5,
+    auto_sleep:$('cgAuto').checked,
+    // CompShare 字段
+    cs_endpoint:$('csEndpoint')?$('csEndpoint').value.trim():'',
+    cs_region:$('csRegion')?$('csRegion').value.trim():'',
+    cs_zone:$('csZone')?$('csZone').value.trim():'',
+    cs_project_id:$('csProject')?$('csProject').value.trim():'',
+    cs_instance_id:$('csInstance')?$('csInstance').value.trim():'',
+    cs_public_key:$('csPub')?$('csPub').value.trim():'',
+  };
+  if($('cgPass').value!=='')body.password=$('cgPass').value;      // 明文进入后端立即 DPAPI 加密
+  if($('csSec')&&$('csSec').value!=='')body.cs_private_key=$('csSec').value;
+  const j=await (await fetch('/api/cloud/save',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body)})).json();
+  if(j.error){alert(j.error);return;}
+  $('cgPass').value='';
+  if($('csSec'))$('csSec').value='';
+  toast('已保存云 GPU 配置','ok');
+  loadCloudGpu();
+}
+async function cloudStartApi(){
+  const j=await (await fetch('/api/cloud/start_api',{method:'POST'})).json();
+  if(j.error){alert(j.error);return;}
+  toast((j.ok?'✅ ':'⛔ ')+(j.message||''),j.ok?'ok':'err');
+  loadCloudGpu();
+}
+async function cloudWake(){
+  const j=await (await fetch('/api/cloud/wake',{method:'POST'})).json();
+  if(j.error){alert(j.error);return;}
+  toast((j.ok?'✅ ':'⛔ ')+(j.message||'唤醒指令已下发'),j.ok?'ok':'err');
+  loadCloudGpu();
+}
+async function cloudSleep(){
+  if(!confirm('立即关机云 GPU 服务器？（若有任务未完成会被中断）'))return;
+  const j=await (await fetch('/api/cloud/sleep',{method:'POST'})).json();
+  if(j.error){alert(j.error);return;}
+  toast((j.ok?'✅ ':'⛔ ')+(j.message||'关机指令已下发'),j.ok?'ok':'err');
+  loadCloudGpu();
+}
+async function cloudPauseAuto(minutes){
+  await fetch('/api/cloud/pause_auto',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({minutes:+minutes||0})});
+  toast(minutes>0?('已暂停自动关 '+minutes+' 分钟'):'已恢复自动关','ok');
+  loadCloudGpu();
+}
+// 每 15 秒刷新云 GPU 状态（心跳）——不改 loadState，避免拖累现有节奏
+setInterval(()=>{try{loadCloudGpu();}catch(e){}},15000);
+
+/* ── 免费 Edge TTS：Endpoint 保存 & 测试连接 ── */
+async function loadEdgeSettings(){
+  try{
+    const s=await (await fetch('/api/settings')).json();
+    if(s.error){return;}
+    if($('edgeEp'))$('edgeEp').value=s.edge_tts_endpoint||'';
+    if($('edgeHint'))$('edgeHint').textContent=s.edge_tts_endpoint
+      ?('当前 Worker：'+s.edge_tts_endpoint+'（点「测试连接」实测一次短合成）')
+      :'未配置 Worker 地址。选 Edge TTS 引擎前先在此处填一次。';
+  }catch(e){}
+}
+async function saveEdgeEndpoint(){
+  const ep=($('edgeEp')&&$('edgeEp').value.trim())||'';
+  const j=await (await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({edge_tts_endpoint:ep})})).json();
+  if(j.error){alert(j.error);return;}
+  toast(ep?'已保存 Edge TTS Worker 地址':'已清空 Edge TTS 配置','ok');
+  loadEdgeSettings(); loadState();   // 刷新 state（顶栏/引擎下拉可能因此变化）
+}
+async function testEdgeEndpoint(){
+  if($('edgeHint'))$('edgeHint').textContent='测试中…（会向 Worker 发一次短合成请求）';
+  try{
+    const j=await (await fetch('/api/edge_tts/test',{method:'POST'})).json();
+    if($('edgeHint'))$('edgeHint').textContent=(j.available?'✅ ':'⛔ ')+(j.detail||'（无详细信息）');
+  }catch(e){if($('edgeHint'))$('edgeHint').textContent='测试失败：'+String(e);}
+}
+
+async function testRemote(){
+  $('remoteHint').innerHTML='测试中…（首次会等云端响应）';
+  try{
+    const j=await (await fetch('/api/probe')).json();
+    const hit=(j.components||[]).find(x=>x.key==='dots_remote');
+    $('remoteHint').innerHTML=hit?((hit.available?'✅ ':'⛔ ')+esc(hit.detail))
+      :'未取到云端状态，请确认已保存地址并部署好服务端。';
+  }catch(e){$('remoteHint').innerHTML='测试失败：'+esc(String(e));}
+}
+function rootUnsaved(){
+  const now=$('compRoot').value.trim();
+  if(now&&_savedRoot&&now!==_savedRoot){
+    alert('数据总目录已修改但还没点「💾 保存总目录」，下载仍会落到旧目录：\n'+_savedRoot+'\n\n请先点保存，再开始下载。');
+    return true;
+  }
+  return false;
+}
+async function saveCompRoot(){
+  const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({data_root:$('compRoot').value.trim()})});
+  const j=await r.json();
+  if(j.error){alert(j.error);return;}
+  alert('已保存数据总目录：'+j.data_root+'\n（已下载的文件不会自动搬移；把旧文件夹整体移入新目录后点「环境自检」即可识别）');
+  loadSettings();loadComponents();loadFonts();loadState();loadClones();
+}
+
+/* ── 字体库 ── */
+function fillGrouped(id,groups){
+  const el=$(id);if(!el)return;const keep=el.value;el.innerHTML='';
+  const o0=document.createElement('option');o0.value='';o0.textContent='默认（系统字体）';el.appendChild(o0);
+  groups.forEach(([cat,items])=>{
+    if(!items.length)return;
+    const g=document.createElement('optgroup');g.label=cat;
+    items.forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;g.appendChild(o);});
+    el.appendChild(g);
+  });
+  el.value=[...el.options].some(o=>o.value===keep)?keep:'';
+}
+async function loadFonts(){
+  try{
+    const s=await (await fetch('/api/fonts')).json();
+    $('fontCount').textContent=s.installed.length;
+    $('fontDirHint').textContent='字体目录：'+s.fonts_dir+'（可直接放入 ttf/otf/ttc）。全部下载源已逐一核实真实存在。';
+    const box=$('fontList');box.innerHTML='';
+    // 按分类分组渲染字体包
+    const cats=[];
+    s.pack.forEach(f=>{const c=f.category||'其他';if(!cats.includes(c))cats.push(c);});
+    cats.forEach(cat=>{
+      const head=document.createElement('div');head.style.cssText='color:var(--gold);font-size:12px;letter-spacing:2px;margin:14px 0 4px;font-weight:700';
+      head.textContent='◆ '+cat;box.appendChild(head);
+      s.pack.filter(f=>(f.category||'其他')===cat).forEach(f=>{
+        const el=document.createElement('div');el.className='check';el.dataset.key=f.key;
+        const action=f.installed?'<span class="pill ok">已就绪</span>'
+          :`<button class="btn line" style="padding:8px 16px" onclick="installFont('${f.key}')">下载</button>`;
+        el.innerHTML=`<span class="dot ${f.installed?'ok':'no'}"></span><b>${esc(f.name)}</b>
+          <span>${esc(f.note)}</span>
+          <span class="tstat" style="margin-left:auto;flex:none;font-size:12px;color:var(--gold)"></span>
+          <span class="tact" style="flex:none">${action}</span>`;
+        box.appendChild(el);});
+    });
+    const extras=s.installed.filter(f=>!s.pack.some(pk=>pk.file===f.file));
+    if(extras.length){
+      const head=document.createElement('div');head.style.cssText='color:var(--gold);font-size:12px;letter-spacing:2px;margin:14px 0 4px;font-weight:700';
+      head.textContent='◆ 其他/自备';box.appendChild(head);
+      extras.forEach(f=>{
+        const el=document.createElement('div');el.className='check';
+        el.innerHTML=`<span class="dot ok"></span><b>${esc(f.name)}</b>
+          <span class="mut">用户放入 · ${esc(f.file)}</span><span class="pill ok" style="margin-left:auto">已就绪</span>`;
+        box.appendChild(el);});
+    }
+    // 字幕/文本框字体下拉：按分类 optgroup 归组（解决下拉过长）
+    const byCat={};
+    s.installed.forEach(f=>{const c=f.category||'其他/自备';(byCat[c]=byCat[c]||[]).push([f.file,f.name]);});
+    const order=['黑体标题','楷宋文艺','圆体可爱','手写书法','其他/自备'];
+    const groups=order.filter(c=>byCat[c]).map(c=>[c,byCat[c]]).concat(
+      Object.keys(byCat).filter(c=>!order.includes(c)).map(c=>[c,byCat[c]]));
+    fillGrouped('subFont',groups);fillGrouped('edFont',groups);fillGrouped('cvFont',groups);
+  }catch(e){}
+}
+async function installFont(key){ if(rootUnsaved())return; if(await postRun({action:'font',font_key:key}))pollAll(); }
+async function uploadFont(input){
+  const f=input.files[0]; input.value=''; if(!f)return;
+  const q=new URLSearchParams({filename:f.name});
+  const j=await (await fetch('/api/fonts?'+q,{method:'POST',body:f})).json();
+  if(j.error){alert(j.error);return;}
+  alert('已入库字体：'+j.saved.join('、'));
+  loadFonts();
+}
+
+/* ── 音色包导入 ── */
+async function importVoicePack(input){
+  const f=input.files[0]; input.value=''; if(!f)return;
+  const r=await fetch('/api/voices/import',{method:'POST',body:f});
+  const j=await r.json();
+  if(j.error){alert(j.error);return;}
+  alert('已导入 '+j.imported.length+' 个音色');
+  loadState();
+}
+
+/* ── 折叠：下载落地路径（用户反馈③，不常看的说明默认收起） ── */
+function togglePaths(){
+  const el=$('pathHint'),t=$('pathToggle');
+  const open=el.style.display==='none';
+  el.style.display=open?'block':'none';
+  t.textContent=(open?'▾':'▸')+' 下载/存档存到哪里？（点击'+(open?'收起':'展开')+'）';
+}
+
+/* ── 自定义色号保存（localStorage，用户反馈②） ── */
+function myColors(){try{return JSON.parse(localStorage.getItem('dubColors')||'[]');}catch(e){return [];}}
+function delColor(c){
+  localStorage.setItem('dubColors',JSON.stringify(myColors().filter(x=>x!==c)));
+  renderMyColors();
+}
+function renderMyColors(){
+  const box=$('myColors');if(!box)return;box.innerHTML='';
+  myColors().forEach(c=>{
+    const wrap=document.createElement('span');
+    wrap.style.cssText='position:relative;display:inline-flex;flex:none';
+    const d=document.createElement('div');d.className='sw';d.dataset.c=c;d.style.background=c;d.title=c+'（点选用）';
+    const x=document.createElement('span');x.textContent='✕';x.title='删除该色';
+    x.style.cssText='position:absolute;top:-6px;right:-6px;width:15px;height:15px;line-height:15px;'
+      +'text-align:center;font-size:9px;border-radius:50%;background:var(--bad);color:#fff;cursor:pointer;'
+      +'box-shadow:0 1px 4px rgba(0,0,0,.5)';
+    x.onclick=(e)=>{e.stopPropagation();delColor(c);};
+    wrap.appendChild(d);wrap.appendChild(x);box.appendChild(wrap);
+  });
+  // 字幕色板复用同一批自定义色（可点选，不带删除，删除在文本框侧管理）
+  const sbox=$('subMyColors');
+  if(sbox){sbox.innerHTML='';myColors().forEach(c=>{
+    const d=document.createElement('div');d.className='sw';d.dataset.c=c;d.style.background=c;d.title=c;
+    sbox.appendChild(d);});}
+}
+function saveColor(){
+  let c=$('edColor').value.trim().toUpperCase();
+  if(!/^#[0-9A-F]{6}$/.test(c)){alert('请输入合法色号，如 #FF5A4D');return;}
+  const arr=myColors();if(!arr.includes(c)){arr.push(c);localStorage.setItem('dubColors',JSON.stringify(arr.slice(-16)));}
+  renderMyColors();
+  toast('已存色 '+c,'ok');
+}
+
+/* ── 文本框样式模板（可命名/复用/重命名/删除，localStorage 持久） ── */
+function tpls(){try{return JSON.parse(localStorage.getItem('dubOverlayTpl')||'{}');}catch(e){return {};}}
+function saveTplStore(o){localStorage.setItem('dubOverlayTpl',JSON.stringify(o));}
+function loadTpls(){
+  const names=Object.keys(tpls());
+  fill('tplSel',names.length?names.map(n=>[n,n]):[['','（暂无模板）']]);
+}
+// 模板=整个「文本框」页设置：编辑器默认样式 + 字幕样式 + 视频进度条（2026-07-25 用户定案）
+function curStyle(){return {
+  position:$('edPos').value,font_size_px:+$('edSize').value,font_name:$('edFont').value,
+  color:$('edColor').value.trim(),border_width:+$('edBorder').value||0,boxed:$('edBox').checked,
+  sub:{size:+$('subsize').value||64,pos:$('subPos').value,font:$('subFont')?.value||'',
+       color:($('subColor')?.value||'#FFFFFF').trim(),border:+($('subBorder')?.value)||0},
+  pb:collectProgressBar(),wm:collectWatermark()};}
+function saveTpl(){
+  const name=prompt('模板名（例：书单女生·顶部导流）：');if(!name||!name.trim())return;
+  const t=tpls();t[name.trim()]=curStyle();saveTplStore(t);loadTpls();$('tplSel').value=name.trim();
+  alert('已存模板：'+name.trim()+'\n（含 文本框默认样式 + 字幕样式 + 视频进度条 全部设置）');
+}
+function applyTpl(){
+  const s=tpls()[$('tplSel').value];if(!s){alert('请选择一个模板');return;}
+  if(s.position!=null)$('edPos').value=s.position;
+  if(s.font_size_px!=null){$('edSize').value=s.font_size_px;$('edSizeV').textContent=s.font_size_px;}
+  if(s.font_name!=null&&[...$('edFont').options].some(o=>o.value===s.font_name))$('edFont').value=s.font_name;
+  if(s.color!=null)$('edColor').value=s.color;
+  if(s.border_width!=null)$('edBorder').value=s.border_width;
+  if(s.boxed!=null)$('edBox').checked=s.boxed;
+  // 字幕样式（旧模板无 sub 字段时跳过，向后兼容）
+  if(s.sub)applySubObj(s.sub);
+  // 视频进度条（旧模板无 pb 字段时跳过）
+  if(s.pb)applyPbObj(s.pb);
+  if(s.wm)applyWmObj(s.wm);   // 动态水印（旧模板无 wm 字段时跳过）
+  syncPv(true);
+}
+// 还原字幕样式（sub{}）与进度条（pb{}）——模板与作品预设共用，避免两处逻辑漂移
+function applySubObj(u){
+  if(!u)return;
+  if(u.size!=null){$('subsize').value=u.size;if($('subSizeV'))$('subSizeV').textContent=u.size;}
+  if(u.pos!=null&&$('subPos'))$('subPos').value=u.pos;
+  if(u.font!=null&&$('subFont')&&[...$('subFont').options].some(o=>o.value===u.font))$('subFont').value=u.font;
+  if(u.color!=null&&$('subColor'))$('subColor').value=u.color;
+  if(u.border!=null&&$('subBorder'))$('subBorder').value=u.border;
+}
+function applyPbObj(p){
+  if(!p)return;
+  if($('pbEnable'))$('pbEnable').checked=!!p.enabled;
+  if(p.text!=null)$('pbText').value=p.text;
+  if(p.position!=null)$('pbPos').value=p.position;
+  if(p.font_size_px!=null)$('pbSize').value=p.font_size_px;
+  if(p.strip_height_px!=null)$('pbStripH').value=p.strip_height_px;
+  const setC=(id,v)=>{if(v!=null){$(id).value=v;const h=$(id+'Hex');if(h)h.value=v;}};
+  setC('pbColor',p.text_color);setC('pbTrack',p.track_color);setC('pbFill',p.fill_color);
+  if(p.track_opacity!=null){$('pbTrackOp').value=p.track_opacity;$('pbTrackOpV').textContent=(+p.track_opacity).toFixed(2);}
+  if(p.fill_opacity!=null){$('pbFillOp').value=p.fill_opacity;$('pbFillOpV').textContent=(+p.fill_opacity).toFixed(2);}
+}
+
+/* ── ③ 烧录预设：只存/取「字幕样式 + 视频进度条」两块（localStorage，独立于作品预设） ── */
+function collectBurnStyle(){return {
+  sub:{size:+$('subsize').value||64,pos:$('subPos').value,font:$('subFont')?.value||'',
+       color:($('subColor')?.value||'#FFFFFF').trim(),border:+($('subBorder')?.value)||0},
+  pb:collectProgressBar()};}
+function burnPresets(){try{return JSON.parse(localStorage.getItem('dubBurnPresets')||'{}');}catch(e){return{};}}
+function loadBurnPresets(){
+  const names=Object.keys(burnPresets());
+  fill('burnPreset', names.length?names.map(n=>[n,n]):[['','（暂无烧录预设）']]);
+}
+function saveBurnPreset(){
+  const name=prompt('给这套「字幕样式 + 视频进度条」起个名（如 书单·顶部导流）：');
+  if(!name||!name.trim())return;
+  const p=burnPresets();p[name.trim()]=collectBurnStyle();
+  localStorage.setItem('dubBurnPresets',JSON.stringify(p));
+  loadBurnPresets();$('burnPreset').value=name.trim();toast('已存烧录预设 · '+name.trim(),'ok');
+}
+function applyBurnPreset(){
+  const n=$('burnPreset').value;const s=burnPresets()[n];
+  if(!s){alert('请选择一个烧录预设');return;}
+  if(s.sub)applySubObj(s.sub); if(s.pb)applyPbObj(s.pb); syncPv(true);
+  toast('已载入烧录预设 · '+n,'ok');
+}
+function delBurnPreset(){
+  const n=$('burnPreset').value;const p=burnPresets();
+  if(!p[n]){alert('请选择一个烧录预设');return;}
+  if(!confirm('删除烧录预设「'+n+'」？'))return;
+  delete p[n];localStorage.setItem('dubBurnPresets',JSON.stringify(p));loadBurnPresets();toast('已删除');
+}
+function renameTpl(){
+  const old=$('tplSel').value;const t=tpls();if(!t[old]){alert('请选择一个模板');return;}
+  const name=prompt('新名称：',old);if(!name||!name.trim()||name.trim()===old)return;
+  t[name.trim()]=t[old];delete t[old];saveTplStore(t);loadTpls();$('tplSel').value=name.trim();
+}
+function delTpl(){
+  const n=$('tplSel').value;const t=tpls();if(!t[n]){alert('请选择一个模板');return;}
+  if(!confirm('删除模板「'+n+'」？'))return;delete t[n];saveTplStore(t);loadTpls();
+}
+
+/* ── 素材库管理（已入库音效/BGM，可删除；上传即入库不必重复上传） ── */
+function toggleAssets(){
+  const el=$('assetList'),t=$('assetToggle');
+  const open=el.style.display==='none';el.style.display=open?'block':'none';
+  t.textContent=(open?'▾':'▸')+' 🗂 素材库（音效/BGM 上传一次即永久入库，可复用可删除）';
+}
+function renderAssetList(assets){
+  const box=$('assetList');if(!box)return;
+  if(!assets.length){box.innerHTML='<p class="mini" style="color:var(--faint)">素材库为空 — 上传的音效/BGM 会永久保存在这里。</p>';return;}
+  box.innerHTML='';
+  assets.forEach(a=>{
+    const row=document.createElement('div');row.className='row';row.style.marginTop='4px';
+    row.innerHTML=`<span class="mini" style="flex:1 1 120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.file)}</span>
+      <span class="mini" style="flex:none;color:var(--faint)">${a.size_mb}MB</span>
+      <button class="btn" style="padding:5px 9px;flex:none" onclick="playUrl('${a.url}',this)">▶</button>
+      <span class="x" style="flex:none" onclick="delAsset('${encodeURIComponent(a.file)}')">✕</span>`;
+    box.appendChild(row);
+  });
+}
+async function delAsset(file){
+  if(!confirm('从素材库删除该文件？（正在使用它的音效/BGM 需重新选择）'))return;
+  await fetch('/api/assets/'+file,{method:'DELETE'});
+  loadAssets();
+}
+
+/* ── 音轨混音：总音量 / BGM(循环) / 音效(拖动定位)（用户反馈②③④⑤） ── */
+let sfxCues=[];  // {file, at, volume}
+function num(v,d){const n=parseFloat(v);return isNaN(n)?d:n;}  // 解析音量：允许 0（不被 || 吃掉）
+function getMasterSeconds(){
+  return window._masterSeconds || (($('masterAudio').duration>0)?$('masterAudio').duration:60);
+}
+function collectAudio(){
+  const bgmFile=$('bgmSel')?.value||'';
+  return {
+    master_volume:num($('mVol').value,120)/100,
+    orig_video_volume:num($('oVol')?.value,100)/100,   // 原视频音效音量：0=关，1=原音
+    bgm:bgmFile?{file:bgmFile,volume:num($('bVol').value,35)/100,loop:$('bLoop').checked}:null,
+    sfx:sfxCues.map(c=>({file:c.file,at:+c.at||0,volume:(c.volume==null?1:+c.volume)}))
+  };
+}
+function onMixChange(){
+  $('mVolV').textContent=$('mVol').value+'%';
+  if($('oVolV')&&$('oVol'))$('oVolV').textContent=$('oVol').value+'%';
+  $('bVolV').textContent=$('bVol').value+'%';
+  $('bgmCtl').style.display=$('bgmSel').value?'flex':'none';
+  // 试听中实时改总音量/BGM 音量（无需重新试听）——各路独立增益，BGM 不受音效影响
+  if(mixPlaying){
+    if(mixGains.master)mixGains.master.gain.value=num($('mVol').value,120)/100;
+    if(mixGains.bgm)mixGains.bgm.gain.value=num($('bVol').value,35)/100;
+    // 原视频音效仅在成片渲染时生效；试听是前端 Web Audio 合成 master+BGM+SFX，
+    // 不含真实分镜视频，所以此处**不联动增益**——避免给出"能试听到"的错觉。
+  }
+}
+function setSfxVol(i,v){
+  if(!sfxCues[i])return;
+  sfxCues[i].volume=num(v,100)/100;
+  if(mixPlaying&&mixGains.sfx[i])mixGains.sfx[i].gain.value=sfxCues[i].volume;  // 试听中实时生效
+}
+async function loadAssets(){
+  try{
+    const s=await (await fetch('/api/assets')).json();
+    const opts=s.assets.map(a=>[a.file,a.file+'（'+a.size_mb+'MB）']);
+    const bkeep=$('bgmSel').value; fill('bgmSel',[['','（无 BGM）']].concat(opts));
+    $('bgmSel').value=[...$('bgmSel').options].some(o=>o.value===bkeep)?bkeep:'';
+    const skeep=$('sfxSel').value; fill('sfxSel',opts.length?opts:[['','（先上传音效）']]);
+    if(opts.length&&[...$('sfxSel').options].some(o=>o.value===skeep))$('sfxSel').value=skeep;
+    window._assets=s.assets; renderAssetList(s.assets); onMixChange();
+  }catch(e){}
+}
+async function uploadAsset(input,kind){
+  const f=input.files[0]; input.value=''; if(!f)return;
+  const j=await (await fetch('/api/assets?filename='+encodeURIComponent(f.name),{method:'POST',body:f})).json();
+  if(j.error){alert(j.error);return;}
+  await loadAssets();
+  if(kind==='bgm'){$('bgmSel').value=j.file;onMixChange();}
+  else{$('sfxSel').value=j.file;}
+}
+function addSfx(){
+  const file=$('sfxSel').value;
+  if(!file){alert('请先选择或上传一个音效');return;}
+  sfxCues.push({file,at:Math.min(2,getMasterSeconds()*0.1),volume:1});
+  renderSfxPins();renderSfxRows();
+}
+function renderSfxPins(){
+  const track=$('sfxTrack');if(!track)return;
+  track.querySelectorAll('.sfxpin').forEach(x=>x.remove());
+  $('sfxHint').style.display=sfxCues.length?'none':'flex';
+  const dur=getMasterSeconds();
+  sfxCues.forEach((c,i)=>{
+    const pin=document.createElement('div');pin.className='sfxpin';
+    pin.style.cssText='position:absolute;top:4px;bottom:4px;width:16px;border-radius:5px;cursor:grab;'
+      +'background:linear-gradient(180deg,var(--gold-hi),var(--gold-deep));box-shadow:0 2px 8px rgba(0,0,0,.5);'
+      +'display:flex;align-items:center;justify-content:center;font-size:10px;color:var(--ink);font-weight:700';
+    pin.style.left='calc('+Math.max(0,Math.min(100,c.at/dur*100))+'% - 8px)';
+    pin.textContent=i+1; pin.title=c.file+' @ '+c.at.toFixed(1)+'s（拖动改位置）';
+    let drag=false;
+    const move=(e)=>{
+      if(!drag)return;
+      const r=track.getBoundingClientRect();
+      const x=Math.max(0,Math.min(1,((e.touches?e.touches[0].clientX:e.clientX)-r.left)/r.width));
+      c.at=+(x*dur).toFixed(2);
+      pin.style.left='calc('+(x*100)+'% - 8px)';pin.title=c.file+' @ '+c.at.toFixed(1)+'s';
+      const rt=$('sfxAt'+i);if(rt)rt.textContent=c.at.toFixed(1)+'s';
+    };
+    const up=()=>{drag=false;pin.style.cursor='grab';document.removeEventListener('pointermove',move);document.removeEventListener('pointerup',up);};
+    pin.addEventListener('pointerdown',e=>{e.preventDefault();drag=true;pin.style.cursor='grabbing';document.addEventListener('pointermove',move);document.addEventListener('pointerup',up);});
+    track.appendChild(pin);
+  });
+}
+function renderSfxRows(){
+  const box=$('sfxRows');if(!box)return;box.innerHTML='';
+  sfxCues.forEach((c,i)=>{
+    const row=document.createElement('div');row.className='row';row.style.marginTop='6px';
+    row.innerHTML=`<span class="mini" style="flex:none;color:var(--gold)">${i+1}</span>
+      <span class="mini" style="flex:1 1 100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.file)}</span>
+      <span class="mini" style="flex:none">位置 <b id="sfxAt${i}">${c.at.toFixed(1)}s</b></span>
+      <button class="btn" style="padding:6px 10px;flex:none" onclick="playUrl('/api/asset?file=${encodeURIComponent(c.file)}',this)">▶</button>
+      <span class="mini" style="flex:none">音量 <b id="sfxVolV${i}">${Math.round(c.volume*100)}%</b></span>
+      <input type="range" min="0" max="200" step="5" value="${Math.round(c.volume*100)}" style="flex:0 1 90px" oninput="setSfxVol(${i},this.value);document.getElementById('sfxVolV${i}').textContent=this.value+'%'">
+      <span class="x" style="flex:none" onclick="sfxCues.splice(${i},1);renderSfxPins();renderSfxRows()">✕</span>`;
+    box.appendChild(row);
+  });
+}
+
+/* ── 混音试听（Web Audio 实时合成：配音＋BGM循环＋音效定点，各路独立增益、可实时调音量） ── */
+let actx=null,mixNodes=[],mixPlaying=false,mixTimer=null;
+let mixGains={master:null,bgm:null,sfx:[]};   // 保存各路增益节点，供试听中实时调音量
+async function fetchBuf(url){
+  const arr=await (await fetch(url)).arrayBuffer();
+  return await actx.decodeAudioData(arr);
+}
+function schedule(buf,when,gain,loop,stopAfter){
+  const src=actx.createBufferSource();src.buffer=buf;src.loop=loop;
+  const g=actx.createGain();g.gain.value=gain;
+  src.connect(g).connect(actx.destination);
+  src.start(when);
+  if(loop&&stopAfter)src.stop(when+stopAfter);
+  mixNodes.push(src);
+  return g;   // 返回增益节点以便实时调节
+}
+async function toggleMixPreview(){
+  if(mixPlaying){stopMixPreview();return;}
+  try{
+    actx=actx||new (window.AudioContext||window.webkitAudioContext)();
+    await actx.resume();
+    const masterUrl=$('masterAudio').dataset.src||'';
+    const bgmFile=$('bgmSel').value;
+    const jobs=[];let masterBuf=null,bgmBuf=null;const sfxBufs=[];
+    if(masterUrl)jobs.push(fetchBuf(masterUrl).then(b=>masterBuf=b).catch(()=>{}));
+    if(bgmFile)jobs.push(fetchBuf('/api/asset?file='+encodeURIComponent(bgmFile)).then(b=>bgmBuf=b).catch(()=>{}));
+    sfxCues.forEach((c,i)=>jobs.push(fetchBuf('/api/asset?file='+encodeURIComponent(c.file)).then(b=>sfxBufs[i]=b).catch(()=>{})));
+    $('mixPlay').textContent='… 加载中';
+    await Promise.all(jobs);
+    if(!masterBuf&&!bgmBuf&&!sfxBufs.some(Boolean)){$('mixPlay').textContent='▶ 混音试听（配音＋BGM＋音效）';alert('没有可试听的音频：先运行「①配音」生成 master，或选择 BGM/音效。');return;}
+    const t0=actx.currentTime+0.06;
+    const dur=masterBuf?masterBuf.duration:getMasterSeconds();
+    mixNodes=[];mixGains={master:null,bgm:null,sfx:[]};
+    if(masterBuf)mixGains.master=schedule(masterBuf,t0,num($('mVol').value,120)/100,false,0);
+    if(bgmBuf)mixGains.bgm=schedule(bgmBuf,t0,num($('bVol').value,35)/100,$('bLoop').checked,dur);
+    sfxCues.forEach((c,i)=>{if(sfxBufs[i])mixGains.sfx[i]=schedule(sfxBufs[i],t0+(+c.at||0),(c.volume==null?1:+c.volume),false,0);});
+    mixPlaying=true;$('mixPlay').textContent='⏹ 停止试听';
+    clearTimeout(mixTimer);mixTimer=setTimeout(stopMixPreview,(dur+0.4)*1000);
+  }catch(e){$('mixPlay').textContent='▶ 混音试听（配音＋BGM＋音效）';alert('试听失败：'+e.message);}
+}
+function stopMixPreview(){
+  clearTimeout(mixTimer);
+  mixNodes.forEach(n=>{try{n.stop();}catch(e){}});mixNodes=[];
+  mixGains={master:null,bgm:null,sfx:[]};
+  mixPlaying=false;$('mixPlay').textContent='▶ 混音试听（配音＋BGM＋音效）';
+}
+
+/* ── 作品参数预设（存服务端总目录，可迁移；用户反馈②统一作品参数） ── */
+function collectConfig(){
+  return {engine:$('engine').value,aligner:$('aligner').value,aspect:$('aspect').value,
+    matMode:$('matMode')?$('matMode').value:'flat',
+    voice:$('voice').value,burn:$('burn').checked,seed:+$('seed').value,
+    pause:+$('pause').value,speed:+$('speed').value,
+    // Edge TTS 参数一并存进作品预设：切回该预设自动还原声线/音调/风格
+    edge_voice:($('edgeVoice')&&$('edgeVoice').value)||'',
+    edge_pitch:+($('edgePitch')&&$('edgePitch').value)||0,
+    edge_style:($('edgeStyle')&&$('edgeStyle').value)||'general',
+    subPos:$('subPos').value,subsize:+$('subsize').value,subFont:$('subFont').value,
+    // ⑤ 作品预设纳入完整字幕样式 + 视频进度条设定
+    sub:{size:+$('subsize').value||64,pos:$('subPos').value,font:$('subFont')?.value||'',
+         color:($('subColor')?.value||'#FFFFFF').trim(),border:+($('subBorder')?.value)||0},
+    pb:collectProgressBar(),wm:collectWatermark(),
+    audio:collectAudio(),overlays:overlays};
+}
+// 还原音频设置（总音量/原视频音效/BGM/音效）——作品预设与待编辑队列选中项共用
+function restoreAudio(a){
+  if(!a)return;
+  // 新基准 120%；老预设有明确 master_volume（含 1.0）时按保存值还原，只有字段缺失才用 1.2
+  $('mVol').value=Math.round((a.master_volume==null?1.2:+a.master_volume)*100);
+  // 旧预设/旧队列项无 orig_video_volume 字段 → 按 100% 兜底（与新默认一致，避免重烧时突然没声）
+  if($('oVol'))$('oVol').value=Math.round(((a.orig_video_volume==null?1:+a.orig_video_volume))*100);
+  if(a.bgm){$('bgmSel').value=a.bgm.file||'';$('bVol').value=Math.round((a.bgm.volume??.35)*100);$('bLoop').checked=a.bgm.loop!==false;}
+  else{$('bgmSel').value='';}
+  // 严格 null/undefined 判断 —— 保留合法的 0（音量=0=静音、位置=0 秒），
+  // 不能用 `+v || default` 把 0 吃成默认（用户设了 0 却被恢复成 100%）。
+  sfxCues=(a.sfx||[]).map(s=>({
+    file:s.file,
+    at:(s.at==null?0:+s.at),
+    volume:(s.volume==null?1:+s.volume),
+  }));
+  onMixChange();renderSfxPins();renderSfxRows();
+}
+function applyConfigObj(c){
+  if(!c)return;
+  const set=(id,v)=>{const el=$(id);if(el!=null&&v!=null)el.value=v;};
+  set('engine',c.engine);set('aligner',c.aligner);set('aspect',c.aspect);set('voice',c.voice);
+  set('matMode',c.matMode);
+  if(c.burn!=null)$('burn').checked=c.burn;
+  set('seed',c.seed);set('pause',c.pause);set('speed',c.speed);
+  // 还原 Edge TTS 参数（老预设无这些字段 → 保留当前值不动）
+  if(c.edge_voice!=null)set('edgeVoice',c.edge_voice);
+  if(c.edge_pitch!=null){set('edgePitch',c.edge_pitch);
+    if($('edgePitchV'))$('edgePitchV').textContent=String(c.edge_pitch);}
+  if(c.edge_style!=null)set('edgeStyle',c.edge_style);
+  set('subPos',c.subPos);set('subsize',c.subsize);set('subFont',c.subFont);
+  if(c.sub)applySubObj(c.sub);     // ⑤ 还原完整字幕样式（颜色/描边）
+  if(c.pb)applyPbObj(c.pb);        // ⑤ 还原视频进度条设定
+  if(c.wm)applyWmObj(c.wm);        // 还原动态水印设定
+  if($('pv'))$('pv').textContent=(+$('pause').value).toFixed(2);
+  if($('sv'))$('sv').textContent=(+$('speed').value).toFixed(2);
+  if(c.audio)restoreAudio(c.audio);
+  if(Array.isArray(c.overlays)){overlays=c.overlays;renderOverlays();}
+  onMixChange();renderSfxPins();renderSfxRows();syncPv();
+  onEngineChange();   // 若预设切了引擎，同步 Edge 控件的显示
+}
+async function loadConfigs(){
+  try{const s=await (await fetch('/api/config')).json();
+    const names=Object.keys(s.presets||{});
+    fill('cfgSel',names.length?names.map(n=>[n,n]):[['','（暂无预设）']]);
+    window._presets=s.presets||{};
+  }catch(e){}
+}
+async function saveConfig(){
+  const name=prompt('给这套参数起个名（如「甜宠竖屏·思源黑·带BGM」）：');
+  if(!name||!name.trim())return;
+  const j=await (await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({name:name.trim(),config:collectConfig()})})).json();
+  if(j.error){alert(j.error);return;}
+  window._presets=j.presets;await loadConfigs();$('cfgSel').value=name.trim();
+  alert('已保存预设：'+name.trim());
+}
+function applyConfig(){
+  const name=$('cfgSel').value;
+  if(!name||!window._presets||!window._presets[name]){alert('请选择一个预设');return;}
+  applyConfigObj(window._presets[name]);
+}
+async function delConfig(){
+  const name=$('cfgSel').value;
+  if(!name||!window._presets||!window._presets[name]){alert('请选择一个预设');return;}
+  if(!confirm('删除预设「'+name+'」？'))return;
+  const j=await (await fetch('/api/config/'+encodeURIComponent(name),{method:'DELETE'})).json();
+  window._presets=j.presets||{};loadConfigs();
+}
+
+/* ══════════ 封面工厂：图层栈画布（参考 Fabric/Konva 的层模型，原生 Canvas 零依赖实现） ══════════ */
+const cover={w:1920,h:1080,layers:[],sel:-1,nextId:1};
+const cvEl=()=>$('cvCanvas');
+function cvLayer(){return cover.layers[cover.sel]||null;}
+
+function cvDraw(showSel=true){
+  const cv=cvEl();if(!cv)return;
+  if(cv.width!==cover.w)cv.width=cover.w; if(cv.height!==cover.h)cv.height=cover.h;
+  const ctx=cv.getContext('2d');ctx.clearRect(0,0,cover.w,cover.h);
+  cover.layers.forEach(L=>{
+    if(!L.visible)return;
+    if(L.type==='image'&&L.img){ // 底图 cover 裁切铺满
+      ctx.save();ctx.globalAlpha=L.opacity??1;
+      const s=Math.max(cover.w/L.img.width,cover.h/L.img.height);
+      const w=L.img.width*s,h=L.img.height*s;
+      ctx.drawImage(L.img,(cover.w-w)/2,(cover.h-h)/2,w,h);ctx.restore();
+      L._hit={ax:0,ay:0,rot:0,box:[0,0,cover.w,cover.h]};return;
+    }
+    if(L.type!=='text')return;
+    const lines=String(L.text||'').split('\n');
+    const lh=L.size*(L.lineh??1.24), fam=faceFamily(L.font)||'';
+    const ax=L.x*cover.w, ay=L.y*cover.h, rot=(L.rot||0)*Math.PI/180;
+    ctx.save();
+    ctx.globalAlpha=L.opacity??1;
+    ctx.translate(ax,ay);ctx.rotate(rot);          // PS 式：绕锚点旋转，整层一起转
+    ctx.letterSpacing=(L.spacing||0)+'px';          // 字间距（现代 Chromium 原生支持，影响测量）
+    ctx.font=`${L.italic?'italic ':''}${L.weight||700} ${L.size}px ${fam}${CJK_FALLBACK}`;
+    ctx.textAlign=L.align;ctx.textBaseline='top';
+    let maxW=0;lines.forEach(t=>{maxW=Math.max(maxW,ctx.measureText(t).width);});
+    const lx0=(L.align==='left'?0:(L.align==='right'?-maxW:-maxW/2))-8;
+    const box=[lx0,-6,lx0+maxW+16,lines.length*lh+6];   // 层内坐标包围盒（未旋转）
+    L._hit={ax,ay,rot,box};
+    if(L.boxed){ctx.fillStyle='rgba(0,0,0,.45)';
+      ctx.fillRect(box[0]-10,box[1]-4,(box[2]-box[0])+20,(box[3]-box[1])+8);}
+    let fillStyle=L.color;
+    if(L.grad){ // 渐变填充（PS 渐变叠加的封面常用形态：双色、垂直/水平）
+      const g=L.gradDir==='h'?ctx.createLinearGradient(box[0],0,box[2],0)
+                             :ctx.createLinearGradient(0,box[1],0,box[3]);
+      g.addColorStop(0,L.gradA||'#FFD75E');g.addColorStop(1,L.gradB||'#FF7A3C');
+      fillStyle=g;
+    }
+    lines.forEach((t,i)=>{
+      const y=i*lh;
+      if(L.shadow){ctx.shadowColor=L.shadowColor||'#000';ctx.shadowOffsetX=L.shadowX??6;
+        ctx.shadowOffsetY=L.shadowY??6;ctx.shadowBlur=L.shadowBlur??12;}
+      if(L.border>0){ctx.lineJoin='round';ctx.strokeStyle=L.borderColor;ctx.lineWidth=L.border*2;ctx.strokeText(t,0,y);}
+      ctx.fillStyle=fillStyle;ctx.fillText(t,0,y);
+      ctx.shadowColor='transparent';ctx.shadowBlur=0;ctx.shadowOffsetX=0;ctx.shadowOffsetY=0;
+    });
+    ctx.restore();
+  });
+  const S=cvLayer();
+  if(showSel&&S&&S.visible&&S._hit){ // 选中层虚线框（随层旋转；导出时不画）
+    const h=S._hit;
+    ctx.save();ctx.translate(h.ax,h.ay);ctx.rotate(h.rot);
+    ctx.strokeStyle='#F5D68F';ctx.setLineDash([10,7]);ctx.lineWidth=3;
+    ctx.strokeRect(h.box[0],h.box[1],h.box[2]-h.box[0],h.box[3]-h.box[1]);ctx.restore();
+  }
+}
+function cvHitAt(x,y){ // 自顶向下命中（把点反变换进层内坐标，旋转层也点得准）
+  for(let i=cover.layers.length-1;i>=0;i--){
+    const L=cover.layers[i];
+    if(!L.visible||!L._hit)continue;
+    const h=L._hit, dx=x-h.ax, dy=y-h.ay, c=Math.cos(-h.rot), s=Math.sin(-h.rot);
+    const lx=dx*c-dy*s, ly=dx*s+dy*c;
+    if(lx>=h.box[0]&&lx<=h.box[2]&&ly>=h.box[1]&&ly<=h.box[3])return i;
+  }
+  return -1;
+}
+/* —— 图层面板（PS 习惯：顶行=最上层；👁显隐 🔒锁定 拖拽排序 双击重命名） —— */
+function cvRenderLayers(){
+  const box=$('cvLayers');if(!box)return;
+  $('cvLayerN').textContent=cover.layers.length;
+  box.innerHTML='';
+  if(!cover.layers.length){box.innerHTML='<p class="empty">还没有图层 — 导入底图或添加文字层</p>';return;}
+  for(let li=cover.layers.length-1;li>=0;li--){
+    const L=cover.layers[li];
+    const row=document.createElement('div');
+    row.className='lrow'+(li===cover.sel?' sel':'');row.draggable=true;row.dataset.li=li;
+    row.innerHTML=`<span class="lbtn ${L.visible?'':'off'}" title="显示/隐藏">${L.visible?'👁':'—'}</span>
+      <span class="lbtn ${L.locked?'':'off'}" title="锁定后可选中查看，不能移动/删除">${L.locked?'🔒':'🔓'}</span>
+      <span class="lname" title="双击重命名">${esc(L.name)}</span>
+      <span class="ltype">${L.type==='image'?'图':'文'}</span>`;
+    const [eye,lock,name]=row.children;
+    eye.onclick=e=>{e.stopPropagation();L.visible=!L.visible;cvSync();};
+    lock.onclick=e=>{e.stopPropagation();L.locked=!L.locked;cvSync();};
+    name.ondblclick=e=>{e.stopPropagation();
+      name.innerHTML=`<input type="text" value="${esc(L.name)}">`;
+      const inp=name.firstChild;inp.focus();inp.select();
+      const commit=()=>{L.name=inp.value.trim()||L.name;cvRenderLayers();};
+      inp.onblur=commit;inp.onkeydown=ev=>{if(ev.key==='Enter')commit();if(ev.key==='Escape')cvRenderLayers();};};
+    row.onclick=()=>{if(cover.sel!==li){cover.sel=li;cvSync();}};  // 已选中则不重建面板（保证双击重命名能落在同一节点）
+    row.ondragstart=e=>{e.dataTransfer.setData('text/plain',String(li));};
+    row.ondragover=e=>{e.preventDefault();row.classList.add('dragover');};
+    row.ondragleave=()=>row.classList.remove('dragover');
+    row.ondrop=e=>{e.preventDefault();row.classList.remove('dragover');
+      const a=+e.dataTransfer.getData('text/plain'), b=+row.dataset.li;
+      if(isNaN(a)||a===b)return;
+      const sel=cvLayer();
+      const[m]=cover.layers.splice(a,1);cover.layers.splice(b,0,m); // 上拖落在目标上方、下拖落在下方（常规排序手感）
+      cover.sel=cover.layers.indexOf(sel);cvSync();};
+    box.appendChild(row);
+  }
+}
+function cvSync(){cvDraw();cvRenderLayers();cvSyncProps();}
+function cvSyncProps(){
+  const L=cvLayer(), isText=L&&L.type==='text';
+  $('cvProps').style.display=isText?'block':'none';
+  $('cvNoSel').style.display=isText?'none':'block';
+  if(!isText)return;
+  $('cvText').value=L.text;$('cvSize').value=L.size;$('cvSizeV').textContent=L.size;
+  $('cvFont').value=L.font||'';$('cvColorT').value=L.color;
+  try{$('cvColor').value=L.color;}catch(e){}
+  $('cvBorder').value=L.border;$('cvBorderV').textContent=L.border;$('cvBorderC').value=L.borderColor;
+  $('cvBoxed').checked=!!L.boxed;
+  $('cvX').value=Math.round(L.x*100);$('cvY').value=Math.round(L.y*100);
+  ['alL','alC','alR'].forEach((id,i)=>$(id).classList.toggle('gold',['left','center','right'][i]===L.align));
+  // PS 式文字属性（旧模板缺字段时用默认值兜底）
+  $('cvWeight').value=String(L.weight||700);$('cvItalic').checked=!!L.italic;
+  const op=Math.round((L.opacity??1)*100);$('cvOpacity').value=op;$('cvOpacityV').textContent=op;
+  $('cvSpacing').value=L.spacing||0;$('cvSpacingV').textContent=L.spacing||0;
+  const lh=L.lineh??1.24;$('cvLineh').value=lh;$('cvLinehV').textContent=lh;
+  $('cvRot').value=L.rot||0;$('cvRotV').textContent=L.rot||0;
+  $('cvShadow').checked=!!L.shadow;$('cvShadowC').value=L.shadowColor||'#000000';
+  $('cvShadowX').value=L.shadowX??6;$('cvShadowY').value=L.shadowY??6;$('cvShadowB').value=L.shadowBlur??12;
+  $('cvGrad').checked=!!L.grad;$('cvGradA').value=L.gradA||'#FFD75E';$('cvGradB').value=L.gradB||'#FF7A3C';
+  $('cvGradDir').value=L.gradDir||'v';
+}
+function cvProp(k,v){const L=cvLayer();if(!L||L.type!=='text')return;L[k]=v;cvSync();}
+function cvAddText(){
+  cover.layers.push({id:cover.nextId,name:'文字层 '+cover.nextId,type:'text',visible:true,locked:false,
+    text:'双击此层可重命名\n拖动定位',x:.5,y:.4,size:96,color:'#FFFFFF',font:'',align:'center',
+    border:6,borderColor:'#000000',boxed:false,
+    opacity:1,rot:0,spacing:0,lineh:1.24,weight:700,italic:false,
+    shadow:false,shadowColor:'#000000',shadowX:6,shadowY:6,shadowBlur:12,
+    grad:false,gradA:'#FFD75E',gradB:'#FF7A3C',gradDir:'v'});
+  cover.sel=cover.layers.length-1;cover.nextId++;cvSync();
+}
+function cvDupLayer(){ // PS Ctrl+J：复制选中层，微移错位便于看清
+  const L=cvLayer();if(!L||L.type!=='text')return;
+  const copy={...L};delete copy._hit;
+  copy.id=cover.nextId++;copy.name=L.name+' 副本';copy.locked=false;
+  copy.x=Math.min(1,L.x+.02);copy.y=Math.min(1,L.y+.02);
+  cover.layers.splice(cover.sel+1,0,copy);cover.sel=cover.sel+1;cvSync();
+}
+function cvImportImg(input){
+  const f=input.files[0];input.value='';if(!f)return;
+  const rd=new FileReader();
+  rd.onload=()=>{const img=new Image();
+    img.onload=()=>{
+      const bg=cover.layers.find(l=>l.type==='image');
+      if(bg){bg.img=img;bg.src=rd.result;}
+      else cover.layers.unshift({id:cover.nextId++,name:'背景图层',type:'image',visible:true,locked:false,img,src:rd.result,x:0,y:0});
+      cvSync();};
+    img.src=rd.result;};
+  rd.readAsDataURL(f);
+}
+/* —— 画布交互：点选（自顶向下命中）/拖动（锁定层可选不可动）/方向键/Delete —— */
+(function(){
+  let drag=null;
+  const pt=e=>{const cv=cvEl(),r=cv.getBoundingClientRect();
+    return [(e.clientX-r.left)*cover.w/r.width,(e.clientY-r.top)*cover.h/r.height];};
+  document.addEventListener('pointerdown',e=>{
+    const cv=cvEl();if(!cv||e.target!==cv)return;
+    const [x,y]=pt(e);
+    cover.sel=cvHitAt(x,y);cvSync();
+    const L=cvLayer();
+    if(L&&L.type==='text'&&!L.locked){drag={ox:x-L.x*cover.w,oy:y-L.y*cover.h};cv.setPointerCapture(e.pointerId);}
+  });
+  document.addEventListener('pointermove',e=>{
+    if(!drag)return;const L=cvLayer();if(!L)return;
+    const[x,y]=pt(e);
+    L.x=Math.min(1,Math.max(0,(x-drag.ox)/cover.w));
+    L.y=Math.min(1,Math.max(0,(y-drag.oy)/cover.h));
+    cvDraw();$('cvX').value=Math.round(L.x*100);$('cvY').value=Math.round(L.y*100);
+  });
+  document.addEventListener('pointerup',()=>{drag=null;});
+  document.addEventListener('keydown',e=>{
+    if(!document.querySelector('#p6.on'))return;
+    const t=document.activeElement&&document.activeElement.tagName;
+    if(t==='INPUT'||t==='TEXTAREA'||t==='SELECT')return;
+    const L=cvLayer();if(!L)return;
+    if((e.ctrlKey||e.metaKey)&&(e.key==='j'||e.key==='J')){cvDupLayer();e.preventDefault();return;} // PS Ctrl+J 复制层
+    if(e.key==='Delete'||e.key==='Backspace'){
+      if(L.locked)return; // 与 PS 一致：锁定层不可删
+      cover.layers.splice(cover.sel,1);cover.sel=-1;cvSync();e.preventDefault();return;}
+    const step=(e.shiftKey?10:1);
+    const mv={ArrowLeft:[-step,0],ArrowRight:[step,0],ArrowUp:[0,-step],ArrowDown:[0,step]}[e.key];
+    if(mv&&L.type==='text'&&!L.locked){L.x+= mv[0]/cover.w;L.y+=mv[1]/cover.h;
+      L.x=Math.min(1,Math.max(0,L.x));L.y=Math.min(1,Math.max(0,L.y));cvDraw();cvSyncProps();e.preventDefault();}
+  });
+})();
+/* —— 九宫格快捷定位（列同时决定对齐方向，符合直觉） —— */
+function cvInitGrid9(){
+  const box=$('cvGrid9');if(!box)return;
+  const P=[['↖',.06,.06,'left'],['↑',.5,.06,'center'],['↗',.94,.06,'right'],
+           ['←',.06,.5,'left'],['●',.5,.5,'center'],['→',.94,.5,'right'],
+           ['↙',.06,.9,'left'],['↓',.5,.9,'center'],['↘',.94,.9,'right']];
+  box.innerHTML='';
+  P.forEach(([label,x,y,al])=>{
+    const b=document.createElement('button');b.className='btn';b.textContent=label;
+    b.onclick=()=>{const L=cvLayer();if(!L||L.type!=='text'||L.locked)return;
+      L.x=x;L.y=y;L.align=al;cvSync();};
+    box.appendChild(b);});
+}
+/* —— 画布尺寸/导出 —— */
+function cvApplyPreset(){
+  const v=$('cvPreset').value;if(v==='custom')return;
+  const[w,h]=v.split('x').map(Number);$('cvW').value=w;$('cvH').value=h;cvSetSize();
+}
+function cvSetSize(){
+  cover.w=Math.max(16,Math.min(8192,+$('cvW').value||1920));
+  cover.h=Math.max(16,Math.min(8192,+$('cvH').value||1080));
+  cvDraw();
+}
+function cvExport(){
+  if(!cover.layers.length){alert('先导入底图或添加文字层。');return;}
+  const fmt=$('cvFmt').value, cv=cvEl();
+  cvDraw(false); // 不带选中虚线框
+  let url;
+  if(fmt==='jpg'){ // JPG 无透明：无底图时垫白
+    const t=document.createElement('canvas');t.width=cover.w;t.height=cover.h;
+    const c=t.getContext('2d');c.fillStyle='#FFFFFF';c.fillRect(0,0,cover.w,cover.h);c.drawImage(cv,0,0);
+    url=t.toDataURL('image/jpeg',.92);
+  }else url=cv.toDataURL('image/png');
+  const a=document.createElement('a');a.href=url;a.download=`封面_${cover.w}x${cover.h}.${fmt}`;a.click();
+  cvDraw(); // 恢复选中框
+}
+/* —— 封面模板：尺寸+全部文字层（底图不入模板，换图即复刻排版） —— */
+function cvTpls(){try{return JSON.parse(localStorage.getItem('dubCoverTpl')||'{}');}catch(e){return {};}}
+function cvTplStore(o){localStorage.setItem('dubCoverTpl',JSON.stringify(o));}
+function cvTplList(){
+  const names=Object.keys(cvTpls());
+  fill('cvTplSel',names.length?names.map(n=>[n,n]):[['','（暂无模板）']]);
+}
+function cvTplSave(){
+  const texts=cover.layers.filter(l=>l.type==='text');
+  if(!texts.length){alert('还没有文字层，先设计再存模板。');return;}
+  const name=prompt('模板名称（例：主封面-黄字大标题）');if(!name||!name.trim())return;
+  const t=cvTpls();
+  // 通用序列化：除运行时字段外全部入模板（新加的字距/旋转/投影/渐变等不会漏存）
+  t[name.trim()]={w:cover.w,h:cover.h,
+    layers:texts.map(l=>{const o={...l};delete o.id;delete o._hit;delete o.type;return o;})};
+  cvTplStore(t);cvTplList();$('cvTplSel').value=name.trim();
+}
+function cvTplLoad(){
+  const s=cvTpls()[$('cvTplSel').value];if(!s){alert('请选择一个模板');return;}
+  $('cvW').value=s.w;$('cvH').value=s.h;cvSetSize();
+  cover.layers=cover.layers.filter(l=>l.type==='image'); // 保留当前底图，替换全部文字层
+  s.layers.forEach(l=>cover.layers.push({id:cover.nextId++,type:'text',...l}));
+  cover.sel=cover.layers.length-1;cvSync();
+}
+function cvTplRename(){
+  const old=$('cvTplSel').value,t=cvTpls();if(!t[old]){alert('请选择一个模板');return;}
+  const name=prompt('新名称',old);if(!name||!name.trim()||name.trim()===old)return;
+  t[name.trim()]=t[old];delete t[old];cvTplStore(t);cvTplList();$('cvTplSel').value=name.trim();
+}
+function cvTplDel(){
+  const n=$('cvTplSel').value,t=cvTpls();if(!t[n]){alert('请选择一个模板');return;}
+  if(!confirm('删除模板「'+n+'」？'))return;
+  delete t[n];cvTplStore(t);cvTplList();
+}
+function cvInit(){cvInitGrid9();cvTplList();cvSync();}
+
+renderMyColors();loadTpls();renderOverlays();loadState();loadComponents();loadSettings();loadFonts();loadClones();loadChunks();loadAssets();loadConfigs();loadCloudGpu();loadEdgeSettings();cvInit();pollAll();  /* 载入时同步任务状态：刷新不丢日志/时间轴/下载进度 */
+</script>
+</body>
+</html>
