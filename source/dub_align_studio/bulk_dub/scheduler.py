@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .circuit_breaker import CircuitBreaker, classify_http_error, compute_backoff
+from .concurrency_controller import ConcurrencyController, MODE_AUTO
 from . import ffmpeg_pipeline as vp
 from .ffmpeg_pipeline import VideoCancelled, VideoError
 from .hw_encoder import EncoderProbe, default_video_concurrency, resolve_encoder
@@ -66,7 +67,18 @@ class SchedulerConfig:
 
 @dataclass
 class SchedulerMetrics:
-    finished_times: list[float] = field(default_factory=list)
+    """R14-指标：**必须**区分 physical vs logical。
+
+    - `finished_times`：logical 行完成（包含 follower 跟随 leader 秒完成）；
+    - `physical_video_finished_times`：真正跑了 ffmpeg 的物理视频渲染；
+    - `physical_tts_finished_times`：真正调过 TTS backend 的物理合成。
+
+    "万级显卡产能"必须用 physical_video 指标衡量，
+    禁止用 follower 行数放大结果。
+    """
+    finished_times: list[float] = field(default_factory=list)      # logical rows
+    physical_video_finished_times: list[float] = field(default_factory=list)
+    physical_tts_finished_times: list[float] = field(default_factory=list)
     tts_times: list[float] = field(default_factory=list)
     video_times: list[float] = field(default_factory=list)
     http_429_count: int = 0
@@ -84,10 +96,30 @@ class SchedulerMetrics:
             if len(lst) > 500:
                 del lst[:-500]
 
+    def record_physical_video(self) -> None:
+        self.physical_video_finished_times.append(time.time())
+        if len(self.physical_video_finished_times) > 1000:
+            del self.physical_video_finished_times[:-1000]
+
+    def record_physical_tts(self) -> None:
+        self.physical_tts_finished_times.append(time.time())
+        if len(self.physical_tts_finished_times) > 1000:
+            del self.physical_tts_finished_times[:-1000]
+
     def recent_rate(self, window_seconds: float) -> float:
         cutoff = time.time() - window_seconds
         count = sum(1 for t in self.finished_times if t >= cutoff)
         return count / (window_seconds / 60.0)
+
+    def recent_physical_video_rate(self, window_seconds: float) -> float:
+        """R14 物理视频渲染速率（条/分钟）。用于 GPU 吞吐评估。"""
+        cutoff = time.time() - window_seconds
+        count = sum(1 for t in self.physical_video_finished_times if t >= cutoff)
+        return count / (window_seconds / 60.0)
+
+    def recent_physical_video_per_hour(self, window_seconds: float = 3600.0) -> float:
+        """物理视频渲染 → 每小时条数。"""
+        return self.recent_physical_video_rate(window_seconds) * 60.0
 
     def avg(self, samples: list[float], last_n: int = 100) -> float:
         if not samples:
@@ -145,6 +177,13 @@ class Scheduler:
         self._active_tts = 0
         self._active_video = 0
         self._worker_index = 0
+        # R14-4：并发/背压/断路 controller。默认 AUTO 模式，profile_recommended=0
+        # → 起始按 config.video_concurrency；应用 profile 后 controller.set_profile_recommended
+        # 会重算目标。ConcurrencyController 只做决策，实际 spawn 仍由 scheduler。
+        self.controller = ConcurrencyController(
+            profile_recommended=self.config.video_concurrency or 0,
+            absolute_max=8,
+        )
 
     # -------------------- 生命周期 --------------------
 
@@ -268,6 +307,9 @@ class Scheduler:
             return {"before": before, "after": after}
 
     def _resize_kind(self, kind: str, target: int, wait_seconds: float) -> None:
+        """R14-1：**要求持有 self._lifecycle_lock**。resize 与 snapshot
+        reconcile / start / stop 共用同一把 RLock，杜绝并发出现两次 spawn
+        或 worker 记录丢失。"""
         pool = self._tts_workers if kind == "tts" else self._video_workers
         # R12-5：serving = 存活且未 draining
         serving_pool = [w for w in pool if w.thread.is_alive() and not w.draining]
@@ -288,10 +330,21 @@ class Scheduler:
                 remaining = max(0.05, deadline - time.time())
                 w.thread.join(remaining)
             # 清 dead：还存活的 draining worker 保留跟踪，不重复计入 serving
-        self._reconcile_pool(kind)
+        self._reconcile_pool_locked(kind)
 
     def _reconcile_pool(self, kind: str) -> None:
-        """R12-5：清 dead worker + 若 serving < target 再补足。"""
+        """R14-1：外部入口——获取 lifecycle_lock 再委派给 _reconcile_pool_locked。
+
+        snapshot() 会从任意线程无锁调用它；resize/start/stop 已经在 lock 内。
+        RLock 让"锁内套锁内"安全，同时不再放任 snapshot() 与 resize()
+        无同步地并发修改 self._tts_workers / self._video_workers。"""
+        with self._lifecycle_lock:
+            self._reconcile_pool_locked(kind)
+
+    def _reconcile_pool_locked(self, kind: str) -> None:
+        """R14-1：**要求持有 self._lifecycle_lock**。清 dead worker +
+        若 serving < target 再补足；serving 严格等于 target，
+        draining 最终归零。"""
         target = (self.config.tts_concurrency if kind == "tts"
                    else (self.config.video_concurrency
                           or default_video_concurrency()))
@@ -623,6 +676,8 @@ class Scheduler:
             self.metrics.tts_times.append(elapsed)
             if len(self.metrics.tts_times) > 500:
                 del self.metrics.tts_times[:-500]
+            # R14-5 物理 TTS：这条真正调过 backend，不是 follower 秒完成
+            self.metrics.record_physical_tts()
         self.notify()
 
     def _converge_cancelled_if_flagged(self, row: TaskRow) -> bool:
@@ -800,6 +855,9 @@ class Scheduler:
             self.store.update(row.task_id, video_duration=probe.duration,
                               concat_duration=probe.duration * 2)
             encoder = self._get_encoder(encoder_pref)
+            # R14-4：把 controller 的 gate/breaker/callback 挂到 render_single
+            breaker = self.controller.breaker_for(encoder.encoder) \
+                if encoder.encoder != "libx264" else None
             result = vp.render_single(
                 input_video=row.input_video,
                 tts_audio=tts_wav,
@@ -818,6 +876,10 @@ class Scheduler:
                 task_id=row.task_id,
                 fingerprint=row.fingerprint,
                 batch_id=row.batch_id,
+                fallback_gate=self.controller.cpu_fallback,
+                hw_failure_cb=self.controller.record_hardware_failure,
+                hw_success_cb=self.controller.record_hardware_success,
+                breaker=breaker,
             )
         except VideoCancelled:
             # R13-FIX-P0-B：VideoCancelled 也走 finalize_leader_cancel——同事务
@@ -883,6 +945,9 @@ class Scheduler:
         with self._metrics_lock:
             # R12-11：**只**记录视频阶段耗时；TTS 耗时在 _process_tts 里记
             self.metrics.record_success(0, elapsed)
+            # R14-5 物理视频：本条真正跑了 ffmpeg 渲染，
+            # follower 不能计入 physical_video（它们只是复制/link）
+            self.metrics.record_physical_video()
 
     # -------------------- 辅助 --------------------
 
@@ -939,6 +1004,13 @@ class Scheduler:
             recent60 = self.metrics.recent_rate(3600)
             tts_samples = len(self.metrics.tts_times)
             video_samples = len(self.metrics.video_times)
+            # R14-5 物理指标（拆开 logical vs physical）
+            phys_v_1min = self.metrics.recent_physical_video_rate(60)
+            phys_v_60min = self.metrics.recent_physical_video_rate(3600)
+            phys_v_per_hour = self.metrics.recent_physical_video_per_hour(3600)
+            phys_t_60min = self.metrics.recent_physical_video_rate(3600) # reuse compute
+            phys_video_completed = len(self.metrics.physical_video_finished_times)
+            phys_tts_completed = len(self.metrics.physical_tts_finished_times)
             m = {
                 "http_429_count": self.metrics.http_429_count,
                 "http_5xx_count": self.metrics.http_5xx_count,
@@ -958,23 +1030,33 @@ class Scheduler:
                                                        or tts_samples < 20
                                                        or video_samples < 20)
                                               else "ok"),
+                # R14-5：logical vs physical——万级产能只能看 physical
+                "logical_rows_rate_60min": round(recent60, 2),
+                "physical_video_completed": phys_video_completed,
+                "physical_tts_completed": phys_tts_completed,
+                "physical_video_rate_1min": round(phys_v_1min, 2),
+                "physical_video_rate_60min": round(phys_v_60min, 2),
+                "physical_video_per_hour": round(phys_v_per_hour, 2),
+                "physical_video_projected_per_day": round(phys_v_per_hour * 24, 0),
             }
         with self._active_lock:
             active_tts = self._active_tts
             active_video = self._active_video
         with self._batch_pause_lock:
             batches_paused = sorted(self._batch_paused_set)
-        # R12-5：snapshot 前 reconcile；alive = serving（非 draining）
-        self._reconcile_pool("tts")
-        self._reconcile_pool("video")
-        tts_alive = sum(1 for w in self._tts_workers
-                         if w.thread.is_alive() and not w.draining)
-        video_alive = sum(1 for w in self._video_workers
-                           if w.thread.is_alive() and not w.draining)
-        tts_draining = sum(1 for w in self._tts_workers
-                            if w.thread.is_alive() and w.draining)
-        video_draining = sum(1 for w in self._video_workers
-                              if w.thread.is_alive() and w.draining)
+        # R14-1：snapshot 也在 lifecycle_lock 里 reconcile + 统计——
+        # 避免与 resize_pools 并发时读到瞬时不一致 / 重复 spawn。
+        with self._lifecycle_lock:
+            self._reconcile_pool_locked("tts")
+            self._reconcile_pool_locked("video")
+            tts_alive = sum(1 for w in self._tts_workers
+                             if w.thread.is_alive() and not w.draining)
+            video_alive = sum(1 for w in self._video_workers
+                               if w.thread.is_alive() and not w.draining)
+            tts_draining = sum(1 for w in self._tts_workers
+                                if w.thread.is_alive() and w.draining)
+            video_draining = sum(1 for w in self._video_workers
+                                  if w.thread.is_alive() and w.draining)
         return {
             "started_at": self._started_at,
             "paused": self._pause.is_set(),
@@ -996,6 +1078,12 @@ class Scheduler:
             "breaker": self._breaker.snapshot(),
             "metrics": m,
             "note_24h": "24h 数字为按当前实测速度推算，仅供参考",
+            # R14-4：并发/背压/断路 controller 状态
+            "controller": self.controller.snapshot(),
+            # R14 诚实性文案（供 UI 显示，防止误读为承诺）
+            "capability_disclaimer": (
+                "该数字来自当前样本短时测试，不等于真实 24 小时产能承诺。"
+            ),
         }
 
 

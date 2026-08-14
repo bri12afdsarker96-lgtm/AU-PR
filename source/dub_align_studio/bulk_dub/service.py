@@ -14,14 +14,18 @@ import copy
 import os
 import shutil
 import threading
+import time
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from .. import settings as studio_settings
 from ..engines.edge_tts import EDGE_STYLES, EDGE_VOICES, edge_tts_endpoint
 
-from . import excel_reader, ffmpeg_pipeline
+from . import excel_reader, ffmpeg_pipeline, gpu_profile
+from .concurrency_controller import (
+    ALL_MODES, MODE_AUTO, MODE_MANUAL, MODE_CPU_SAFE,
+)
 from .csv_export import write_csv
 from .edge_backend import EdgeTtsBackend
 from .fingerprint import compute_fingerprint
@@ -65,6 +69,23 @@ class BulkDubService:
         self._scheduler_lock = threading.Lock()
         self._current_batch_id: str | None = None
         self._current_frozen_params: dict[str, Any] = {}
+        # R14-5 基准运行状态。基准必须**后台**运行，页面轮询进度；
+        # 绝不阻塞 HTTP handler；生产池正在跑任务时禁止启动基准。
+        self._benchmark_lock = threading.Lock()
+        self._benchmark_thread: threading.Thread | None = None
+        self._benchmark_cancel = threading.Event()
+        self._benchmark_state: dict[str, Any] = {
+            "running": False,
+            "phase": "",
+            "concurrency_now": 0,
+            "results": [],
+            "error": "",
+            "started_at": 0.0,
+            "finished_at": 0.0,
+            "sample_video": "",
+        }
+        # R14-2 已加载/写盘的 profile；None 表示未加载
+        self._gpu_profile: gpu_profile.DeviceCapability | None = gpu_profile.load_profile()
 
     def _ensure_scheduler(self) -> Scheduler:
         with self._scheduler_lock:
@@ -533,6 +554,188 @@ class BulkDubService:
                    target_path: str | Path) -> int:
         with open(target_path, "w", newline="", encoding="utf-8-sig") as fh:
             return write_csv(self.store.iter_all(batch_id=batch_id), fh)
+
+    # -------------------- R14 GPU 能力 / 基准 / 模式 --------------------
+
+    def _ensure_scheduler_for_controller(self) -> Scheduler:
+        """确保 scheduler 已建立，并把已有 profile 推给 controller。"""
+        sched = self._ensure_scheduler()
+        if self._gpu_profile is not None:
+            try:
+                sched.controller.set_profile_recommended(
+                    int(self._gpu_profile.recommended_concurrency or 0)
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        return sched
+
+    def gpu_capability(self) -> dict:
+        """返回当前设备能力档案。若未做基准 → 返回骨架元数据（sample=空）。"""
+        ffmpeg = studio_settings.ffmpeg_tool("ffmpeg")
+        loaded = self._gpu_profile
+        # 探测当前设备指纹；与已加载 profile 不同 → 视为失效
+        try:
+            fresh_meta = gpu_profile.detect_capability_metadata(ffmpeg)
+        except Exception as exc:  # noqa: BLE001
+            fresh_meta = None
+        fingerprint_matches = (
+            loaded is not None and fresh_meta is not None
+            and loaded.device_fingerprint == fresh_meta.device_fingerprint
+        )
+        controller_snap = {}
+        if self._scheduler is not None:
+            try:
+                controller_snap = self._scheduler.controller.snapshot()
+            except Exception:  # noqa: BLE001
+                pass
+        return {
+            "current": (fresh_meta.to_json() if fresh_meta else None),
+            "profile": (loaded.to_json() if loaded else None),
+            "profile_valid": fingerprint_matches,
+            "controller": controller_snap,
+            "disclaimer": (
+                "该数字来自当前样本短时测试，不等于真实 24 小时产能承诺。"
+                "达到 10000/日目标必须做真机 24h 耐久后才能宣称。"
+            ),
+        }
+
+    def _running_task_count(self) -> int:
+        """R14-3 基准前置检查：正在跑的物理任务数（tts_running + video_running）。"""
+        try:
+            counts = self.store.count_by_status(None)
+        except Exception:  # noqa: BLE001
+            return 0
+        return int(counts.get("tts_running", 0)) + int(counts.get("video_running", 0))
+
+    def benchmark_status(self) -> dict:
+        with self._benchmark_lock:
+            return dict(self._benchmark_state)
+
+    def cancel_benchmark(self) -> bool:
+        """取消进行中的基准。返回是否触发（未运行时返回 False）。"""
+        with self._benchmark_lock:
+            if not self._benchmark_state.get("running"):
+                return False
+            self._benchmark_cancel.set()
+            return True
+
+    def start_benchmark(self, *, sample_video: str,
+                          encoder_preference: str = "auto",
+                          zoom_percent: int = 130,
+                          preset: str = "medium", crf: int = 20,
+                          ladder: Iterable[int] | None = None) -> dict:
+        """R14-3 后台跑基准。返回立即响应（不阻塞）。"""
+        sv = Path(sample_video).expanduser()
+        if not sv.is_file():
+            raise ValidationError(f"代表样本视频不存在：{sv}")
+        with self._benchmark_lock:
+            if self._benchmark_state.get("running"):
+                raise ValidationError("已有基准在运行，请先取消或等待完成")
+            # R14-3：运行任务存在 → 拒绝启动基准
+            if self._running_task_count() > 0:
+                raise ValidationError(
+                    "当前有任务正在运行，请先暂停领取或等待完成后再测显卡")
+            self._benchmark_cancel = threading.Event()
+            self._benchmark_state = {
+                "running": True,
+                "phase": "prepare",
+                "concurrency_now": 0,
+                "results": [],
+                "error": "",
+                "started_at": time.time(),
+                "finished_at": 0.0,
+                "sample_video": str(sv),
+            }
+
+        def _bg() -> None:
+            ffmpeg = studio_settings.ffmpeg_tool("ffmpeg")
+            # 用静音 wav 作为 TTS 输入——基准关注的是**视频链路吞吐**
+            tmp_dir = studio_settings.data_root() / "批量带货" / "基准_临时"
+            tmp_dir.mkdir(parents=True, exist_ok=True)
+            silent = tmp_dir / f"silent_10s_{os.getpid()}.wav"
+            gpu_profile.make_silent_wav(silent, seconds=10.0)
+
+            def _cb(ev: dict) -> None:
+                with self._benchmark_lock:
+                    self._benchmark_state["phase"] = ev.get("phase") or ""
+                    self._benchmark_state["concurrency_now"] = ev.get("concurrency") or 0
+                    if ev.get("phase") == "measure":
+                        self._benchmark_state.setdefault("results", []).append(
+                            ev.get("result") or {}
+                        )
+            try:
+                cap = gpu_profile.run_benchmark(
+                    ffmpeg=ffmpeg, sample_video=sv, sample_tts_audio=silent,
+                    encoder_preference=encoder_preference,
+                    zoom_percent=zoom_percent, keep_original_audio=False,
+                    preset=preset, crf=crf,
+                    ladder=list(ladder) if ladder else gpu_profile.DEFAULT_LADDER,
+                    warmup_rounds=1, per_job_timeout=300.0,
+                    progress_cb=_cb, cancel_event=self._benchmark_cancel,
+                )
+                gpu_profile.save_profile(cap)
+                self._gpu_profile = cap
+                with self._benchmark_lock:
+                    self._benchmark_state["profile"] = cap.to_json()
+                    self._benchmark_state["running"] = False
+                    self._benchmark_state["phase"] = "done"
+                    self._benchmark_state["finished_at"] = time.time()
+            except gpu_profile.BenchmarkCancelled:
+                with self._benchmark_lock:
+                    self._benchmark_state["running"] = False
+                    self._benchmark_state["phase"] = "cancelled"
+                    self._benchmark_state["finished_at"] = time.time()
+            except Exception as exc:  # noqa: BLE001
+                with self._benchmark_lock:
+                    self._benchmark_state["running"] = False
+                    self._benchmark_state["phase"] = "error"
+                    self._benchmark_state["error"] = str(exc)[:400]
+                    self._benchmark_state["finished_at"] = time.time()
+            finally:
+                try: silent.unlink()
+                except OSError: pass
+
+        t = threading.Thread(target=_bg, name="gpu-benchmark", daemon=True)
+        with self._benchmark_lock:
+            self._benchmark_thread = t
+        t.start()
+        return {"started": True, "sample_video": str(sv)}
+
+    def apply_gpu_profile(self) -> dict:
+        """应用当前 profile 的推荐并发到 scheduler（AUTO 模式）。"""
+        if self._gpu_profile is None:
+            raise ValidationError("尚无 profile，请先运行显卡性能测试")
+        sched = self._ensure_scheduler_for_controller()
+        rec = int(self._gpu_profile.recommended_concurrency or 1)
+        sched.controller.set_profile_recommended(rec)
+        sched.controller.set_mode(MODE_AUTO)
+        # 直接对齐视频池（不等 controller.decide 的下一次事件）
+        try:
+            r = sched.resize_pools(video=rec)
+        except Exception as exc:  # noqa: BLE001
+            r = {"error": str(exc)}
+        return {"applied_video_concurrency": rec, "resize": r,
+                 "controller": sched.controller.snapshot()}
+
+    def set_concurrency_mode(self, mode: str, *,
+                              manual_video: int | None = None,
+                              user_max: int | None = None) -> dict:
+        if mode not in ALL_MODES:
+            raise ValidationError(f"未知模式：{mode}")
+        sched = self._ensure_scheduler_for_controller()
+        sched.controller.set_mode(mode, manual_video=manual_video)
+        if user_max is not None:
+            sched.controller.set_user_max(int(user_max))
+        # MANUAL / CPU_SAFE 立即应用
+        if mode == MODE_MANUAL and manual_video is not None:
+            try: sched.resize_pools(video=max(1, min(8, int(manual_video))))
+            except Exception:  # noqa: BLE001
+                pass
+        if mode == MODE_CPU_SAFE:
+            try: sched.resize_pools(video=2)
+            except Exception:  # noqa: BLE001
+                pass
+        return {"mode": mode, "controller": sched.controller.snapshot()}
 
     def probe_sample(self, *, voice_id: str = DEFAULT_VOICE_ID,
                      speed: float = DEFAULT_SPEED,

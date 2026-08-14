@@ -129,6 +129,13 @@ def dispatch_get(path: str, query: dict[str, str],
         snap = svc.summary()
         return True, *_json_response(snap.get("scheduler", {}).get("encoder", {}))
 
+    # R14 显卡加速
+    if route == "/gpu/capability":
+        return True, *_json_response(svc.gpu_capability())
+
+    if route == "/gpu/benchmark_status":
+        return True, *_json_response(svc.benchmark_status())
+
     if route == "/csv":
         # CSV 由 web_server 直接流式发送——这里只做参数校验
         batch_id = query.get("batch_id") or None
@@ -278,6 +285,66 @@ def dispatch_post(path: str, query: dict[str, str], body: bytes,
         except ValidationError as exc:
             return True, *_json_response({"error": str(exc)}, 404)
         return True, *_json_response({"retried": n})
+
+    if route == "/gpu/start_benchmark":
+        payload = _read_json(body)
+        sample_video = (query.get("sample_video")
+                         or payload.get("sample_video") or "").strip()
+        if not sample_video:
+            return True, *_json_response(
+                {"error": "缺少 sample_video（请传代表性视频路径）"}, 400)
+        try:
+            encoder_pref = (query.get("encoder_preference")
+                             or payload.get("encoder_preference") or "auto")
+            zoom = int(query.get("zoom_percent")
+                        or payload.get("zoom_percent") or 130)
+            preset = str(query.get("preset") or payload.get("preset") or "medium")
+            crf = int(query.get("crf") or payload.get("crf") or 20)
+        except (ValueError, TypeError):
+            return True, *_json_response({"error": "非法基准参数"}, 400)
+        ladder_raw = payload.get("ladder")
+        ladder = None
+        if isinstance(ladder_raw, list):
+            try:
+                ladder = [int(x) for x in ladder_raw if int(x) >= 1]
+            except (ValueError, TypeError):
+                return True, *_json_response({"error": "非法 ladder"}, 400)
+        try:
+            result = svc.start_benchmark(
+                sample_video=sample_video,
+                encoder_preference=encoder_pref, zoom_percent=zoom,
+                preset=preset, crf=crf, ladder=ladder,
+            )
+        except ValidationError as exc:
+            return True, *_json_response({"error": str(exc)}, 400)
+        return True, *_json_response(result)
+
+    if route == "/gpu/cancel_benchmark":
+        return True, *_json_response({"cancelled": svc.cancel_benchmark()})
+
+    if route == "/gpu/apply_profile":
+        try:
+            r = svc.apply_gpu_profile()
+        except ValidationError as exc:
+            return True, *_json_response({"error": str(exc)}, 400)
+        return True, *_json_response(r)
+
+    if route == "/gpu/set_mode":
+        payload = _read_json(body)
+        mode = (query.get("mode") or payload.get("mode") or "").strip()
+        manual = query.get("manual_video") or payload.get("manual_video")
+        user_max = query.get("user_max") or payload.get("user_max")
+        try:
+            manual_v = int(manual) if manual else None
+            user_max_v = int(user_max) if user_max else None
+        except (ValueError, TypeError):
+            return True, *_json_response({"error": "非法数字"}, 400)
+        try:
+            r = svc.set_concurrency_mode(mode, manual_video=manual_v,
+                                            user_max=user_max_v)
+        except ValidationError as exc:
+            return True, *_json_response({"error": str(exc)}, 400)
+        return True, *_json_response(r)
 
     if route == "/try_voice":
         voice_id = query.get("voice_id") or DEFAULT_VOICE_ID

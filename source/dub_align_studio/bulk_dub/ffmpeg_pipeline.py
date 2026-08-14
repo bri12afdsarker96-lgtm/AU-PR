@@ -275,7 +275,11 @@ def render_single(*, input_video: str | Path, tts_audio: str | Path,
                    allow_hw_fallback: bool = True,
                    task_id: str = "",
                    fingerprint: str = "",
-                   batch_id: str = "") -> RenderResult:
+                   batch_id: str = "",
+                   fallback_gate=None,
+                   hw_failure_cb=None,
+                   hw_success_cb=None,
+                   breaker=None) -> RenderResult:
     """一次 ffmpeg 完成整个滤镜链，写到 staging，再原子搬到 reserved_output。
 
     - reserved_output：调用方通过 TaskStore.reserve_output_path() 预留的最终路径。
@@ -322,59 +326,103 @@ def render_single(*, input_video: str | Path, tts_audio: str | Path,
     # 先按传入编码器跑；失败 + allow_hw_fallback + 不是 libx264 → 用 libx264 再跑一次
     used_encoder = encoder
     hw_fallback = False
-    for attempt_pass in ("primary", "fallback"):
-        tmp_out = staging_dir / f"{uuid.uuid4().hex[:8]}.mp4"
-        encoder_args = list(used_encoder.args)
-        cmd = [
-            ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
-            "-i", str(input_video),
-            "-i", str(tts_audio),
-            "-filter_complex", filter_complex,
-            *map_args,
-            "-c:v", used_encoder.encoder, *encoder_args,
-            "-pix_fmt", "yuv420p",   # R6：明确兼容像素格式
-        ]
-        if used_encoder.encoder == "libx264":
-            cmd += ["-preset", preset, "-crf", str(int(crf))]
-        cmd += [
-            "-c:a", "aac", "-b:a", "192k",
-            "-r", f"{probe.fps:.3f}",
-            "-movflags", "+faststart",
-            str(tmp_out),
-        ]
+    # R14-4：如果 breaker 打开且传入 encoder 是硬件路径，直接切 libx264，
+    # 不再走硬件路径（避免又失败又浪费启动时间）
+    if breaker is not None and used_encoder.encoder != "libx264":
         try:
-            code, err_tail = _run_ffmpeg_cancellable(
-                cmd, cancel_flag=cancel_flag, timeout=timeout,
-            )
-        except (VideoCancelled, VideoError):
+            if not breaker.allow():
+                warnings.append(
+                    f"硬件编码器 {used_encoder.encoder} circuit breaker 已打开，"
+                    f"本条改走 libx264"
+                )
+                used_encoder = EncoderProbe(
+                    "cpu", "libx264", ["-preset", preset], True, "breaker open"
+                )
+                hw_fallback = True
+        except Exception:  # noqa: BLE001
+            pass
+
+    _fallback_gate_held = False
+    tmp_out: Path | None = None
+    try:
+        for attempt_pass in ("primary", "fallback"):
+            # R14-4：若当前 encoder 已经是 libx264（一开始就是 CPU 或已经因 breaker/回退切了 CPU）
+            # → 必须先在 CpuFallbackGate 上获得名额，防止 CPU fallback 风暴
+            if fallback_gate is not None and used_encoder.encoder == "libx264" \
+                    and not _fallback_gate_held:
+                try:
+                    fallback_gate.acquire()
+                    _fallback_gate_held = True
+                except Exception:  # noqa: BLE001
+                    pass
+            tmp_out = staging_dir / f"{uuid.uuid4().hex[:8]}.mp4"
+            encoder_args = list(used_encoder.args)
+            cmd = [
+                ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+                "-i", str(input_video),
+                "-i", str(tts_audio),
+                "-filter_complex", filter_complex,
+                *map_args,
+                "-c:v", used_encoder.encoder, *encoder_args,
+                "-pix_fmt", "yuv420p",   # R6：明确兼容像素格式
+            ]
+            if used_encoder.encoder == "libx264":
+                cmd += ["-preset", preset, "-crf", str(int(crf))]
+            cmd += [
+                "-c:a", "aac", "-b:a", "192k",
+                "-r", f"{probe.fps:.3f}",
+                "-movflags", "+faststart",
+                str(tmp_out),
+            ]
+            try:
+                code, err_tail = _run_ffmpeg_cancellable(
+                    cmd, cancel_flag=cancel_flag, timeout=timeout,
+                )
+            except (VideoCancelled, VideoError):
+                _safe_unlink(tmp_out)
+                raise
+
+            if code == 0 and tmp_out.is_file() and tmp_out.stat().st_size >= 1024:
+                # R14-4：硬件路径成功 → 通知 breaker/success 计数
+                if used_encoder.encoder != "libx264" and hw_success_cb is not None:
+                    try: hw_success_cb(used_encoder.encoder)
+                    except Exception:  # noqa: BLE001
+                        pass
+                break
+
+            # 编码失败：清理，看是否可回退
             _safe_unlink(tmp_out)
-            raise
-
-        if code == 0 and tmp_out.is_file() and tmp_out.stat().st_size >= 1024:
-            break
-
-        # 编码失败：清理，看是否可回退
-        _safe_unlink(tmp_out)
-        can_fallback = (
-            attempt_pass == "primary"
-            and allow_hw_fallback
-            and used_encoder.encoder != "libx264"
-        )
-        if not can_fallback:
-            raise VideoError(
-                f"ffmpeg 失败 (code={code}, encoder={used_encoder.encoder}): "
-                f"{err_tail or '无 stderr'}"
+            can_fallback = (
+                attempt_pass == "primary"
+                and allow_hw_fallback
+                and used_encoder.encoder != "libx264"
             )
-        warnings.append(
-            f"硬件编码器 {used_encoder.encoder} 运行失败，自动回退 libx264。"
-            f"（stderr 尾部：{err_tail[-160:]}）"
-        )
-        used_encoder = EncoderProbe("cpu", "libx264", ["-preset", preset], True,
-                                     "运行时回退")
-        hw_fallback = True
-    else:
-        # 循环走完仍失败（正常不会到，因 primary 失败会 raise 或回退）
-        raise VideoError("ffmpeg 全部尝试失败")
+            if not can_fallback:
+                raise VideoError(
+                    f"ffmpeg 失败 (code={code}, encoder={used_encoder.encoder}): "
+                    f"{err_tail or '无 stderr'}"
+                )
+            # R14-4：硬件路径失败 → 通知 breaker 记一次；controller 决定是否 open
+            if hw_failure_cb is not None:
+                try: hw_failure_cb(used_encoder.encoder)
+                except Exception:  # noqa: BLE001
+                    pass
+            warnings.append(
+                f"硬件编码器 {used_encoder.encoder} 运行失败，自动回退 libx264。"
+                f"（stderr 尾部：{err_tail[-160:]}）"
+            )
+            used_encoder = EncoderProbe("cpu", "libx264", ["-preset", preset], True,
+                                         "运行时回退")
+            hw_fallback = True
+        # 循环正常退出（break）或走完 fallback：若最终 tmp_out 无产物 → 报错
+        if tmp_out is None or not tmp_out.is_file() \
+                or tmp_out.stat().st_size < 1024:
+            raise VideoError("ffmpeg 全部尝试失败：无有效输出")
+    finally:
+        if _fallback_gate_held and fallback_gate is not None:
+            try: fallback_gate.release()
+            except Exception:  # noqa: BLE001
+                pass
 
     # 校验产物
     if not tmp_out.is_file() or tmp_out.stat().st_size < 1024:
@@ -520,21 +568,37 @@ def _write_marker(marker: Path, *, task_id: str, batch_id: str, fingerprint: str
         _fsync_file(marker)
         return
     tmp = marker.parent / (marker.name + f".tmp.{task_id}")
+    # R14-1 fd 唯一所有权：os.fdopen(fd, ...) 一旦成功，fd 归 file object；
+    # `with` 退出时 close 会关掉 fd。若我们在 finally 再 os.close(fd)，就是
+    # 二次关闭同一个 fd —— 若期间有别的线程 open 拿到了同一个 fd 号，就会
+    # 读写到别人的文件，最终收到 EBADF。
+    # 正确做法：把 fd "转让" 给 fdopen；只要 fdopen 抛异常，才由本函数 close。
     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as w:
+        w = os.fdopen(fd, "w", encoding="utf-8")
+    except Exception:
+        # fdopen 失败 → fd 仍归本函数：需要主动关掉
+        try: os.close(fd)
+        except OSError: pass
+        raise
+    # fd 已归 w；本函数不能再对 fd 做任何操作
+    try:
+        with w:
             w.write(_json.dumps(data, ensure_ascii=False))
             w.flush()
             try:
                 os.fsync(w.fileno())
             except OSError:
                 pass
-    finally:
-        # fdopen 已管 close；防御一次
-        try: os.close(fd)
+    except Exception:
+        # 写入失败 → 清理 tmp（w.__exit__ 已负责 close fd）
+        try: tmp.unlink()
         except OSError: pass
+        raise
     os.replace(str(tmp), str(marker))  # POSIX atomic
     _fsync_file(marker)
+    # R14-1 目录持久化：父目录 fsync（Windows/某些 FS 不支持 → 静默跳过）
+    _fsync_dir_best_effort(marker.parent)
 
 
 def read_marker(marker: Path) -> dict | None:
@@ -601,6 +665,27 @@ def _fsync_file(path: Path) -> None:
         pass
 
 
+def _fsync_dir_best_effort(path: Path) -> None:
+    """R14-1 目录持久化：POSIX 上 rename/link 之后，父目录需要 fsync 才能
+    保证目录条目已落盘；否则崩溃后可能出现"文件在磁盘上但目录里看不到"。
+
+    - Windows 不支持 open(dir) + fsync → 静默跳过；
+    - 不允许因目录 fsync 失败而抛异常，避免掩盖真正的提交成功。
+    """
+    try:
+        # Windows 上 open 目录会 PermissionError；跳过即可
+        if os.name == "nt":
+            return
+        fd = os.open(str(path), os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except (OSError, ValueError):
+        # 某些 FS（tmpfs、networked FS）不支持目录 fsync → 忽略
+        pass
+
+
 def _commit_with_marker(source: Path, target: Path, *,
                          task_id: str, fingerprint: str,
                          target_final_seconds: float,
@@ -644,20 +729,24 @@ def _commit_with_marker(source: Path, target: Path, *,
         try:
             os.link(source, part)
         except (OSError, NotImplementedError):
+            # R14-1 fd 唯一所有权：fdopen 成功后由 file object 拥有 fd；
+            # 若我们在 finally 再 os.close(fd)，多线程/多任务下会二次关掉
+            # 已被别的 open 复用的 fd，出现 EBADF。
             fd = os.open(str(part), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
             try:
-                with os.fdopen(fd, "wb") as w, open(source, "rb") as r:
-                    fd = None
-                    shutil.copyfileobj(r, w, length=1024 * 1024)
-                    w.flush()
-                    try:
-                        os.fsync(w.fileno())
-                    except OSError:
-                        pass
-            finally:
-                if fd is not None:
-                    try: os.close(fd)
-                    except OSError: pass
+                w = os.fdopen(fd, "wb")
+            except Exception:
+                try: os.close(fd)
+                except OSError: pass
+                raise
+            # fd 已归 w
+            with w, open(source, "rb") as r:
+                shutil.copyfileobj(r, w, length=1024 * 1024)
+                w.flush()
+                try:
+                    os.fsync(w.fileno())
+                except OSError:
+                    pass
         _fsync_file(part)
         # 第 2 步：校验 part（ffprobe + hash）
         actual = ffprobe_seconds(part)
@@ -687,6 +776,9 @@ def _commit_with_marker(source: Path, target: Path, *,
                 f"当前文件系统不支持安全无覆盖链接（os.link 不可用）；"
                 f".part 与 marker 已保留在目标目录，需人工确认或换用支持 link 的卷。"
             )
+        # R14-1 输出目录 fsync：hardlink 后目录条目需要落盘，
+        # 崩溃后仍能看到 target；Windows/tmpfs 会静默跳过。
+        _fsync_dir_best_effort(target.parent)
         # 第 5 步：marker 更新为 target_ready（原子）
         _write_marker(marker, task_id=task_id, batch_id=batch_id,
                        fingerprint=fingerprint,
@@ -731,26 +823,26 @@ def _commit_no_overwrite(source: Path, target: Path) -> None:
         pass  # 走跨盘/无 hardlink 路径
 
     # 跨盘或不支持 hardlink：手动 O_EXCL 打开 target 写入 → 语义正确的不覆盖
-    fd = None
     try:
         fd = os.open(str(target), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
     except FileExistsError:
         raise VideoError(f"提交时发现目标已存在（EXCL 创建失败）：{target}")
+    # R14-1 fd 唯一所有权：fdopen 成功后由 file object 拥有 fd；
+    # finally 再 os.close 是二次关闭，多线程下会 EBADF。
     try:
-        with os.fdopen(fd, "wb") as w, open(source, "rb") as r:
-            fd = None
+        w = os.fdopen(fd, "wb")
+    except Exception:
+        try: os.close(fd)
+        except OSError: pass
+        raise
+    try:
+        with w, open(source, "rb") as r:
             shutil.copyfileobj(r, w, length=1024 * 1024)
     except Exception:
         # 写入过程中失败 → 清理 target（是我们刚创的），也清理 source
         _safe_unlink(target)
         _safe_unlink(source)
         raise
-    finally:
-        if fd is not None:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
     _safe_unlink(source)
 
 

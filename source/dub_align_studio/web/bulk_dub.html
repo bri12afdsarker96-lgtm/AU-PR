@@ -143,6 +143,38 @@
   </div>
 </div>
 
+<!-- R14 显卡加速面板 -->
+<div class="panel" id="gpuPanel">
+  <div class="row" style="justify-content:space-between">
+    <div><strong>显卡加速（R14）</strong></div>
+    <div id="gpuBadge"><code>encoder: -</code></div>
+  </div>
+  <div class="metric-grid" id="gpuMetrics"></div>
+  <div class="row" style="margin-top:8px">
+    <label>模式
+      <select id="gpuMode">
+        <option value="auto">自动最大化（默认）</option>
+        <option value="manual">手动固定并发</option>
+        <option value="cpu_safe">CPU 安全模式</option>
+      </select>
+    </label>
+    <label>手动并发 <input type="number" id="gpuManual" min="1" max="8" value="1" style="width:60px"></label>
+    <label>用户上限 <input type="number" id="gpuUserMax" min="0" max="8" value="0" title="0 = 不设上限" style="width:60px"></label>
+    <button id="btnGpuSetMode" class="secondary">应用模式</button>
+    <button id="btnGpuApplyProfile" class="secondary" title="按 profile.recommended_concurrency 设置视频池">应用推荐并发</button>
+  </div>
+  <div class="row" style="margin-top:6px">
+    <label>代表样本 <input type="text" id="gpuSample" style="flex:1" placeholder="/path/to/10s_representative_video.mp4"></label>
+    <button id="btnGpuBench">测显卡（跑基准）</button>
+    <button id="btnGpuCancelBench" class="secondary">取消基准</button>
+  </div>
+  <div id="gpuStatus" class="estimate-note" style="margin-top:6px">
+    ※ 万级目标（10000/日）**只按 physical video renders** 判定；follower 秒完成不计入显卡产能。
+    ※ 页面显示的每日推算来自当前样本短时测试，**不等于**真实 24 小时产能承诺。
+    ※ 硬件编码只作用于最终 H.264 编码；滤镜/解码若仍走 CPU，本轮**不宣称"全流程 GPU"**。
+  </div>
+</div>
+
 <div class="panel">
   <div class="row">
     <label>状态
@@ -625,6 +657,98 @@ window.addEventListener("unhandledrejection", (ev) => {
   state.msg("未处理错误：" + (ev.reason && ev.reason.message || ev.reason), "err-msg");
 });
 
+// R14 显卡加速面板刷新——纯 GET，页面轮询；HTTP handler 不阻塞
+async function refreshGpu() {
+  let cap = {};
+  try { cap = await api("GET", "/api/bulk_dub/gpu/capability"); }
+  catch (e) { return; }
+  const cur = cap.current || {};
+  const prof = cap.profile || {};
+  const ctrl = cap.controller || {};
+  $("gpuBadge").innerHTML = "<code>encoder: "
+    + escapeHtml(cur.encoder_name || "-") + " · family="
+    + escapeHtml(cur.encoder_family || "-") + " · gpu="
+    + escapeHtml(cur.gpu_adapter || "-") + "</code>";
+  const mode = ctrl.mode || "auto";
+  const stableList = (prof.ladder_results || []).filter(r => r.is_recommendable);
+  const cells = [
+    ["检测到的编码器", (cur.encoder_name || "-") + " (" + (cur.encoder_family || "-") + ")"],
+    ["GPU / 适配器", cur.gpu_adapter || "(未检出)"],
+    ["驱动版本", cur.driver_version || "(未检出)"],
+    ["当前模式", mode],
+    ["profile 推荐并发", (prof.recommended_concurrency || 0) + " (采样于 " +
+      (prof.tested_at ? new Date(prof.tested_at * 1000).toLocaleString() : "-") + ")"],
+    ["profile 样本分辨率", (prof.sample_width || 0) + "x" + (prof.sample_height || 0)
+      + " @ " + (prof.sample_fps || 0).toFixed?.(2) + "fps"],
+    ["profile 峰值 每小时物理成片", (prof.peak_renders_per_hour || 0)],
+    ["profile 推算 每日物理成片", (prof.peak_renders_per_day || 0)
+      + (prof.reached_10k_per_day ? "  ✅ 达到 10000/日样本目标" : "  ⚠ 未达到 10000/日")],
+    ["profile 最大成功并发", (prof.max_successful_concurrency || 0)],
+    ["profile 选档理由", prof.reason || "-"],
+    ["设备指纹是否有效", cap.profile_valid ? "yes" : "no（当前设备与 profile 指纹不匹配，请重测）"],
+    ["controller last effective", ctrl.last_effective_concurrency || 0],
+    ["controller CPU fallback 活跃 / 上限", (ctrl.cpu_fallback_active || 0) + " / " + (ctrl.cpu_fallback_limit || 0)],
+    ["controller 近 60s 硬件失败", ctrl.recent_hw_failures || 0],
+    ["controller breaker", (ctrl.breakers || []).map(b => b.encoder + "=" + b.state).join(", ") || "(none)"],
+  ];
+  $("gpuMetrics").innerHTML = cells.map(([k, v]) =>
+    "<div class='metric-cell'><div class='metric-label'>" + escapeHtml(k)
+    + "</div><div class='metric-val'>" + escapeHtml(String(v)) + "</div></div>"
+  ).join("");
+  // 同步 mode 选择
+  if ($("gpuMode").value !== mode) $("gpuMode").value = mode;
+}
+
+async function refreshBenchStatus() {
+  try {
+    const s = await api("GET", "/api/bulk_dub/gpu/benchmark_status");
+    if (!s || typeof s !== "object") return;
+    const phase = s.phase || "-";
+    const cn = s.concurrency_now || 0;
+    const err = s.error || "";
+    const rs = (s.results || []).map(r => "c=" + r.concurrency
+      + " ok=" + r.successes + "/" + (r.successes + r.failures)
+      + " " + (r.projected_renders_per_hour || 0) + "/h").join(" | ");
+    $("gpuStatus").innerHTML = (s.running
+      ? "<b>基准运行中：</b>phase=" + escapeHtml(phase) + "  c=" + cn + "  " + escapeHtml(rs)
+      : (phase === "done" ? "<b>基准完成：</b>" + escapeHtml(rs)
+         : (phase === "cancelled" ? "已取消。" : (err ? "错误：" + escapeHtml(err) : ""))))
+      + "<br>※ 万级目标（10000/日）**只按 physical video renders** 判定；页面显示的每日推算来自当前样本短时测试，不等于真实 24h 产能承诺。";
+  } catch (e) {}
+}
+
+async function gpuStartBench() {
+  const sv = ($("gpuSample").value || "").trim();
+  if (!sv) { alert("请填代表性视频路径"); return; }
+  try {
+    await api("POST", "/api/bulk_dub/gpu/start_benchmark?sample_video="
+                       + encodeURIComponent(sv));
+    refreshBenchStatus();
+  } catch (e) { alert(e.message || e); }
+}
+async function gpuCancelBench() {
+  try { await api("POST", "/api/bulk_dub/gpu/cancel_benchmark"); refreshBenchStatus(); }
+  catch (e) {}
+}
+async function gpuApplyProfile() {
+  try {
+    const r = await api("POST", "/api/bulk_dub/gpu/apply_profile");
+    alert("已应用 profile.recommended_concurrency = " + (r.applied_video_concurrency || "?"));
+    refreshGpu();
+  } catch (e) { alert(e.message || e); }
+}
+async function gpuSetMode() {
+  const mode = $("gpuMode").value;
+  const manual = parseInt($("gpuManual").value || "1", 10);
+  const userMax = parseInt($("gpuUserMax").value || "0", 10);
+  const qs = "?mode=" + encodeURIComponent(mode)
+    + "&manual_video=" + manual + "&user_max=" + userMax;
+  try {
+    await api("POST", "/api/bulk_dub/gpu/set_mode" + qs);
+    refreshGpu();
+  } catch (e) { alert(e.message || e); }
+}
+
 // R11-9 页面重开优先恢复上次批次；不存在则选最近活动批次
 async function bootstrap() {
   await loadVoices();
@@ -636,10 +760,19 @@ async function bootstrap() {
   } else if (batches.length > 0) {
     state.currentBatch = batches[0].batch_id;
   }
+  // R14 GPU 面板按钮
+  $("btnGpuBench").onclick = gpuStartBench;
+  $("btnGpuCancelBench").onclick = gpuCancelBench;
+  $("btnGpuApplyProfile").onclick = gpuApplyProfile;
+  $("btnGpuSetMode").onclick = gpuSetMode;
   refreshBatches();
   refreshTasks();
+  refreshGpu();
+  refreshBenchStatus();
   setInterval(refreshTasks, 3000);
   setInterval(refreshBatches, 15000);
+  setInterval(refreshGpu, 5000);
+  setInterval(refreshBenchStatus, 2500);
 }
 bootstrap();
 </script>
