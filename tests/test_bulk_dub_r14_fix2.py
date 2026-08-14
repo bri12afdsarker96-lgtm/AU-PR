@@ -14,6 +14,7 @@ R14-FIX-3 更新：
 
 from __future__ import annotations
 
+import functools
 import os
 import subprocess
 import sys
@@ -46,10 +47,13 @@ from dub_align_studio.bulk_dub.store import (  # noqa: E402
 )
 
 
+@functools.lru_cache(maxsize=1)
 def _has_ffmpeg() -> bool:
+    """R14-FIX-4b：探测一次全程复用；timeout 放宽到 15s 让慢机也能通过，
+    避免"探测超时 → skip → 复核看到 1 skipped"的伪失败。"""
     try:
         subprocess.run(["ffmpeg", "-version"], stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL, check=True, timeout=5)
+                        stderr=subprocess.DEVNULL, check=True, timeout=15)
         return True
     except Exception:  # noqa: BLE001
         return False

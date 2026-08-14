@@ -7,6 +7,7 @@ render_single、apply_gpu_profile、benchmark 服务、真实 API Handler。
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import subprocess
@@ -41,10 +42,12 @@ from dub_align_studio.bulk_dub.store import (  # noqa: E402
 )
 
 
+@functools.lru_cache(maxsize=1)
 def _has_ffmpeg() -> bool:
+    """R14-FIX-4b：探测一次全程复用；timeout 放宽到 15s 让慢机也能通过。"""
     try:
         subprocess.run(["ffmpeg", "-version"], stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL, check=True, timeout=5)
+                        stderr=subprocess.DEVNULL, check=True, timeout=15)
         return True
     except Exception:  # noqa: BLE001
         return False

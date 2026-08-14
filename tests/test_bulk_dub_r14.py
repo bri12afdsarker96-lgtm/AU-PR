@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import subprocess
@@ -445,10 +446,13 @@ def test_r14_metrics_recent_physical_video_rate():
 # ================================================================
 
 
+@functools.lru_cache(maxsize=1)
 def _has_ffmpeg():
+    """R14-FIX-4b：探测一次全程复用；timeout 放宽到 15s 让慢机也能通过，
+    避免"探测超时 → skip → 复核看到 1 skipped"的伪失败。"""
     try:
         subprocess.run(["ffmpeg", "-version"], stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL, check=True, timeout=5)
+                        stderr=subprocess.DEVNULL, check=True, timeout=15)
         return True
     except Exception:  # noqa: BLE001
         return False
