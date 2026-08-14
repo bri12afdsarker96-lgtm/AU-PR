@@ -113,7 +113,7 @@ UninstallFilesDir={app}\uninstall
 #define SysChs   AddBackslash(CompilerPath) + "Languages\ChineseSimplified.isl"
 #if FileExists(LocalChs)
   #pragma message "[Languages] 用本地：installer\ChineseSimplified.isl"
-  Name: "chs"; MessagesFile: LocalChs
+  Name: "chs"; MessagesFile: "installer\ChineseSimplified.isl"
 #elif FileExists(SysChs)
   #pragma message "[Languages] 用系统：Inno Setup Languages\ChineseSimplified.isl"
   Name: "chs"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
