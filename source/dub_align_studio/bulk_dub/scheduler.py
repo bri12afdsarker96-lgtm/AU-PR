@@ -212,6 +212,10 @@ class Scheduler:
         self._coordinator_interval = 1.0   # seconds
         self._coordinator_events: list[dict] = []   # (old, target, reason, time)
         self._coordinator_events_lock = threading.Lock()
+        # R14-FIX-3 P0-5：若 _start_coordinator_locked 遇到"旧线程尚未死"，
+        # 只置位这个标记，等下一次锁外流程调用
+        # `_join_and_restart_coordinator_if_needed` 收尾——锁内绝不 join。
+        self._coordinator_needs_restart = False
         # R14-FIX P0-6：benchmark 独占门；进入独占态时 scheduler 全局 pause，
         # 结束后按 `_pause_prev_state` 恢复用户此前的暂停状态（避免误 resume）。
         self._benchmark_exclusive = threading.Event()
@@ -224,6 +228,8 @@ class Scheduler:
     # -------------------- 生命周期 --------------------
 
     def start(self) -> None:
+        # R14-FIX-3 P0-5：先在锁外收尾上一次 stop 的 coordinator（若有）
+        self._join_and_restart_coordinator_if_needed(wait_seconds=2.0)
         with self._lifecycle_lock:
             # R12-5：**分池**判断——TTS 全死时补 TTS；视频全死时补视频
             alive_tts = any(w.thread.is_alive() for w in self._tts_workers)
@@ -271,6 +277,9 @@ class Scheduler:
                     self._spawn_worker("video")
             # R14-FIX P0-1：补池路径下也保证 coordinator 存活
             self._start_coordinator_locked()
+        # 锁外再收尾一次——覆盖"补池路径 _start_coordinator_locked
+        # 遇旧线程未死"的情形
+        self._join_and_restart_coordinator_if_needed(wait_seconds=2.0)
 
     def stop(self, wait_seconds: float = 5.0) -> bool:
         """安全停止：返回是否全部退出。存活线程**保留在跟踪列表里**——
@@ -432,41 +441,67 @@ class Scheduler:
     def _start_coordinator_locked(self) -> None:
         """要求持有 self._lifecycle_lock。启动 coordinator 线程。
 
-        R14-FIX2 P0-3：若旧线程仍活着但已收到 stop 信号 → 不复用
-        （它注定即将退出），join 一小段后另起新线程；
-        任何时刻**最多一个活 coordinator**。
+        R14-FIX-3 P0-5：**锁内绝不 join** 任何 coordinator 线程——
+        coordinator 在 resize 路径上也在等同一把 lifecycle_lock，锁内 join
+        会真的死锁。若旧线程已收到 stop 信号：
+          * 不复用（它注定要退出）；
+          * 不在锁内 join；
+          * **明确不启动新线程**并留下 `_coordinator_needs_restart=True` 标记，
+            让下一次锁外调用 `_join_and_restart_coordinator_if_needed()` 收尾。
+        任何时刻最多一个活 coordinator。
         """
         t = self._coordinator_thread
         if t is not None and t.is_alive() and not self._coordinator_stop.is_set():
             return
         if t is not None and t.is_alive():
-            # 已收到 stop：给它极短窗口自然退出，避免出现两个 coordinator
-            t.join(timeout=1.0)
-            if t.is_alive():
-                # 极端情况：join 超时；不启新的，避免真的两个 coordinator
-                # 后续 start 会再次尝试
-                return
+            # 已收到 stop 信号：**不在锁内 join**——推迟到锁外收尾。
+            self._coordinator_needs_restart = True
+            return
+        # 旧线程已死或从未启动 → 立刻新起
         self._coordinator_thread = None
         self._coordinator_stop = threading.Event()
+        self._coordinator_needs_restart = False
         t = threading.Thread(target=self._coordinator_loop,
                               name="bulk-coordinator", daemon=True)
         self._coordinator_thread = t
         t.start()
 
-    def _stop_coordinator_locked(self, wait_seconds: float = 2.0) -> None:
-        """要求持有 self._lifecycle_lock。停 coordinator；join 超时不静默丢弃。
-
-        **注意**：本方法只在锁内设置 stop 信号并尝试 join——`stop()` 已改为
-        两阶段停止（锁外 join），此方法仅供仍需要"关掉 coordinator 但不
-        关整个 scheduler"的少数场景。
+    def _join_and_restart_coordinator_if_needed(self,
+                                                  wait_seconds: float = 2.0
+                                                  ) -> None:
+        """锁外调用——等旧 coordinator 真的死后再启动新的。
+        `_start_coordinator_locked` 遇到"旧线程仍活但已 stop"时会把
+        `_coordinator_needs_restart=True`；这里补上锁外 join + 新启动。
         """
-        self._coordinator_stop.set()
-        t = self._coordinator_thread
-        if t is not None:
-            t.join(timeout=wait_seconds)
-        # 只有真死才清引用；重启只能有一个 coordinator
-        if t is not None and not t.is_alive():
-            self._coordinator_thread = None
+        with self._lifecycle_lock:
+            need = getattr(self, "_coordinator_needs_restart", False)
+            old = self._coordinator_thread
+        if not need:
+            return
+        if old is not None and old.is_alive():
+            old.join(timeout=wait_seconds)
+        with self._lifecycle_lock:
+            if old is not None and not old.is_alive():
+                if self._coordinator_thread is old:
+                    self._coordinator_thread = None
+            self._coordinator_needs_restart = False
+            # 若锁外 join 期间没有其他 start 已经补上新线程，则新起
+            if self._coordinator_thread is None or \
+                    not self._coordinator_thread.is_alive():
+                self._coordinator_stop = threading.Event()
+                t = threading.Thread(target=self._coordinator_loop,
+                                      name="bulk-coordinator", daemon=True)
+                self._coordinator_thread = t
+                t.start()
+
+    def active_counts(self) -> tuple[int, int]:
+        """R14-FIX-3 P0-4：线程安全返回 (tts_active, video_active)。
+        benchmark 进入 exclusive 时除了看 DB 的 running 计数，
+        还必须看 scheduler 内部 in-flight worker 计数——
+        DB 已经切到 cancelling 但 FFmpeg/TTS 尚未真正退出的窗口里
+        绝不能让 benchmark 开跑。"""
+        with self._active_lock:
+            return self._active_tts, self._active_video
 
     def _current_output_dirs(self) -> list[str]:
         """收集"活跃批次"输出目录——用于磁盘空间背压。"""
@@ -594,6 +629,11 @@ class Scheduler:
         - 结束/失败/取消由 leave_benchmark_exclusive 恢复。
 
         并发调用第二个 → 立即返回 False（同时只允许一个 benchmark）。
+
+        R14-FIX-3 P0-4：不能只看 DB 计数——DB 已被切到 cancelling 但
+        FFmpeg/TTS worker 还没真的收敛的窗口里，`active_counts()` 仍 > 0；
+        此时必须继续等，绝不能开跑 benchmark 与在退中的 worker 抢显卡。
+        `store.count_by_status` 或读 active_counts 异常 → **fail closed**。
         """
         with self._benchmark_lock:
             if self._benchmark_exclusive.is_set():
@@ -613,9 +653,15 @@ class Scheduler:
             except Exception:  # noqa: BLE001
                 self.leave_benchmark_exclusive()
                 raise
-            running = int(counts.get("tts_running", 0)) \
+            db_running = int(counts.get("tts_running", 0)) \
                 + int(counts.get("video_running", 0))
-            if running == 0:
+            # R14-FIX-3 P0-4：读 scheduler 内部 in-flight 计数（fail closed）
+            try:
+                tts_active, video_active = self.active_counts()
+            except Exception:  # noqa: BLE001
+                self.leave_benchmark_exclusive()
+                raise
+            if db_running == 0 and tts_active == 0 and video_active == 0:
                 return True
             time.sleep(0.1)
         # 超时：撤销独占

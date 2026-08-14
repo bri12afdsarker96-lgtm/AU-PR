@@ -304,11 +304,21 @@ def dispatch_post(path: str, query: dict[str, str], body: bytes,
             return True, *_json_response({"error": "非法基准参数"}, 400)
         ladder_raw = payload.get("ladder")
         ladder = None
-        if isinstance(ladder_raw, list):
+        if ladder_raw is not None:
+            if not isinstance(ladder_raw, list):
+                return True, *_json_response(
+                    {"error": "ladder 必须是数组"}, 400,
+                )
+            # R14-FIX-3 P0-7：API 层直接调用服务端硬校验——
+            # 每档 ∈ [1,MAX_VIDEO_CONCURRENCY]，去重递增，长度上限；
+            # [1000]/负数/超长/空列表 → 400。
+            from .gpu_profile import validate_ladder
             try:
-                ladder = [int(x) for x in ladder_raw if int(x) >= 1]
-            except (ValueError, TypeError):
-                return True, *_json_response({"error": "非法 ladder"}, 400)
+                ladder = validate_ladder(ladder_raw)
+            except (ValueError, TypeError) as exc:
+                return True, *_json_response(
+                    {"error": f"非法 ladder：{exc}"}, 400,
+                )
         try:
             result = svc.start_benchmark(
                 sample_video=sample_video,

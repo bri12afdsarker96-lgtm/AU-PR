@@ -423,13 +423,18 @@ def render_single(*, input_video: str | Path, tts_audio: str | Path,
             except VideoError:
                 _safe_unlink(tmp_out)
                 # timeout / 未预期 ffmpeg 错误：**硬件路径当硬件失败处理**
+                # R14-FIX-3 P0-6：硬件失败只能计一次——
+                # controller.record_hardware_failure(encoder) 已包含
+                # breaker.record_failure()；这里绝不能再直接调
+                # breaker.record_failure()，否则同一次 timeout 会 +2。
                 if used_encoder.encoder != "libx264":
-                    if breaker is not None:
-                        try: breaker.record_failure()
-                        except Exception:  # noqa: BLE001
-                            pass
                     if hw_failure_cb is not None:
                         try: hw_failure_cb(used_encoder.encoder)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    elif breaker is not None:
+                        # 无 callback 时才自行 record（避免完全没记）
+                        try: breaker.record_failure()
                         except Exception:  # noqa: BLE001
                             pass
                 else:

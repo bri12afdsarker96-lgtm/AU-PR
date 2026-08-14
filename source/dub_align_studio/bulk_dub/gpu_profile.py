@@ -46,6 +46,69 @@ from .hw_encoder import (
 )
 
 
+class BenchmarkProcessRegistry:
+    """R14-FIX-3 P0-1：**每个 benchmark 独立**的子进程登记表。
+
+    上一轮 `service.stop()` 遍历 `integrated_workbench.proc._ACTIVE`
+    终止全部进程——这是跨组件误杀（生产队列、其他页面工具都会被杀）。
+    修法：benchmark 自己 popen 的每个 FFmpeg 都注册到本 registry；
+    cancel/stop 只 terminate/kill/wait 本 registry 里的进程，绝不碰全局。
+    进程在 finally 中注销。
+    """
+
+    def __init__(self) -> None:
+        self._procs: set = set()
+        self._lock = threading.Lock()
+
+    def register(self, proc) -> None:
+        with self._lock:
+            self._procs.add(proc)
+
+    def unregister(self, proc) -> None:
+        with self._lock:
+            self._procs.discard(proc)
+
+    def snapshot(self) -> list:
+        with self._lock:
+            return [p for p in self._procs if p.poll() is None]
+
+    def terminate_all(self, grace_seconds: float = 3.0,
+                       kill_wait: float = 2.0) -> int:
+        """按 terminate → wait(grace) → kill → wait(kill_wait) 收尸。
+        返回真正被 terminate 的进程数。"""
+        procs = self.snapshot()
+        for p in procs:
+            try:
+                if p.poll() is None:
+                    p.terminate()
+            except Exception:  # noqa: BLE001
+                pass
+        for p in procs:
+            try:
+                p.wait(timeout=grace_seconds)
+            except Exception:  # noqa: BLE001
+                try:
+                    p.kill()
+                    try:
+                        p.wait(timeout=kill_wait)
+                    except Exception:  # noqa: BLE001
+                        pass
+                except Exception:  # noqa: BLE001
+                    pass
+        with self._lock:
+            self._procs.clear()
+        return len(procs)
+
+
+def _popen_bench(cmd: list, registry: "BenchmarkProcessRegistry | None",
+                   **kwargs):
+    """popen_silent 包装：登记到 benchmark registry（若传入）。"""
+    proc = popen_silent(cmd, **kwargs)
+    if registry is not None:
+        registry.register(proc)
+    return proc
+
+
 PROFILE_SCHEMA = "bulk_dub_gpu_profile@v1"
 PROFILE_FILENAME = "gpu_profiles.json"
 # R14-FIX P0-5：控制器持久化状态（mode/user_max/manual_video/profile_fingerprint）
@@ -319,8 +382,76 @@ def load_state() -> dict | None:
     return {k: v for k, v in data.items() if k != "schema"}
 
 
+MAX_LADDER_STEPS = 16
+
+
+def validate_ladder(raw: Iterable[int], *,
+                     max_value: int | None = None) -> list[int]:
+    """R14-FIX-3 P0-7：ladder 服务端硬限制——每档 ∈ [1, max_value]，
+    去重递增，长度 ≤ MAX_LADDER_STEPS。非法直接抛 ValueError。
+    """
+    from .concurrency_controller import MAX_VIDEO_CONCURRENCY as _MVC
+    cap = int(max_value if max_value is not None else _MVC)
+    items: list[int] = []
+    for x in raw:
+        try:
+            v = int(x)
+        except (TypeError, ValueError):
+            raise ValueError(f"ladder 元素不是整数：{x!r}")
+        if v < 1 or v > cap:
+            raise ValueError(f"ladder 元素 {v} 超出范围 [1, {cap}]")
+        items.append(v)
+    if not items:
+        raise ValueError("ladder 不能为空")
+    if len(items) > MAX_LADDER_STEPS:
+        raise ValueError(
+            f"ladder 长度 {len(items)} 超上限 {MAX_LADDER_STEPS}"
+        )
+    dedup = sorted(set(items))
+    return dedup
+
+
+def _validate_and_repair_loaded_profile(
+    data: dict,
+) -> DeviceCapability | None:
+    """R14-FIX-3 P1-4：加载 profile 时验证数据边界。
+    - recommended_concurrency ∈ [1, MAX_VIDEO_CONCURRENCY]
+    - encoder_preference ∈ 允许集合（或 'auto'）
+    - ladder_results / tested_ladder 值合法
+    非法 → 返回 None，走"重新基准"路径。
+    """
+    from .concurrency_controller import MAX_VIDEO_CONCURRENCY as _MVC
+    from .hw_encoder import FAMILY_PREFERENCE as _FP
+    try:
+        cap = DeviceCapability(**{k: v for k, v in data.items()
+                                    if k in DeviceCapability.__annotations__})
+    except TypeError:
+        return None
+    if cap.recommended_concurrency:
+        if not (1 <= int(cap.recommended_concurrency) <= _MVC):
+            return None
+    pref = cap.encoder_preference or "auto"
+    if pref not in _FP and pref != "auto":
+        return None
+    try:
+        if cap.tested_ladder:
+            for v in cap.tested_ladder:
+                if not (1 <= int(v) <= _MVC):
+                    return None
+        if cap.ladder_results:
+            for r in cap.ladder_results:
+                c = int((r or {}).get("concurrency") or 0)
+                if c and not (1 <= c <= _MVC):
+                    return None
+    except (TypeError, ValueError):
+        return None
+    return cap
+
+
 def load_profile(path: Path | None = None) -> DeviceCapability | None:
-    """R14 读取 profile；文件不存在 / 损坏 / schema 不认得 → None（安全忽略）。"""
+    """R14 读取 profile；文件不存在 / 损坏 / schema 不认得 → None（安全忽略）。
+    R14-FIX-3 P1-4：加载后校验 recommended_concurrency / encoder_preference /
+    ladder 值，越界的旧 profile 视为损坏。"""
     p = path or profile_path()
     if not p.exists():
         return None
@@ -333,12 +464,7 @@ def load_profile(path: Path | None = None) -> DeviceCapability | None:
         return None
     if data.get("schema") != PROFILE_SCHEMA:
         return None
-    try:
-        cap = DeviceCapability(**{k: v for k, v in data.items()
-                                    if k in DeviceCapability.__annotations__})
-    except TypeError:
-        return None
-    return cap
+    return _validate_and_repair_loaded_profile(data)
 
 
 def save_profile(cap: DeviceCapability, path: Path | None = None) -> Path:
@@ -466,20 +592,25 @@ def _run_one(ctx: _BenchmarkContext, idx: int, cancel_event: threading.Event,
               slot_dir: Path, results: list[dict], results_lock: threading.Lock,
               per_job_timeout: float,
               expected_seconds: float | None = None,
-              duration_tolerance: float = 0.4) -> None:
+              duration_tolerance: float = 0.4,
+              registry: BenchmarkProcessRegistry | None = None) -> None:
     """单次编码 job。写受控 staging；结束后清 mp4。
 
     R14-FIX P1-1：**并发排空 stderr**——用后台线程 drain pipe，避免 ffmpeg
     因 stderr 写满 pipe buffer 阻塞导致假 hang；校验产物 returncode + size +
     视频流 + 音频流 + 时长容差，全部通过才算 ok。
+
+    R14-FIX-3 P0-1 / P1-1：本次 benchmark 的所有 FFmpeg 进程都登记到本次
+    `registry`（本方 owned），cancel/timeout 时**必须** terminate → wait →
+    kill → wait 收尸并注销；不再依赖全局 `_ACTIVE`。
     """
     slot_dir.mkdir(parents=True, exist_ok=True)
     out_path = slot_dir / f"bench_{idx}.mp4"
     cmd = _build_render_cmd(ctx, out_path)
     started = time.time()
-    proc = popen_silent(cmd, stdout=subprocess.DEVNULL,
-                        stderr=subprocess.PIPE, text=True,
-                        encoding="utf-8", errors="replace")
+    proc = _popen_bench(cmd, registry, stdout=subprocess.DEVNULL,
+                          stderr=subprocess.PIPE, text=True,
+                          encoding="utf-8", errors="replace")
     stderr_buf: list[str] = []
     stderr_lock = threading.Lock()
 
@@ -496,38 +627,42 @@ def _run_one(ctx: _BenchmarkContext, idx: int, cancel_event: threading.Event,
     drain_t = threading.Thread(target=_drain, name=f"bench-drain-{idx}",
                                  daemon=True)
     drain_t.start()
+
+    def _terminate_and_wait(reason_stderr: str, rc: int) -> None:
+        # P1-1：terminate → wait(3) → kill → wait(2)；不留僵尸
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except Exception:  # noqa: BLE001
+                try:
+                    proc.kill()
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    proc.wait(timeout=2)
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception:  # noqa: BLE001
+            pass
+        with results_lock:
+            results.append({
+                "ok": False, "returncode": rc,
+                "seconds": time.time() - started,
+                "stderr": reason_stderr,
+                "size": 0, "duration_ok": False, "streams_ok": False,
+            })
+
     try:
         while True:
             if cancel_event.is_set():
-                try:
-                    proc.terminate()
-                    try: proc.wait(timeout=3)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-                except Exception:  # noqa: BLE001
-                    pass
-                with results_lock:
-                    results.append({
-                        "ok": False, "returncode": -1,
-                        "seconds": time.time() - started,
-                        "stderr": "cancelled",
-                        "size": 0, "duration_ok": False, "streams_ok": False,
-                    })
+                _terminate_and_wait("cancelled", -1)
                 return
             if (time.time() - started) > per_job_timeout:
-                try:
-                    proc.terminate()
-                    try: proc.wait(timeout=3)
-                    except subprocess.TimeoutExpired: proc.kill()
-                except Exception:  # noqa: BLE001
-                    pass
-                with results_lock:
-                    results.append({
-                        "ok": False, "returncode": -2,
-                        "seconds": time.time() - started,
-                        "stderr": f"timeout>{per_job_timeout:.0f}s",
-                        "size": 0, "duration_ok": False, "streams_ok": False,
-                    })
+                _terminate_and_wait(
+                    f"timeout>{per_job_timeout:.0f}s", -2,
+                )
                 return
             code = proc.poll()
             if code is not None:
@@ -539,6 +674,8 @@ def _run_one(ctx: _BenchmarkContext, idx: int, cancel_event: threading.Event,
             try: proc.stderr.close()
             except Exception:  # noqa: BLE001
                 pass
+        if registry is not None:
+            registry.unregister(proc)
     seconds = time.time() - started
     # R14-FIX P1-1 校验产物：returncode + size + 流 + 时长容差
     rc_ok = (proc.returncode == 0)
@@ -583,9 +720,12 @@ def run_one_ladder_step(ctx: _BenchmarkContext, concurrency: int,
                           per_job_timeout: float,
                           warmup: bool = False,
                           expected_seconds: float | None = None,
-                          duration_tolerance: float = 0.4) -> LadderRunResult:
+                          duration_tolerance: float = 0.4,
+                          registry: BenchmarkProcessRegistry | None = None
+                          ) -> LadderRunResult:
     """跑一档：同时启动 N 个 FFmpeg，等全部结束，聚合统计。
     R14-FIX P1-1：每个 job 都校验 returncode/size/流/时长；stderr 并发排空。
+    R14-FIX-3 P0-1：本档所有进程登记到本 benchmark 的 `registry`。
     """
     if cancel_event.is_set():
         raise BenchmarkCancelled("benchmark cancelled before ladder step")
@@ -601,7 +741,7 @@ def run_one_ladder_step(ctx: _BenchmarkContext, concurrency: int,
                 target=_run_one,
                 args=(ctx, i, cancel_event, step_root / f"slot{i}",
                        results, results_lock, per_job_timeout,
-                       expected_seconds, duration_tolerance),
+                       expected_seconds, duration_tolerance, registry),
                 name=f"bench-{concurrency}-{i}", daemon=True,
             )
             threads.append(t)
@@ -616,13 +756,22 @@ def run_one_ladder_step(ctx: _BenchmarkContext, concurrency: int,
     successes = sum(1 for r in results if r["ok"])
     failures = concurrency - successes
     session_hits = oom_hits = dev_hits = hw_hits = 0
+    # R14-FIX-3 P1-2：硬件编码器发生 timeout 也应计入 hardware_errors——
+    # 之前 stderr="timeout>Xs" 不含 nvenc/qsv/amf 关键字，被 _classify_stderr
+    # 判为普通失败，导致 hw_failures_total 恒为 0。
+    is_hw_encoder = (ctx.encoder.encoder != "libx264")
     for r in results:
         if not r["ok"]:
-            c = _classify_stderr(r.get("stderr") or "")
+            stderr_text = r.get("stderr") or ""
+            c = _classify_stderr(stderr_text)
             session_hits += c["session_limit"]
             oom_hits += c["oom"]
             dev_hits += c["device"]
             hw_hits += c["hw"]
+            # 硬件 encoder 的 timeout 视为硬件错误
+            if is_hw_encoder and c["hw"] == 0 \
+                    and stderr_text.startswith("timeout>"):
+                hw_hits += 1
     aggregate_fps = 0.0
     if wall > 0:
         # 成功任务的输出帧数（都跑 sample_seconds * sample_fps 帧）
@@ -718,6 +867,7 @@ def run_benchmark(*, ffmpeg: str, sample_video: str | Path,
                     per_job_timeout: float = 300.0,
                     progress_cb: Callable[[dict], None] | None = None,
                     cancel_event: threading.Event | None = None,
+                    registry: BenchmarkProcessRegistry | None = None,
                     ) -> DeviceCapability:
     """跑完一次基准，返回带 ladder_results / recommended_concurrency 的 DeviceCapability。
 
@@ -783,6 +933,7 @@ def run_benchmark(*, ffmpeg: str, sample_video: str | Path,
                     per_job_timeout=per_job_timeout,
                     warmup=is_warmup,
                     expected_seconds=expected_out_seconds,
+                    registry=registry,
                 )
                 if is_warmup:
                     if progress_cb:

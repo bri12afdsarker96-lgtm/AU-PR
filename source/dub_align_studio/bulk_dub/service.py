@@ -71,11 +71,20 @@ class BulkDubService:
         self._current_frozen_params: dict[str, Any] = {}
         # R14-5 基准运行状态。基准必须**后台**运行，页面轮询进度；
         # 绝不阻塞 HTTP handler；生产池正在跑任务时禁止启动基准。
+        # R14-FIX-3 P0-2：显式状态机 — idle/preparing/running/stopping/
+        # done/error/cancelled；生成号（generation/run_id）确保后台闭包
+        # 只更新与自己 generation 相同的状态，旧线程不得覆盖新任务。
         self._benchmark_lock = threading.Lock()
         self._benchmark_thread: threading.Thread | None = None
         self._benchmark_cancel = threading.Event()
+        # R14-FIX-3 P0-1：每次 benchmark 独立 registry；service.stop 只收
+        # 本次 benchmark 的 FFmpeg，绝不动全局 _ACTIVE。
+        self._benchmark_registry: gpu_profile.BenchmarkProcessRegistry | None = None
+        self._benchmark_generation: int = 0
         self._benchmark_state: dict[str, Any] = {
             "running": False,
+            "state": "idle",     # idle/preparing/running/stopping/done/error/cancelled/rejected
+            "generation": 0,
             "phase": "",
             "concurrency_now": 0,
             "results": [],
@@ -112,60 +121,44 @@ class BulkDubService:
             return self._scheduler is not None
 
     def stop(self, wait_seconds: float = 5.0) -> bool:
-        """R14-FIX2 P0-2 服务退出必须收走 benchmark：
-          1) 先 cancel benchmark；
-          2) **不持** _benchmark_lock 有界等待 benchmark 线程退出（避免自锁：
-             benchmark finally 需要能进入 _benchmark_lock 更新状态）；
-          3) terminate 所有已启动的 FFmpeg 子进程并 wait 收尸；
-          4) benchmark finally 会退出 exclusive、按 pause_prev 恢复；
-          5) 再 stop scheduler。任一步没在时限内完成 → 返回 False。
-          6) 从不持 _benchmark_lock 等 benchmark 线程。
+        """R14-FIX-3 P0-1：服务退出必须收走 benchmark，**只收本次 benchmark
+        自己的 FFmpeg**；上一轮 `service.stop()` 会遍历 `_ACTIVE` 终止**全部**
+        登记进程——那是跨组件误杀（生产队列、其他页面工具会被一起杀）。
+        本轮只 terminate 本次 benchmark 的 `_benchmark_registry` 里的进程；
+        生产池 FFmpeg 由 `scheduler.stop()` 内的自然收敛负责。
+
+        流程：
+          1) 状态机切到 stopping；触发本次 benchmark cancel；
+          2) terminate/wait/kill/wait 本次 registry 里的进程；
+          3) **锁外**等 benchmark 线程退出（其 finally 会 leave_exclusive）；
+          4) 再 stop scheduler。任一步没在时限内完成 → 返回 False；
+          5) 从不持 _benchmark_lock 等 benchmark 线程。
         """
-        # 1) 触发 benchmark cancel
+        # 1) 触发 benchmark cancel（同时把状态机推向 stopping）
         with self._benchmark_lock:
             bench_thread = self._benchmark_thread
+            registry = self._benchmark_registry
             if self._benchmark_state.get("running"):
                 self._benchmark_cancel.set()
+                self._benchmark_state["state"] = "stopping"
 
         deadline = time.time() + max(0.5, float(wait_seconds))
 
-        # 3) 立刻 terminate 登记在册的所有子进程（ffmpeg/ffprobe）——
-        # benchmark 线程会看到 cancel_event 或 subprocess 退出后自己收敛
-        killed_procs: list = []
-        try:
-            from integrated_workbench.proc import _ACTIVE, _ACTIVE_LOCK
-            with _ACTIVE_LOCK:
-                procs = list(_ACTIVE)
-            for p in procs:
-                try:
-                    if p.poll() is None:
-                        p.terminate()
-                        killed_procs.append(p)
-                except Exception:  # noqa: BLE001
-                    pass
-            # 短窗口等 terminate 生效；到期 kill
-            grace_deadline = time.time() + 3.0
-            for p in list(killed_procs):
-                remaining = max(0.05, grace_deadline - time.time())
-                try:
-                    p.wait(timeout=remaining)
-                except Exception:  # noqa: BLE001
-                    try:
-                        p.kill()
-                        p.wait(timeout=2.0)
-                    except Exception:  # noqa: BLE001
-                        pass
-        except Exception:  # noqa: BLE001
-            pass
+        # 2) 只收本次 benchmark 自己的子进程（**绝不**动全局 _ACTIVE）
+        if registry is not None:
+            try:
+                registry.terminate_all(grace_seconds=3.0, kill_wait=2.0)
+            except Exception:  # noqa: BLE001
+                pass
 
-        # 2) 锁外 join benchmark 线程（bench_thread.finally 会 leave_exclusive）
+        # 3) 锁外 join benchmark 线程（bench_thread.finally 会 leave_exclusive）
         benchmark_gone = True
         if bench_thread is not None and bench_thread.is_alive():
             remaining = max(0.5, deadline - time.time())
             bench_thread.join(timeout=remaining)
             benchmark_gone = not bench_thread.is_alive()
 
-        # 5) 再停 scheduler
+        # 4) 再停 scheduler
         with self._scheduler_lock:
             sched = self._scheduler
         sched_gone = True
@@ -697,11 +690,22 @@ class BulkDubService:
         """R14-FIX2 P0-4 内部统一入口：**同一处**更新 mode + encoder_override +
         resize；resize 失败必须体现在返回值里，不能仍宣称"应用成功"。
 
+        R14-FIX-3 P1-3：任何一步失败——必须**回滚**到应用前快照
+        （mode / encoder_override / manual_video / user_max），返回值同时
+        暴露 requested_video / actual_video / resize_error / applied=False，
+        绝不把失败状态持久化成"完整成功"。
+
         返回：{
-          mode, encoder_override, requested_video, applied_video,
-          resize_ok, resize_error, controller
+          mode, encoder_override, requested_video, actual_video, applied_video,
+          resize_ok, resize_error, applied, controller
         }
         """
+        # 应用前快照——resize 失败可回滚
+        pre_mode = sched.controller.state.mode
+        pre_manual = sched.controller.state.manual_video_concurrency
+        pre_user_max = sched.controller.state.user_max
+        pre_override = sched.encoder_override()
+
         # 1) 更新 mode + encoder_override（CPU_SAFE 打开 libx264；其他清除）
         sched.controller.set_mode(mode, manual_video=manual_video)
         if user_max is not None:
@@ -709,30 +713,58 @@ class BulkDubService:
         if mode == MODE_CPU_SAFE:
             sched.set_encoder_override("libx264")
         else:
-            # P0-4：切换到 AUTO / MANUAL 时**必须**清 encoder_override
             sched.set_encoder_override(None)
+
         # 2) resize（可选）
         resize_ok = True
         resize_error = ""
-        applied_video = None
+        applied_video: int | None = None
+        actual_video: int | None = None
+        applied_flag = True
         if target_video is not None:
             try:
                 r = sched.resize_pools(video=int(target_video))
-                applied_video = int(r.get("after", {}).get("video_alive")
-                                     or target_video)
+                applied_video = int(
+                    r.get("after", {}).get("video_alive") or target_video
+                )
+                actual_video = applied_video
             except Exception as exc:  # noqa: BLE001
                 resize_ok = False
                 resize_error = str(exc)[:400]
+                applied_flag = False
+                # 尝试观察实际 serving
+                try:
+                    snap = sched.snapshot()
+                    actual_video = int(snap.get("video_alive") or 0)
+                except Exception:  # noqa: BLE001
+                    actual_video = 0
+                # P1-3：回滚到应用前快照——mode / override / manual / user_max
+                try:
+                    sched.controller.set_mode(
+                        pre_mode, manual_video=pre_manual or None,
+                    )
+                    sched.controller.set_user_max(pre_user_max)
+                    sched.set_encoder_override(pre_override)
+                except Exception:  # noqa: BLE001
+                    pass
+
         # 3) 计算 serving 实际值
-        snap = sched.snapshot()
+        try:
+            snap = sched.snapshot()
+            serving = int(snap.get("video_alive") or 0)
+        except Exception:  # noqa: BLE001
+            serving = 0
         return {
-            "mode": mode,
+            # 回滚后 mode 反映真实生效值
+            "mode": sched.controller.state.mode,
             "encoder_override": sched.encoder_override() or "",
             "requested_video": target_video,
+            "actual_video": actual_video,
             "applied_video": applied_video,
-            "video_serving": int(snap.get("video_alive") or 0),
+            "video_serving": serving,
             "resize_ok": resize_ok,
             "resize_error": resize_error,
+            "applied": applied_flag,
             "controller": sched.controller.snapshot(),
         }
 
@@ -796,10 +828,13 @@ class BulkDubService:
             return dict(self._benchmark_state)
 
     def cancel_benchmark(self) -> bool:
-        """取消进行中的基准。返回是否触发（未运行时返回 False）。"""
+        """取消进行中的基准。返回是否触发（未运行时返回 False）。
+        R14-FIX-3 P0-2：cancel 只取消当前 generation。"""
         with self._benchmark_lock:
-            if not self._benchmark_state.get("running"):
+            st = self._benchmark_state.get("state", "idle")
+            if st not in ("preparing", "running"):
                 return False
+            self._benchmark_state["state"] = "stopping"
             self._benchmark_cancel.set()
             return True
 
@@ -823,6 +858,13 @@ class BulkDubService:
         sv = Path(sample_video).expanduser()
         if not sv.is_file():
             raise ValidationError(f"代表样本视频不存在：{sv}")
+        # R14-FIX-3 P0-7：ladder 服务端硬校验
+        try:
+            ladder_list = gpu_profile.validate_ladder(
+                ladder if ladder is not None else gpu_profile.DEFAULT_LADDER,
+            )
+        except ValueError as exc:
+            raise ValidationError(f"ladder 非法：{exc}")
         # 先取 video duration 供后续 make_silent_wav 使用（tts_len = 2×video）
         try:
             from . import ffmpeg_pipeline as _vp
@@ -831,20 +873,28 @@ class BulkDubService:
         except Exception as exc:  # noqa: BLE001
             raise ValidationError(f"代表样本视频不可读：{exc}")
 
-        # R14-FIX2 P0-1：**始终**独占——无论 scheduler 是否已存在，
-        # 都必须创建/取得唯一 scheduler，并成功进入 benchmark exclusive
-        # 之后才启动后台线程。原来"scheduler 未创建就跳过独占"是错误的。
+        # R14-FIX2 P0-1：**始终**独占——无论 scheduler 是否已存在。
         sched_ref = self._ensure_scheduler()
 
-        # 原子进入 benchmark_running + benchmark_exclusive；任一步失败必须
-        # 恢复 pause 原状。第二个 benchmark 必须拒绝。
+        # R14-FIX-3 P0-2：原子 CAS——从 idle/终态进入 preparing；
+        # **preparing 也拒绝第二次启动**；分配唯一 generation；
+        # 每次 benchmark 独立的 cancel_event 和 registry。
         with self._benchmark_lock:
-            if self._benchmark_state.get("running"):
-                raise ValidationError("已有基准在运行，请先取消或等待完成")
-            # 只在真正准备启动线程前才置 running=True，避免异常泄漏"running"
+            cur = self._benchmark_state.get("state", "idle")
+            if cur in ("preparing", "running", "stopping"):
+                raise ValidationError(
+                    f"已有基准在 {cur} 状态，请先取消或等待完成"
+                )
+            self._benchmark_generation += 1
+            gen = self._benchmark_generation
             self._benchmark_cancel = threading.Event()
-            pending_state = {
-                "running": False,   # 只有独占成功才置 True
+            local_cancel = self._benchmark_cancel
+            self._benchmark_registry = gpu_profile.BenchmarkProcessRegistry()
+            local_registry = self._benchmark_registry
+            self._benchmark_state = {
+                "running": False,
+                "state": "preparing",
+                "generation": gen,
                 "phase": "prepare",
                 "concurrency_now": 0,
                 "results": [],
@@ -855,108 +905,148 @@ class BulkDubService:
                 "audio_seconds": audio_seconds,
                 "exclusive": False,
             }
-            self._benchmark_state = pending_state
 
-        # R14-FIX2 P0-1：进入独占——store 抛异常 fail closed（enter_benchmark
-        # _exclusive 会先 leave_exclusive 再 raise）；准备阶段任何异常都必须
-        # 保证 pause 原状不被误 set。
+        def _finalize_error(msg: str, terminal_state: str = "error") -> None:
+            """R14-FIX-3 P0-3：所有失败路径复用——只更新与本 gen 相同的状态。"""
+            with self._benchmark_lock:
+                if self._benchmark_state.get("generation") != gen:
+                    return
+                self._benchmark_state["state"] = terminal_state
+                self._benchmark_state["phase"] = terminal_state
+                self._benchmark_state["error"] = msg[:400]
+                self._benchmark_state["finished_at"] = time.time()
+                self._benchmark_state["running"] = False
+            try:
+                local_registry.terminate_all()
+            except Exception:  # noqa: BLE001
+                pass
+
         exclusive_ok = False
         try:
             exclusive_ok = sched_ref.enter_benchmark_exclusive(
                 wait_seconds=exclusive_wait_seconds,
-                cancel_event=self._benchmark_cancel,
+                cancel_event=local_cancel,
             )
         except Exception as exc:  # noqa: BLE001
-            # store 异常 / 其他准备异常 — leave 已经在 enter 里做过
-            with self._benchmark_lock:
-                self._benchmark_state["phase"] = "error"
-                self._benchmark_state["error"] = f"benchmark 准备失败：{exc}"[:400]
-                self._benchmark_state["finished_at"] = time.time()
-                self._benchmark_state["running"] = False
-            raise ValidationError(self._benchmark_state["error"])
+            _finalize_error(f"benchmark 准备失败：{exc}", "error")
+            raise ValidationError(f"benchmark 准备失败：{exc}")
 
         if not exclusive_ok:
-            with self._benchmark_lock:
-                self._benchmark_state["phase"] = "rejected"
-                self._benchmark_state["error"] = (
-                    "等待生产池收敛超时或有另一个 benchmark 在运行；"
-                    "请先手动暂停并等待任务完成后再试"
-                )
-                self._benchmark_state["finished_at"] = time.time()
-                self._benchmark_state["running"] = False
-            raise ValidationError(self._benchmark_state["error"])
+            reject_msg = (
+                "等待生产池收敛超时或有另一个 benchmark 在运行；"
+                "请先手动暂停并等待任务完成后再试"
+            )
+            _finalize_error(reject_msg, "rejected")
+            raise ValidationError(reject_msg)
 
-        # 成功独占——正式置 running=True
+        # 二次 CAS：只有本 gen 的 preparing 才能升 running
         with self._benchmark_lock:
-            self._benchmark_state["running"] = True
-            self._benchmark_state["exclusive"] = True
+            if self._benchmark_state.get("generation") == gen and \
+                    self._benchmark_state.get("state") == "preparing":
+                self._benchmark_state["state"] = "running"
+                self._benchmark_state["running"] = True
+                self._benchmark_state["exclusive"] = True
 
         def _bg() -> None:
-            ffmpeg = studio_settings.ffmpeg_tool("ffmpeg")
-            tmp_dir = studio_settings.data_root() / "批量带货" / "基准_临时"
-            tmp_dir.mkdir(parents=True, exist_ok=True)
-            if sample_tts_audio:
-                silent = Path(sample_tts_audio).expanduser()
-            else:
-                # R14-FIX P1-1：静音长度 = 2×video.duration
-                # 覆盖生产链路完整时长（原视频 → 镜像副本）
-                silent = tmp_dir / f"silent_{int(audio_seconds*10)}dS_{os.getpid()}.wav"
-                gpu_profile.make_silent_wav(silent, seconds=audio_seconds)
-
-            def _cb(ev: dict) -> None:
-                with self._benchmark_lock:
-                    self._benchmark_state["phase"] = ev.get("phase") or ""
-                    self._benchmark_state["concurrency_now"] = ev.get("concurrency") or 0
-                    if ev.get("phase") == "measure":
-                        self._benchmark_state.setdefault("results", []).append(
-                            ev.get("result") or {}
-                        )
+            silent: Path | None = None
+            silent_owned = False
+            # R14-FIX-3 P0-3：**所有**准备步骤都在 try/except/finally 内
             try:
+                ffmpeg = studio_settings.ffmpeg_tool("ffmpeg")
+                tmp_dir = studio_settings.data_root() / "批量带货" / "基准_临时"
+                tmp_dir.mkdir(parents=True, exist_ok=True)
+                if sample_tts_audio:
+                    silent = Path(sample_tts_audio).expanduser()
+                else:
+                    silent = tmp_dir / (
+                        f"silent_{int(audio_seconds*10)}dS_"
+                        f"{os.getpid()}_g{gen}.wav"
+                    )
+                    gpu_profile.make_silent_wav(silent, seconds=audio_seconds)
+                    silent_owned = True
+
+                def _cb(ev: dict) -> None:
+                    with self._benchmark_lock:
+                        # 只更新本 gen——旧线程不能覆盖新任务
+                        if self._benchmark_state.get("generation") != gen:
+                            return
+                        self._benchmark_state["phase"] = ev.get("phase") or ""
+                        self._benchmark_state["concurrency_now"] = \
+                            ev.get("concurrency") or 0
+                        if ev.get("phase") == "measure":
+                            self._benchmark_state.setdefault(
+                                "results", []
+                            ).append(ev.get("result") or {})
+
                 cap = gpu_profile.run_benchmark(
-                    ffmpeg=ffmpeg, sample_video=sv, sample_tts_audio=silent,
+                    ffmpeg=ffmpeg, sample_video=sv,
+                    sample_tts_audio=silent,
                     encoder_preference=encoder_preference,
                     zoom_percent=zoom_percent, keep_original_audio=False,
                     preset=preset, crf=crf,
-                    ladder=list(ladder) if ladder else gpu_profile.DEFAULT_LADDER,
+                    ladder=ladder_list,
                     warmup_rounds=1, per_job_timeout=300.0,
-                    # R14-FIX2 P1-1：warmup 1 + 正式测量 **3** 轮 → 取真中位数
                     measured_rounds=3,
-                    progress_cb=_cb, cancel_event=self._benchmark_cancel,
+                    progress_cb=_cb, cancel_event=local_cancel,
+                    registry=local_registry,
                 )
-                # R14-FIX2 P1-5：encoder_preference 落库到 profile
                 cap.encoder_preference = encoder_preference or "auto"
                 gpu_profile.save_profile(cap)
-                self._gpu_profile = cap
                 with self._benchmark_lock:
-                    self._benchmark_state["profile"] = cap.to_json()
-                    self._benchmark_state["running"] = False
-                    self._benchmark_state["phase"] = "done"
-                    self._benchmark_state["finished_at"] = time.time()
+                    if self._benchmark_state.get("generation") == gen:
+                        self._gpu_profile = cap
+                        self._benchmark_state["profile"] = cap.to_json()
+                        self._benchmark_state["running"] = False
+                        self._benchmark_state["state"] = "done"
+                        self._benchmark_state["phase"] = "done"
+                        self._benchmark_state["finished_at"] = time.time()
             except gpu_profile.BenchmarkCancelled:
                 with self._benchmark_lock:
-                    self._benchmark_state["running"] = False
-                    self._benchmark_state["phase"] = "cancelled"
-                    self._benchmark_state["finished_at"] = time.time()
+                    if self._benchmark_state.get("generation") == gen:
+                        self._benchmark_state["running"] = False
+                        self._benchmark_state["state"] = "cancelled"
+                        self._benchmark_state["phase"] = "cancelled"
+                        self._benchmark_state["finished_at"] = time.time()
             except Exception as exc:  # noqa: BLE001
                 with self._benchmark_lock:
-                    self._benchmark_state["running"] = False
-                    self._benchmark_state["phase"] = "error"
-                    self._benchmark_state["error"] = str(exc)[:400]
-                    self._benchmark_state["finished_at"] = time.time()
+                    if self._benchmark_state.get("generation") == gen:
+                        self._benchmark_state["running"] = False
+                        self._benchmark_state["state"] = "error"
+                        self._benchmark_state["phase"] = "error"
+                        self._benchmark_state["error"] = str(exc)[:400]
+                        self._benchmark_state["finished_at"] = time.time()
             finally:
-                if not sample_tts_audio:
+                if silent_owned and silent is not None:
                     try: silent.unlink()
                     except OSError: pass
-                # 无论结果如何，都退出独占态；这里正确恢复用户此前的暂停状态
-                sched_ref.leave_benchmark_exclusive()
+                try:
+                    local_registry.terminate_all()
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    sched_ref.leave_benchmark_exclusive()
+                except Exception:  # noqa: BLE001
+                    pass
 
-        t = threading.Thread(target=_bg, name="gpu-benchmark", daemon=True)
-        with self._benchmark_lock:
-            self._benchmark_thread = t
-        t.start()
+        t = threading.Thread(target=_bg, name=f"gpu-benchmark-{gen}",
+                              daemon=True)
+        try:
+            with self._benchmark_lock:
+                self._benchmark_thread = t
+            t.start()
+        except Exception as exc:  # noqa: BLE001
+            # R14-FIX-3 P0-3：Thread.start() 抛错也必须同步恢复 exclusive
+            try:
+                sched_ref.leave_benchmark_exclusive()
+            except Exception:  # noqa: BLE001
+                pass
+            _finalize_error(f"benchmark 线程启动失败：{exc}", "error")
+            raise ValidationError(f"benchmark 线程启动失败：{exc}")
         return {"started": True, "sample_video": str(sv),
                  "audio_seconds": audio_seconds,
-                 "exclusive": exclusive_ok}
+                 "exclusive": exclusive_ok,
+                 "generation": gen,
+                 "state": "running"}
 
     def apply_gpu_profile(self) -> dict:
         """R14-FIX P0-5：应用 profile 前**必须重探当前指纹**——
@@ -992,14 +1082,24 @@ class BulkDubService:
         result = self._apply_profile_and_mode(
             sched, mode=MODE_AUTO, target_video=rec,
         )
-        # resize 失败不能仍返回"应用成功"
-        persisted, warning = self._persist_state(
-            mode=MODE_AUTO, sched=sched,
-            profile_fp=self._gpu_profile.device_fingerprint,
-        )
+        # R14-FIX-3 P1-3：resize 失败绝不 persist——避免把失败状态写盘为成功
+        if result["applied"]:
+            persisted, warning = self._persist_state(
+                mode=MODE_AUTO, sched=sched,
+                profile_fp=self._gpu_profile.device_fingerprint,
+            )
+        else:
+            persisted, warning = False, "resize 失败已回滚，未持久化 state"
         return {
-            "applied_video_concurrency": rec,
-            "applied": result,
+            # requested_video / actual_video 精确暴露；applied_video_concurrency
+            # 保留旧字段名，值取实际 serving（回滚后可能是旧值）
+            "applied_video_concurrency": (
+                result["actual_video"] if result["actual_video"] is not None
+                else result["video_serving"]
+            ),
+            "requested_video": result["requested_video"],
+            "actual_video": result["actual_video"],
+            "applied": result,   # 结构化子对象
             "resize_ok": result["resize_ok"],
             "resize_error": result["resize_error"],
             "encoder_override": result["encoder_override"],
@@ -1031,10 +1131,19 @@ class BulkDubService:
             manual_video=manual_video, user_max=user_max,
         )
         fp = self._gpu_profile.device_fingerprint if self._gpu_profile else ""
-        persisted, warning = self._persist_state(mode=mode, sched=sched,
-                                                   profile_fp=fp)
+        # R14-FIX-3 P1-3：resize 失败已回滚 → 不 persist，也不宣称成功
+        if result["applied"]:
+            persisted, warning = self._persist_state(
+                mode=mode, sched=sched, profile_fp=fp,
+            )
+        else:
+            persisted, warning = False, "resize 失败已回滚，未持久化 state"
         return {
-            "mode": mode,
+            # 回滚后 mode 反映真实生效值
+            "mode": result["mode"],
+            "requested_mode": mode,
+            "requested_video": result["requested_video"],
+            "actual_video": result["actual_video"],
             "applied": result,
             "resize_ok": result["resize_ok"],
             "resize_error": result["resize_error"],
