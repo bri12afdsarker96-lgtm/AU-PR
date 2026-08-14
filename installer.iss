@@ -21,9 +21,12 @@
 #define AppNameEn      "Mercury Dub Align Studio"
 #define AppVersion     "0.7.71"
 #define AppPublisher   "Mercury"
-#define AppExeName     "水星配音对齐工作室.exe"
+; AppExeName 也可被 /D 覆盖 —— 支持 PyInstaller 产物（叫 xxx_云配版.exe）
+#ifndef AppExeName
+  #define AppExeName "水星配音对齐工作室.exe"
+#endif
 ; SourceDir 可被命令行 /DSourceDir="..." 覆盖，用于复用旧产物：
-;   ISCC.exe /DSourceDir="轻量云配版包" installer.iss
+;   ISCC.exe /DSourceDir="dist\水星配音对齐工作室_云配版" /DAppExeName="水星配音对齐工作室_云配版.exe" installer.iss
 #ifndef SourceDir
   #define SourceDir "dist\轻量云配版包"
 #endif

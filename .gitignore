@@ -47,6 +47,17 @@ build/
 dist/
 *.spec
 
+# Cython 中间产物（licensing/*.c）
+source/dub_align_studio/licensing/*.c
+source/dub_align_studio/licensing/*.pyd
+source/dub_align_studio/licensing/*.so
+
+# 打包工作目录 / 归档 / 旧命名产物（不入库）
+_archive_旧打包_*/
+打包产物/
+轻量云配版包/
+tools/ffmpeg/
+
 # 软件运行时数据总目录
 水星配音数据/
 source/dub_align_studio/_build_info.py
