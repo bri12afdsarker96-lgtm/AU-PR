@@ -45,8 +45,15 @@ def main() -> int:
         note = syspy.bridge_site_packages()  # 打包 exe：桥接系统 Python 的依赖（dots.tts/torch）
         if note:
             print(note)
-        from dub_align_studio.web_server import main as web_main
 
+        # 优先原生窗口（pywebview + Edge WebView2）
+        # 不可用则 return None，降级为浏览器模式（老流程）
+        from dub_align_studio.native_window import run_with_native_window
+        rc = run_with_native_window()
+        if rc is not None:
+            return rc
+
+        from dub_align_studio.web_server import main as web_main
         return web_main()
     except Exception:
         detail = traceback.format_exc()

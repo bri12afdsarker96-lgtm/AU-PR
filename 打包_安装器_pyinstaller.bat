@@ -70,6 +70,25 @@ if errorlevel 1 (
 )
 for /f "delims=" %%v in ('python -m PyInstaller --version 2^>nul') do echo   [OK] pyinstaller %%v
 
+REM pywebview 自检（原生窗口模式必需；缺就问一下装不装）
+python -c "import webview" 2>nul
+if errorlevel 1 (
+    echo.
+    echo   [!] 未装 pywebview -^> 打出的 exe 只能浏览器模式（不能原生窗口）
+    set /p WV="       现在装吗？（Y=装 pywebview N=跳过）: "
+    if /i "!WV!"=="Y" (
+        python -m pip install pywebview
+        python -c "import webview" 2>nul
+        if errorlevel 1 (
+            echo   [!] pywebview 装完仍 import 失败，继续但只能浏览器
+        ) else (
+            echo   [OK] pywebview 装好
+        )
+    )
+) else (
+    for /f "delims=" %%v in ('python -c "import webview; print(webview.__version__)" 2^>nul') do echo   [OK] pywebview %%v
+)
+
 if exist "%PYI_DIST%\" (
     echo   清理旧 %PYI_DIST%\
     rmdir /S /Q "%PYI_DIST%"
@@ -156,7 +175,8 @@ echo     - 激活码 gate  ^(DUB_ALIGN_LICENSE_REQUIRED=1，启动软件.bat 里^)
 echo     - RASP 反调试  ^(DUB_ALIGN_RASP_STRICT=1，启动软件.bat 里^)
 echo     - 完整性自检   ^(integrity.hash 已写入^)
 echo     - 敏感文件清扫 ^(无 .py/settings.json/license.json^)
-echo     - HWID + Nonce + HMAC + DPAPI  ^(客户端代码已含^)
+echo     - HWID + Nonce + HMAC + DPAPI  ^(客户端代码已含^)
+echo     - 原生窗口 ^(pywebview + WebView2，无浏览器 chrome^)
 echo.
 echo   云端后台请录入：
 echo     app_id = dub_align_studio

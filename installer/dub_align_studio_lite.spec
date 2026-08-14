@@ -36,6 +36,7 @@ EXTRA_HIDDEN = [
     "dub_align_studio",
     "dub_align_studio.web_server",
     "dub_align_studio.syspy",
+    "dub_align_studio.native_window",
 ]
 
 # 数据文件（web 前端资源必须一起打）
@@ -46,12 +47,42 @@ _fonts = SOURCE / "dub_align_studio" / "fonts"
 if _fonts.exists():
     DATAS.append((str(_fonts), "dub_align_studio/fonts"))
 
+# app.ico 塞进包内，让 native_window 运行时能找到
+_icon_for_pack = HERE / "installer" / "app.ico"
+if _icon_for_pack.exists():
+    DATAS.append((str(_icon_for_pack), "."))
+
+# ---------- pywebview 全套收集（原生窗口模式必需） ----------
+# 用 collect_all 一次性带上 webview 子包 + 数据 + 平台绑定 dll
+# 若打包机没装 pywebview，就打成"只有浏览器模式"的 exe（运行时自动降级）
+_extra_binaries = []
+_extra_datas = []
+_extra_hidden = []
+try:
+    from PyInstaller.utils.hooks import collect_all as _collect_all
+    _d, _b, _h = _collect_all("webview")
+    _extra_datas.extend(_d)
+    _extra_binaries.extend(_b)
+    _extra_hidden.extend(_h)
+    # 兜底：把 Windows 常用后端显式列上
+    _extra_hidden.extend([
+        "webview",
+        "webview.platforms.edgechromium",
+        "webview.platforms.mshtml",
+        "webview.platforms.winforms",
+        "clr_loader",
+    ])
+except Exception as _exc:  # noqa: BLE001
+    print(f"[spec] pywebview 未装/收集失败 ({_exc}) → 包内不带原生窗口能力，只能浏览器")
+
+DATAS = DATAS + _extra_datas
+
 a = Analysis(
     [str(SOURCE / "dub_align_studio" / "launcher.py")],
     pathex=[str(SOURCE)],
-    binaries=[],
+    binaries=_extra_binaries,
     datas=DATAS,
-    hiddenimports=LICENSING_MODS + EXTRA_HIDDEN,
+    hiddenimports=LICENSING_MODS + EXTRA_HIDDEN + _extra_hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
