@@ -140,19 +140,22 @@ Source: "{#IconFile}"; DestDir: "{app}"; DestName: "app.ico"; Flags: ignoreversi
 #endif
 
 [Icons]
-; 开始菜单主图标（IconFilename 显式绑 app.ico，避免装完 lnk 图标丢失）
-Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"; \
+; 【关键】快捷方式指向 启动软件.bat 而非 exe 直启，
+; 因为 bat 里 set DUB_ALIGN_LICENSE_REQUIRED=1 + DUB_ALIGN_RASP_STRICT=1
+; 才让 exe 进入防护模式；直接双击 exe 会绕过 env（无激活码/无 RASP）。
+; IconFilename 显式绑 app.ico，防止 lnk 图标丢失。
+Name: "{group}\{#AppName}"; Filename: "{app}\启动软件.bat"; \
     IconFilename: "{app}\app.ico"; WorkingDir: "{app}"
 ; 开始菜单里的卸载入口
 Name: "{group}\卸载 {#AppName}"; Filename: "{uninstallexe}"
-; 桌面（可选）
-Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; \
+; 桌面（可选）—— 同样指 启动软件.bat
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\启动软件.bat"; \
     IconFilename: "{app}\app.ico"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
-; 安装完成后可选立即启动（不勾就不启动）
-Filename: "{app}\{#AppExeName}"; Description: "立即启动 {#AppName}"; \
-    Flags: nowait postinstall skipifsilent unchecked
+; 安装完成后可选立即启动 —— 走 启动软件.bat 以启用防护 env
+Filename: "{app}\启动软件.bat"; Description: "立即启动 {#AppName}"; \
+    Flags: nowait postinstall skipifsilent unchecked shellexec
 
 [UninstallDelete]
 ; 卸载时也清 marker / 数据缓存（用户可选保留数据）
