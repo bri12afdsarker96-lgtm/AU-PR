@@ -2,6 +2,57 @@
 
 > 面向本项目（水星配音对齐工作室 · AU-PR）的实操指南。
 > 更新时间：2026-08，Python 3.11 环境。
+> 本项目已实装：**在线激活 gate + HWID 绑定 + Nonce 防重放 + RASP + DPAPI 加密 session + Cython/Nuitka 打包脚本**。
+
+---
+
+## 0. 本项目当前防线（已实装）
+
+| # | 防线 | 位置 | 状态 |
+| --- | --- | --- | --- |
+| 1 | **在线激活码 gate** | `licensing/__init__.py` + `web_server` | ✅ |
+| 2 | **一机一码（HWID 绑定）** | `licensing/machine_id.py` | ✅ |
+| 3 | **心跳踢下线** | `licensing/heartbeat.py` | ✅ |
+| 4 | **Nonce + HMAC 签名** | `licensing/client.py::_base_payload` | ✅ 客户端；服务端待启用 |
+| 5 | **DPAPI 加密 session** | `licensing/crypto_store.py` | ✅ Windows；其他平台 xor 兜底 |
+| 6 | **RASP** 反调试/环境/完整性 | `licensing/rasp.py` | ✅ 检测；strict 模式需 env 启用 |
+| 7 | **敏感字符串 xor 加密** | `licensing/rasp.py::decrypt_str` | ✅ 工具 |
+| 8 | **Cython 编译授权模块** | `build_dist.py::cython_compile_licensing` | ✅ 打包时执行 |
+| 9 | **Nuitka 主程序编译** | `build_dist.py::nuitka_build` | ✅ 打包时执行 |
+| 10 | **发行包敏感文件清扫** | `build_dist.py::scrub_sensitive` | ✅ 打包时执行 |
+| 11 | **exe 完整性 baseline** | `build_dist.py::write_integrity_hash` | ✅ 打包时生成 |
+| 12 | **启动脚本注入 strict env** | `打包_轻量云配版包.bat` + `启动软件.bat` | ✅ |
+
+## 0.1 用户操作
+
+**开发/测试**（默认）：
+```bash
+python -m dub_align_studio
+# 无 gate，无 RASP，直接进主界面
+```
+
+**发行打包**（Windows）：
+```bat
+双击 打包_轻量云配版包.bat
+```
+产物在 `dist\轻量云配版包\`，用户复制该目录 → 双击 `启动软件.bat` 即可。
+
+## 0.2 敏感文件清单（**发行包严禁包含**）
+
+`build_dist.py::SENSITIVE_PATTERNS` 已列表清除；再次强调：
+
+| 类别 | 具体 | 泄露风险 |
+| --- | --- | --- |
+| **源码** | `*.py` `*.pyc` `*.pyo` | 直接白嫖 |
+| **本地用户数据** | `settings.json` `license.json` `gpu_state.json` `queue.sqlite3` | 泄露旧激活码/使用记录 |
+| **反破解文档** | `docs/PROTECTION.md` `README*.md` `*.md` | 教破解者绕过 |
+| **仓库 metadata** | `.git/` `.github/` `.claude/` `.gitignore` | 提交历史/密钥/CI 令牌 |
+| **测试代码** | `tests/` `conftest.py` | 含 mock 逻辑可被反向利用 |
+| **构建 metadata** | `pyproject.toml` `setup.py` `requirements*.txt` | 依赖树/内部包名 |
+| **虚拟环境** | `.venv/` `venv/` | 巨大且含全部依赖源 |
+
+---
+
 
 ## TL;DR 三档推荐
 

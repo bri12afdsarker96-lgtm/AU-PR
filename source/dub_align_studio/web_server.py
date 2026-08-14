@@ -2180,6 +2180,20 @@ def serve(port: int = DEFAULT_PORT, open_browser: bool = True) -> ThreadingHTTPS
     # 看到"未激活"页面并被引导重新输入激活码。
     try:
         mgr = _licensing_pkg.get_manager()
+        # RASP 检测：strict 模式（发行包 set DUB_ALIGN_RASP_STRICT=1）
+        # 检测到调试器/frida/vm/篡改 → 立即退出。
+        # 默认软报警：只记录，不退出，避免误伤真实用户。
+        try:
+            report = mgr.rasp_scan()
+            if report.suspicious and _licensing_pkg.rasp.strict_mode_enabled():
+                print(
+                    f"[FATAL] RASP 检测到高风险环境：{report.summary()}，"
+                    f"软件退出。若为误报请联系管理员。",
+                )
+                import sys as _sys
+                _sys.exit(3)
+        except Exception:  # noqa: BLE001
+            pass
         mgr.start_from_saved()
     except Exception:  # noqa: BLE001
         pass

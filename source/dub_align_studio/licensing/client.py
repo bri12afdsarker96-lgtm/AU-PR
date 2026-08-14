@@ -14,8 +14,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
+import secrets
 import socket
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -152,8 +156,17 @@ class LicensingClient:
     def _base_payload(self, code: str, machine_id: str, *,
                        device_name: str = "", system_version: str = "",
                        app_id: str | None = None,
-                       app_version: str | None = None) -> dict:
-        return {
+                       app_version: str | None = None,
+                       extras: dict | None = None) -> dict:
+        """基础字段。新版扩展：
+        * `nonce` —— 16 字节随机十六进制串（防重放；服务端拒重复 nonce）
+        * `ts` —— 客户端 unix ts（服务端可用于窗口限时校验）
+        * `sig` —— HMAC-SHA256(code, f"{nonce}|{ts}|{machine_id}|{app_id}")
+                    简单会话签名（服务端拿 code 也能验；不用非对称是为了
+                    协议轻量。若服务端将来给客户端下发私钥/公钥体系，可换）
+        服务端当前 CLIENT_API_V2 不校验也不用；服务端升级后可开始校验。
+        """
+        base = {
             "code": code,
             "machine_id": machine_id,
             "app_id": app_id or self.config.app_id,
@@ -161,6 +174,17 @@ class LicensingClient:
             "system_version": system_version or "",
             "app_version": app_version or self.config.app_version,
         }
+        # 防重放三件套（服务端**忽略**这三个字段是完全 OK 的，向后兼容）
+        nonce = secrets.token_hex(16)
+        ts = int(time.time())
+        msg = f"{nonce}|{ts}|{machine_id}|{base['app_id']}".encode("utf-8")
+        sig = hmac.new(code.encode("utf-8"), msg, hashlib.sha256).hexdigest()
+        base["nonce"] = nonce
+        base["ts"] = ts
+        base["sig"] = sig
+        if extras:
+            base.update(extras)
+        return base
 
     @staticmethod
     def _err_from_response(status: int, raw: dict, default_msg: str) -> LicensingError:

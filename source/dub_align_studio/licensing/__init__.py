@@ -23,6 +23,7 @@ from .heartbeat import HeartbeatDaemon, INVALID_ACTIONS
 from .machine_id import device_name as _device_name
 from .machine_id import machine_id as _machine_id
 from .machine_id import system_version as _system_version
+from . import rasp
 from .session import LicenseState, SessionStore
 
 
@@ -73,6 +74,11 @@ class LicenseManager:
         if st.last_action in INVALID_ACTIONS:
             return False
         return True
+
+    def rasp_scan(self) -> "rasp.RaspReport":
+        """一次性做 RASP 检测（调试器/可疑进程/frida/vm/完整性）。
+        strict 模式下由调用方（launcher）决定是否 exit()。"""
+        return rasp.full_scan()
 
     def on_state_change(self,
                          callback: Callable[[LicenseState], None]) -> None:
