@@ -1214,6 +1214,24 @@ class _Handler(BaseHTTPRequestHandler):
         if route == "/api/components":
             self._json({"components": toolbox.component_statuses()})
             return
+        if route == "/api/path_exists":
+            # 前端「代表样本」等文件输入实时校验用；只返存在性 + is_file
+            # **不回显路径**（防止未激活/日志中泄露）；不含目录内容
+            try:
+                p = params.get("p", [""])[0] if isinstance(params, dict) else ""
+            except Exception:  # noqa: BLE001
+                p = ""
+            exists = False
+            is_file = False
+            try:
+                if p:
+                    _pp = os.path.abspath(p)
+                    exists = os.path.exists(_pp)
+                    is_file = os.path.isfile(_pp)
+            except Exception:  # noqa: BLE001
+                pass
+            self._json({"exists": bool(exists), "is_file": bool(is_file)})
+            return
         if route == "/api/probe":
             # /api/probe 只做**轻量**探活：Edge TTS 走配置检查（live_check=False），
             # 避免"探测组件"按钮点一次就无故拉一次外网请求。真实连通用「测试连接」按钮。

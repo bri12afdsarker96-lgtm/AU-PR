@@ -164,8 +164,11 @@
     <button id="btnGpuApplyProfile" class="secondary" title="按 profile.recommended_concurrency 设置视频池">应用推荐并发</button>
   </div>
   <div class="row" style="margin-top:6px">
-    <label>代表样本 <input type="text" id="gpuSample" style="flex:1" placeholder="/path/to/10s_representative_video.mp4"></label>
+    <label>代表样本 <input type="text" id="gpuSample" style="flex:1" placeholder="10s 代表性视频路径" oninput="validateGpuSample()"></label>
+    <button type="button" onclick="document.getElementById('gpuSampleFile').click()">选择文件</button>
+    <input type="file" id="gpuSampleFile" accept="video/*,.mp4,.mov,.mkv" style="display:none" onchange="if(this.files[0]){document.getElementById('gpuSample').value=this.files[0].path||this.files[0].name;validateGpuSample();}">
     <button id="btnGpuBench">测显卡（跑基准）</button>
+    <span id="gpuSampleStatus" style="font-size:12px;margin-left:4px"></span>
     <button id="btnGpuCancelBench" class="secondary">取消基准</button>
   </div>
   <div id="gpuStatus" class="estimate-note" style="margin-top:6px">
@@ -717,9 +720,55 @@ async function refreshBenchStatus() {
   } catch (e) {}
 }
 
+// 实时校验代表样本路径：存在 → 绿色 √；不存在/空 → 红色 × 并禁用「测显卡」
+let _gpuSampleValid = false;
+let _gpuSampleTimer = null;
+async function validateGpuSample() {
+  const el = $("gpuSample");
+  const st = $("gpuSampleStatus");
+  const btn = $("btnGpuBench");
+  const sv = (el.value || "").trim();
+  clearTimeout(_gpuSampleTimer);
+  if (!sv) {
+    _gpuSampleValid = false;
+    el.style.borderColor = "";
+    if (st) st.textContent = "";
+    if (btn) btn.disabled = true;
+    return;
+  }
+  // 输入防抖 400ms 再问后端
+  _gpuSampleTimer = setTimeout(async () => {
+    try {
+      const r = await api("GET", "/api/path_exists?p=" + encodeURIComponent(sv));
+      if (r && r.exists && r.is_file) {
+        _gpuSampleValid = true;
+        el.style.borderColor = "#4caf50";
+        if (st) { st.textContent = "√ 文件存在"; st.style.color = "#4caf50"; }
+        if (btn) btn.disabled = false;
+      } else {
+        _gpuSampleValid = false;
+        el.style.borderColor = "#e57373";
+        if (st) { st.textContent = "× 文件不存在"; st.style.color = "#e57373"; }
+        if (btn) btn.disabled = true;
+      }
+    } catch (e) {
+      _gpuSampleValid = false;
+      el.style.borderColor = "#e57373";
+      if (st) { st.textContent = "× 校验失败"; st.style.color = "#e57373"; }
+      if (btn) btn.disabled = true;
+    }
+  }, 400);
+}
+document.addEventListener("DOMContentLoaded", () => setTimeout(validateGpuSample, 300));
+
 async function gpuStartBench() {
   const sv = ($("gpuSample").value || "").trim();
   if (!sv) { alert("请填代表性视频路径"); return; }
+  if (!_gpuSampleValid) {
+    alert("代表样本视频不存在，请选择/输入有效路径");
+    validateGpuSample();
+    return;
+  }
   try {
     await api("POST", "/api/bulk_dub/gpu/start_benchmark?sample_video="
                        + encodeURIComponent(sv));
