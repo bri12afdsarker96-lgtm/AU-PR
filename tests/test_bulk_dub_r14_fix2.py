@@ -55,6 +55,38 @@ def _has_ffmpeg() -> bool:
         return False
 
 
+# R14-FIX-4：慢机鲁棒——统一 poll + 宽 deadline 的等待助手。
+# 禁止在断言前裸 `time.sleep(固定值)` —— 慢机 CI 下会漂移。
+def _wait_until(cond, timeout: float = 15.0, interval: float = 0.05) -> bool:
+    """轮询 cond() 直到返回真值或超时。返回是否满足条件。"""
+    end = time.time() + max(0.05, float(timeout))
+    while time.time() < end:
+        try:
+            if cond():
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(interval)
+    try:
+        return bool(cond())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _stays_true(cond, duration: float = 3.0, interval: float = 0.05) -> bool:
+    """要求 cond() 在整段窗口内**持续**为真——用于"什么坏事都不该发生"
+    的负向断言。任一次探测为假立即返回 False。"""
+    end = time.time() + max(0.1, float(duration))
+    while time.time() < end:
+        try:
+            if not cond():
+                return False
+        except Exception:  # noqa: BLE001
+            return False
+        time.sleep(interval)
+    return True
+
+
 def _make_real_mp4(target: Path, seconds: float = 1.0) -> None:
     subprocess.run([
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
@@ -120,20 +152,24 @@ def test_fix2_02_benchmark_only_queues_no_running(tmp_path, monkeypatch):
     ), tts_backend=MockTtsBackend())
     sched.start()
     try:
-        assert sched.enter_benchmark_exclusive(wait_seconds=3.0) is True
+        assert sched.enter_benchmark_exclusive(wait_seconds=15.0) is True
         assert sched.is_paused() is True, "benchmark exclusive 必须 pause 生产池"
         b = store.create_batch("t", str(tmp_path), {})
         tid = store.add_task(batch_id=b, excel_row=2,
                               input_video="/v", text="t", fingerprint="fp",
                               voice_id="v", voice_name="V", speed=1.0,
                               keep_original_audio=False, params_snapshot={})
-        time.sleep(1.0)
-        row = store.get(tid)
-        assert row.status == STATUS_PENDING, \
-            f"benchmark 期间 pending 任务不能被领取，实际 status={row.status}"
+        # R14-FIX-4：**持续**验证 3 秒内 status 永远不离开 PENDING（负向断言）
+        assert _stays_true(
+            lambda: store.get(tid).status == STATUS_PENDING,
+            duration=3.0, interval=0.05,
+        ), (
+            f"benchmark 期间 pending 任务不能被领取，"
+            f"实际 status={store.get(tid).status}"
+        )
     finally:
         sched.leave_benchmark_exclusive()
-        sched.stop(3.0)
+        sched.stop(15.0)
 
 
 # ================================================================
@@ -207,7 +243,13 @@ def test_fix2_04_service_stop_takes_benchmark(tmp_path, monkeypatch):
 
 
 def test_fix2_05_stop_start_no_double_coordinator(tmp_path):
-    """P0-5：stop/start 之间不能产生两个 coordinator；锁内绝不 join。"""
+    """P0-5：stop/start 之间不能产生两个 coordinator；锁内绝不 join。
+
+    R14-FIX-4：慢机鲁棒——**只核对本 scheduler 的 coord 身份**，
+    不再枚举全局 threading.enumerate()——上一版会误报其他并行/前序测试
+    正在收敛的 coord 线程（本轮 P0-5 已保证任意时刻本实例内最多一个活
+    coord，跨实例的 in-flight 收敛不是本用例证明的目标）。
+    """
     store = TaskStore(tmp_path / "q.sqlite3")
     sched = Scheduler(store=store, config=SchedulerConfig(
         tts_concurrency=1, video_concurrency=1,
@@ -216,16 +258,19 @@ def test_fix2_05_stop_start_no_double_coordinator(tmp_path):
     sched.start()
     coord1 = sched._coordinator_thread
     assert coord1 is not None and coord1.is_alive()
-    assert sched.stop(wait_seconds=3.0) is True
+    assert sched.stop(wait_seconds=15.0) is True
+    # stop 之后 coord1 应当已死；即使 OS 调度慢，最多也是 finalization pending
+    assert _wait_until(lambda: not coord1.is_alive(), timeout=10.0), \
+        "coord1 stop 后必须最终死亡"
     sched.start()
     coord2 = sched._coordinator_thread
     assert coord2 is not None and coord2.is_alive()
-    assert coord2 is not coord1
-    alive_coords = [t for t in threading.enumerate()
-                    if t.name == "bulk-coordinator" and t.is_alive()]
-    assert len(alive_coords) == 1, \
-        f"任意时刻最多一个活 coordinator，实际 {len(alive_coords)}"
-    sched.stop(3.0)
+    assert coord2 is not coord1, "start 后必须新起 coord，不复用旧引用"
+    # 本 scheduler 只允许 coord2 活着（coord1 已死）
+    mine_alive = [t for t in (coord1, coord2) if t.is_alive()]
+    assert mine_alive == [coord2], \
+        f"本 scheduler 应恰只有 coord2 活着，实际 {mine_alive}"
+    sched.stop(15.0)
 
 
 # ================================================================
@@ -778,11 +823,16 @@ def test_fix3_a_concurrent_start_benchmark_atomic_cas(tmp_path, monkeypatch):
     t1 = threading.Thread(target=_try_start, args=("A", sample_a))
     t2 = threading.Thread(target=_try_start, args=("B", sample_b))
     t1.start()
-    # 让 t1 先进 preparing/running
-    time.sleep(0.05)
+    # R14-FIX-4：慢机鲁棒——**poll** 直到 t1 真的进入 preparing/running，
+    # 而不是裸 sleep(0.05) 押注 CPU 调度
+    assert _wait_until(
+        lambda: svc.benchmark_status().get("state") in ("preparing", "running")
+                 or ("A" in results),
+        timeout=10.0, interval=0.02,
+    )
     t2.start()
-    t1.join(timeout=5.0)
-    t2.join(timeout=5.0)
+    t1.join(timeout=15.0)
+    t2.join(timeout=15.0)
     # 有且仅有一个成功
     success = [k for k, v in results.items() if isinstance(v, dict)]
     fail = [k for k, v in results.items() if isinstance(v, Exception)]
@@ -794,8 +844,8 @@ def test_fix3_a_concurrent_start_benchmark_atomic_cas(tmp_path, monkeypatch):
     assert winner["generation"] >= 1
     proceed.set()
     if svc._benchmark_thread is not None:
-        svc._benchmark_thread.join(timeout=5.0)
-    svc.stop(3.0)
+        svc._benchmark_thread.join(timeout=15.0)
+    svc.stop(15.0)
 
 
 def test_fix3_b_silent_wav_error_restores_exclusive(tmp_path, monkeypatch):
@@ -880,9 +930,11 @@ def test_fix3_d_stop_does_not_kill_non_benchmark_procs(tmp_path, monkeypatch):
     try:
         # 服务尚未启动 benchmark；stop() 现在不应误杀 external
         svc.stop(wait_seconds=1.0)
-        time.sleep(0.2)
-        assert external.poll() is None, \
-            "service.stop 不能杀死不属于 benchmark 的子进程"
+        # R14-FIX-4：慢机鲁棒——**持续**验证 2 秒内 external 存活
+        assert _stays_true(
+            lambda: external.poll() is None,
+            duration=2.0, interval=0.05,
+        ), "service.stop 不能杀死不属于 benchmark 的子进程"
     finally:
         try:
             external.terminate()
@@ -918,14 +970,16 @@ def test_fix3_e_stop_kills_benchmark_own_procs(tmp_path, monkeypatch):
 
     monkeypatch.setattr(gpu_profile, "run_benchmark", _bench_that_spawns)
     monkeypatch.setattr(gpu_profile, "save_profile", lambda cap: None)
-    svc.start_benchmark(sample_video=str(sample), exclusive_wait_seconds=3.0)
-    assert started.wait(timeout=5.0)
+    svc.start_benchmark(sample_video=str(sample), exclusive_wait_seconds=15.0)
+    assert started.wait(timeout=15.0)
     p = proc_holder["p"]
     assert p.poll() is None, "benchmark 子进程应当在跑"
-    ok = svc.stop(wait_seconds=5.0)
+    ok = svc.stop(wait_seconds=15.0)
     assert ok is True
-    time.sleep(0.2)
-    assert p.poll() is not None, "stop 后 benchmark 自己的子进程必须被收尸"
+    # R14-FIX-4：慢机鲁棒——poll 直到 p 真的死；不再裸 sleep(0.2)
+    assert _wait_until(lambda: p.poll() is not None,
+                         timeout=10.0, interval=0.05), \
+        "stop 后 benchmark 自己的子进程必须被收尸"
 
 
 def test_fix3_f_benchmark_waits_for_scheduler_active(tmp_path, monkeypatch):

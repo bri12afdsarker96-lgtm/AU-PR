@@ -79,6 +79,16 @@ def _mk_service(tmp_path):
     )
 
 
+def _mk_service_paused(tmp_path):
+    """R14-FIX-4：慢机鲁棒——凡是需要在 start_batch 之后**观察**任务处于
+    某个中间状态（例如 pending / waiting_dependency）的用例，都必须先
+    把 scheduler 暂停，防止 worker 抢先 claim 导致 pending → tts_running
+    在断言之前发生（真产品行为没变，只是测试观察窗口不鲁棒）。"""
+    svc = _mk_service(tmp_path)
+    svc.pause()   # 建立 scheduler 后立即暂停；start_batch 仍可插入任务
+    return svc
+
+
 # ============================================================
 # R12-1 批内 leader/follower 去重（100 条同指纹只跑 1 次）
 # ============================================================
@@ -90,7 +100,8 @@ def test_r12_1_100_identical_only_one_leader(tmp_path):
     v.write_bytes(b"\x00")
     rows = [(str(v), "同样的文案") for _ in range(100)]
     xlsx = build_minimal_xlsx(rows)
-    svc = _mk_service(tmp_path)
+    # R14-FIX-4：慢机鲁棒——scheduler 先暂停避免 worker 抢先 claim
+    svc = _mk_service_paused(tmp_path)
     r = svc.start_batch(source_bytes=xlsx, label="dedup100",
                           output_dir=str(tmp_path / "out"),
                           check_exists=False)
@@ -110,7 +121,8 @@ def test_r12_1_leader_success_propagates_to_followers(tmp_path):
     (tmp_path / "out").mkdir()
     v = tmp_path / "共.mp4"; v.write_bytes(b"\x00")
     xlsx = build_minimal_xlsx([(str(v), "共同"), (str(v), "共同"), (str(v), "共同")])
-    svc = _mk_service(tmp_path)
+    # R14-FIX-4：慢机鲁棒——scheduler 先暂停，防止 worker 抢先 claim leader
+    svc = _mk_service_paused(tmp_path)
     r = svc.start_batch(source_bytes=xlsx, label="lead-ok",
                           output_dir=str(tmp_path / "out"),
                           check_exists=False)
@@ -145,7 +157,8 @@ def test_r12_1_leader_failure_propagates_to_followers(tmp_path):
     (tmp_path / "out").mkdir()
     v = tmp_path / "同.mp4"; v.write_bytes(b"\x00")
     xlsx = build_minimal_xlsx([(str(v), "同"), (str(v), "同")])
-    svc = _mk_service(tmp_path)
+    # R14-FIX-4：慢机鲁棒——scheduler 先暂停，防止 worker 抢先 claim leader
+    svc = _mk_service_paused(tmp_path)
     r = svc.start_batch(source_bytes=xlsx, label="lead-fail",
                           output_dir=str(tmp_path / "out"),
                           check_exists=False)
