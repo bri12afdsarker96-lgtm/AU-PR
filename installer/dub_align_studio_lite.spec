@@ -39,6 +39,18 @@ EXTRA_HIDDEN = [
     "dub_align_studio.native_window",
 ]
 
+# 【关键】_build_info 只在函数体里 try/except 懒加载，PyInstaller 静态分析看不到，
+# 必须显式列进 hiddenimports，否则不会被打进 PYZ → 运行时 import 失败 →
+# PACKAGED=False → 激活码 gate / RASP / 完整性校验 全部退化到"开发模式"（默认关）。
+# 这是之前"没输激活码也能进""源码运行"标签的根因。
+# prepare_build_info() 在 pyinstaller 之前已把 source/dub_align_studio/_build_info.py 写好，
+# 所以打包时该模块一定存在，可以安全加入 hiddenimports。
+if (SOURCE / "dub_align_studio" / "_build_info.py").exists():
+    EXTRA_HIDDEN.append("dub_align_studio._build_info")
+else:
+    print("[spec][!] source/dub_align_studio/_build_info.py 不存在 —— "
+          "打包版将无防护！请先跑 build_dist.prepare_build_info()")
+
 # 数据文件（web 前端资源必须一起打）
 DATAS = [(str(SOURCE / "dub_align_studio" / "web"), "dub_align_studio/web")]
 

@@ -1218,11 +1218,8 @@ class _Handler(BaseHTTPRequestHandler):
             # 原生文件选择对话框（tkinter 走 Windows 系统 dialog）——
             # HTML <input type=file> 出于沙箱安全**拿不到完整路径**，只能拿文件名，
             # 所以显卡加速的「代表样本」输入必须走后端 dialog 取真实路径。
-            try:
-                exts_raw = params.get("exts", ["*.mp4 *.mov *.mkv"])[0] \
-                    if isinstance(params, dict) else "*.mp4 *.mov *.mkv"
-            except Exception:  # noqa: BLE001
-                exts_raw = "*.mp4 *.mov *.mkv"
+            query = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+            exts_raw = query.get("exts") or "*.mp4 *.mov *.mkv"
             path = ""
             try:
                 import tkinter as _tk
@@ -1241,10 +1238,8 @@ class _Handler(BaseHTTPRequestHandler):
         if route == "/api/path_exists":
             # 前端「代表样本」等文件输入实时校验用；只返存在性 + is_file
             # **不回显路径**（防止未激活/日志中泄露）；不含目录内容
-            try:
-                p = params.get("p", [""])[0] if isinstance(params, dict) else ""
-            except Exception:  # noqa: BLE001
-                p = ""
+            query = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+            p = query.get("p") or ""
             exists = False
             is_file = False
             try:
