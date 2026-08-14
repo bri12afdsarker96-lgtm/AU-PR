@@ -265,10 +265,20 @@ def _read_baseline_hash() -> str:
       2) 把 hash 写入 `<dist>/integrity.hash`（或环境变量 DUB_ALIGN_INTEGRITY_HASH）
       3) 运行时 rasp.integrity_check() 拉出对比
     """
+    # 优先级 1：打包时 _build_info.EXE_HMAC_HEX（HMAC-SHA256(exe, key)
+    # 存到编译后的 .pyd，攻击者不知道 key 就伪造不了 —— 比 side-file 强很多）
+    try:
+        from .. import _build_info as _bi  # type: ignore[import-not-found]
+        embedded = str(getattr(_bi, "EXE_HMAC_HEX", "")).strip().lower()
+        if embedded:
+            return "hmac:" + embedded
+    except ImportError:
+        pass
+    # 优先级 2：env（CI 里用）
     env = os.environ.get("DUB_ALIGN_INTEGRITY_HASH", "").strip().lower()
     if env:
         return env
-    # 尝试从 sys.executable 同级目录读 integrity.hash
+    # 优先级 3：老 side-file（本地开发向后兼容；生产走优先级 1）
     try:
         exe = sys.executable
         if exe:
@@ -295,17 +305,45 @@ def _hash_file(path: str) -> str:
 
 
 def integrity_check() -> tuple[bool | None, str, str]:
-    """校验 sys.executable 的 SHA-256。
-    返回 (ok_or_None, expected, actual)。
-    - None：无 baseline，跳过（不算失败）
-    - True：一致
-    - False：不一致 → 视为被篡改
+    """校验 sys.executable 的完整性。
+
+    baseline 三种形态自动识别：
+      - "hmac:<hex>"  → HMAC-SHA256(exe, _build_info.INTEGRITY_HMAC_KEY)
+                        （打包版走这个，key 藏在编译过的 .pyd 里，攻击者伪造需先拿 key）
+      - "<hex>"        → 老的裸 SHA256（向后兼容 CI env）
+      - ""             → 无 baseline，跳过
     """
     expected = _read_baseline_hash()
     if not expected:
         return None, "", ""
+
+    exe = sys.executable
     try:
-        actual = _hash_file(sys.executable)
+        if expected.startswith("hmac:"):
+            expected_hex = expected[5:]
+            try:
+                from .. import _build_info as _bi  # type: ignore[import-not-found]
+                key = getattr(_bi, "INTEGRITY_HMAC_KEY", b"") or b""
+            except ImportError:
+                key = b""
+            if not key:
+                # baseline 说要 HMAC 校验，但没 key —— 视为篡改
+                return False, expected, ""
+            import hmac as _hmac
+            h = _hmac.new(bytes(key), b"", hashlib.sha256)
+            try:
+                with open(exe, "rb") as f:
+                    while True:
+                        chunk = f.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        h.update(chunk)
+            except OSError:
+                return False, expected, ""
+            actual_hex = h.hexdigest()
+            return (actual_hex == expected_hex), expected, "hmac:" + actual_hex
+        # 老 SHA 路径
+        actual = _hash_file(exe)
     except Exception:  # noqa: BLE001
         return False, expected, ""
     return (actual == expected), expected, actual
@@ -376,6 +414,17 @@ def full_scan(*, refresh_processes: bool = False) -> RaspReport:
 
 
 def strict_mode_enabled() -> bool:
-    """`DUB_ALIGN_RASP_STRICT=1` → RASP 触发即退。默认软报警。"""
+    """RASP 触发即退。
+
+    优先级：
+      1) 打包时 _build_info.PACKAGED == True → **永远 strict**（忽略 env）
+      2) 开发 / 测试：env DUB_ALIGN_RASP_STRICT=1 显式开启
+    """
+    try:
+        from .. import _build_info as _bi  # type: ignore[import-not-found]
+        if getattr(_bi, "PACKAGED", False):
+            return True
+    except ImportError:
+        pass
     v = os.environ.get("DUB_ALIGN_RASP_STRICT", "").strip().lower()
     return v in ("1", "true", "yes", "on")

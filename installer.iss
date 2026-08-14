@@ -133,7 +133,7 @@ Name: "quicklaunchicon"; Description: "创建快速启动栏图标"; GroupDescri
 ;   * excludes 是双保险，防止误打包
 Source: "{#SourceDir}\*"; DestDir: "{app}"; \
     Flags: ignoreversion recursesubdirs createallsubdirs; \
-    Excludes: "*.py,*.pyc,*.pyo,__pycache__,.git,.github,.claude,tests,docs,settings.json,license.json,queue.sqlite3,gpu_state.json,*.md,pyproject.toml,setup.py,conftest.py,.gitignore"
+    Excludes: "*.py,*.pyc,*.pyo,*.pyx,*.pxd,*.c,*.h,__pycache__,.git,.github,.claude,tests,docs,settings.json,license.json,queue.sqlite3,gpu_state.json,*.md,pyproject.toml,setup.py,conftest.py,.gitignore,integrity.hash"
 ; 图标：把 app.ico 也复制到安装目录，供快捷方式引用
 #if FileExists(IconFile)
 Source: "{#IconFile}"; DestDir: "{app}"; DestName: "app.ico"; Flags: ignoreversion

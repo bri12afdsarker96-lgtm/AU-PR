@@ -56,6 +56,32 @@ if not exist "installer\cloud_edition.flag" (
     echo. > "installer\cloud_edition.flag"
 )
 
+REM ---------- Step 1.9  Cython 编译 licensing（强化反破译） ----------
+echo.
+echo ============================================================
+echo   Step 1.9  Cython 编译 licensing/*.py -^> .pyd
+echo   （攻击者拿到 .pyd 无源码可看，比 .pyc 反编译难得多）
+echo ============================================================
+python -c "import Cython" 2>nul
+if errorlevel 1 (
+    echo   [!] Cython 未装 -^> licensing/*.py 会以 .pyc 打包（可反编译）
+    set /p CY="       现在装吗？（Y=装 Cython N=跳过 弱化防护）: "
+    if /i "!CY!"=="Y" (
+        python -m pip install cython
+    )
+)
+python -c "import Cython" 2>nul
+if not errorlevel 1 (
+    python -c "import sys; sys.path.insert(0, '.'); from build_dist import cython_compile_licensing; cython_compile_licensing()"
+    if errorlevel 1 (
+        echo   [!] Cython 编译失败——继续但 licensing 只有 .pyc 弱保护
+    ) else (
+        echo   [OK] licensing/*.pyd 已生成
+    )
+) else (
+    echo   [!] 无 Cython，跳过（licensing 只有 .pyc；可用但反编译难度低）
+)
+
 REM ---------- Step 2  pyinstaller ----------
 echo.
 echo ============================================================
@@ -124,6 +150,11 @@ if exist "%PYI_DIST%\_internal\dub_align_studio\licensing\" (
     dir /B "%PYI_DIST%\_internal\dub_align_studio\licensing\" | findstr /R "\." >nul && (
         for /f %%c in ('dir /B "%PYI_DIST%\_internal\dub_align_studio\licensing\" ^| find /C /V ""') do (
             echo        找到 %%c 个 licensing 子模块文件
+    dir /B "%PYI_DIST%\_internal\dub_align_studio\licensing\" 2>nul | findstr /R "\.pyd$ \.so$" >nul && (
+        echo   [OK] 包含 Cython 编译产物 ^(.pyd/.so^) —— 反编译难度显著提升
+    ) || (
+        echo   [!] 未发现 .pyd/.so —— licensing 只有 .pyc，反编译难度低
+    )
         )
     )
 ) else (
@@ -137,8 +168,15 @@ if exist "%PYI_DIST%\_internal\dub_align_studio\licensing\" (
 REM 3.4  生成 启动软件.bat（含发行必需的 env）
 python -c "import sys; sys.path.insert(0, '.'); from build_dist import write_launcher_bat; from pathlib import Path; write_launcher_bat(Path(r'%PYI_DIST%'), r'%PYI_EXE%'); print('  [OK] 启动软件.bat')"
 
-REM 3.5  生成 integrity.hash
-python -c "import sys; sys.path.insert(0, '.'); from build_dist import write_integrity_hash; from pathlib import Path; write_integrity_hash(Path(r'%PYI_DIST%'), r'%PYI_EXE%'); print('  [OK] integrity.hash')"
+REM 3.5  生成 _build_info.py（PACKAGED + 随机密钥 + exe HMAC baseline）
+REM      比老 integrity.hash side-file 强：baseline 藏在 .pyc 里，攻击者不知道 key 就伪造不了
+python -c "import sys; sys.path.insert(0, '.'); from build_dist import write_build_info; from pathlib import Path; write_build_info(Path(r'%PYI_DIST%'), r'%PYI_EXE%')"
+if errorlevel 1 (
+    echo   [X] write_build_info 失败 —— 打包版会走 fallback 到 env / side-file
+    echo       攻击者可用老手段绕过。强烈建议查错重来。
+    pause
+    exit /b 6
+)
 
 REM ---------- Step 4  ISCC ----------
 echo.
