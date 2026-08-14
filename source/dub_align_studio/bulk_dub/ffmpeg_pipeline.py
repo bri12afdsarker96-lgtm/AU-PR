@@ -191,11 +191,26 @@ def build_filter_chain(*, width: int, height: int, zoom_percent: int = 130,
     scaled_h = _even(height * zoom_ratio)
     out_w = _even(width)
     out_h = _even(height)
+    # R14-FIX-4d：**concat 要求两流 w/h/SAR 严格一致**——用户 1080x1906
+    # 视频实测报错：
+    #   [Parsed_concat_4] Input link parameters (size 1080x1904, SAR 12385:12389)
+    #     do not match the corresponding output link (1080x1906, SAR 1:1)
+    #   → Failed to configure output pad → return code -22 (Invalid argument)
+    #   → Could not open encoder before EOF
+    # 根因：
+    #   * hflip+scale 后 SAR 会漂移（12385:12389 ≠ 1:1）
+    #   * scale=1404:2478 内部按 chroma 约束对齐，实际输出可能比目标少 2px
+    # 修法（v1、v0 都严格归一）：
+    #   * v1 尾部补 `scale=OW:OH,setsar=1` —— 强制精确尺寸 + SAR=1
+    #   * v0 也补 `setsar=1` —— 保证与 v1 SAR 一致
+    #   * concat 后加 `format=yuv420p` —— 彻底避免 encoder 侧像素格式冲突
     filter_lines = [
         "[0:v]split=2[v0][v0b]",
         f"[v0b]hflip,scale={scaled_w}:{scaled_h},"
-        f"crop={out_w}:{out_h}:(in_w-{out_w})/2:(in_h-{out_h})/2[v1]",
-        "[v0][v1]concat=n=2:v=1:a=0[vout]",
+        f"crop={out_w}:{out_h}:(in_w-{out_w})/2:(in_h-{out_h})/2,"
+        f"scale={out_w}:{out_h},setsar=1[v1]",
+        f"[v0]setsar=1[v0s]",
+        "[v0s][v1]concat=n=2:v=1:a=0,format=yuv420p[vout]",
     ]
     map_args: list[str] = ["-map", "[vout]"]
     if keep_original_audio:
