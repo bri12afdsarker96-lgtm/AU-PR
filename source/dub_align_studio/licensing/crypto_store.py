@@ -114,8 +114,21 @@ def _keyring_available() -> bool:
 
 
 def _xor_key() -> bytes:
-    """派生：SHA-256("dub_align_studio_local_v1" + hostname).digest()[:32]。
-    不用 machine_id 避免循环依赖（licensing 里也用 machine_id）。"""
+    """XOR 种子派生：
+
+    优先级：
+      1) 打包时 _build_info.XOR_SEED（每次打包**随机 32 字节**，
+         破一个包不会通杀其他包，且 seed 只存在于编译后的 .pyd/.pyc 二进制里）
+      2) fallback：SHA-256("dub_align_studio_local_v1" + hostname).digest()[:32]
+         （老逻辑，向后兼容）
+    """
+    try:
+        from .. import _build_info as _bi  # type: ignore[import-not-found]
+        seed = getattr(_bi, "XOR_SEED", b"")
+        if isinstance(seed, (bytes, bytearray)) and len(seed) >= 32:
+            return bytes(seed[:32])
+    except ImportError:
+        pass
     import socket
     h = hashlib.sha256()
     h.update(b"dub_align_studio_local_v1|")

@@ -68,6 +68,28 @@ _BROWSER_UA = (
     "Chrome/120.0.0.0 Safari/537.36"
 )
 
+
+def _ssl_context():
+    """HTTPS 用的 SSL context。
+
+    冻结 exe（PyInstaller）里 Python 默认的 CA 证书路径往往找不到，导致对
+    Cloudflare Worker（workers.dev）等 HTTPS 端点连接失败——而 license 服务器是
+    HTTP 所以不受影响，正好解释「license 通、Edge TTS 挂」。
+    这里显式用 certifi 的 cacert.pem 建 context（certifi 已在 spec 里打进包）。
+    """
+    import ssl
+    try:
+        import certifi  # type: ignore[import-not-found]
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:  # noqa: BLE001
+        try:
+            return ssl.create_default_context()
+        except Exception:  # noqa: BLE001
+            return None
+
+
+_SSL_CTX = _ssl_context()
+
 # 预设声线（README 列出的中文声线；风格在请求里另传）
 EDGE_VOICES: list[dict] = [
     {"id": "zh-CN-XiaoxiaoNeural", "name": "晓晓（女·活泼）"},
@@ -282,7 +304,8 @@ class EdgeTtsEngine:
         for attempt in range(1, _MAX_RETRIES + 1):
             try:
                 req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                _ctx = _SSL_CTX if url.lower().startswith("https") else None
+                with urllib.request.urlopen(req, timeout=self.timeout, context=_ctx) as resp:
                     ctype = (resp.headers.get("Content-Type") or "").lower()
                     data = resp.read()
                 return _validate_audio_response(ctype, data)

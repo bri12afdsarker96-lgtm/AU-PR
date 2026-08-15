@@ -946,19 +946,26 @@ def _license_gate_check(route: str) -> bool:
 
 def _license_gate_enabled() -> bool:
     """License gate 是否启用。
-    - 生产打包：**默认启用**（授权服务器上线后应该 ON）
-    - 测试 / 开发：设 env `DUB_ALIGN_LICENSE_DISABLE=1` 可关掉
 
-    为了不打断已有 260 项 pytest 测试与本地开发，MVP 阶段默认 **DISABLED**；
-    等打包脚本明确 set env 才开启。
+    优先级（新，堵 env 绕过路径）：
+      1) 打包时 _build_info.PACKAGED == True  → **强制启用**，忽略任何 env
+         （攻击者删 vbs、写 .bat 跳过 env 已经不能关掉 gate）
+      2) 未打包（开发/测试）：默认 **不强制**；
+         env DUB_ALIGN_LICENSE_REQUIRED=1 显式启用；
+         env DUB_ALIGN_LICENSE_DISABLE=1 显式关掉。
     """
+    try:
+        from . import _build_info as _bi
+        if getattr(_bi, "PACKAGED", False):
+            return True
+    except ImportError:
+        pass
     disable = os.environ.get("DUB_ALIGN_LICENSE_DISABLE", "").strip().lower()
     if disable in ("1", "true", "yes", "on"):
         return False
     enable = os.environ.get("DUB_ALIGN_LICENSE_REQUIRED", "").strip().lower()
     if enable in ("1", "true", "yes", "on"):
         return True
-    # 未显式配置 → 默认 **不强制**（保持兼容；打包时改这行为 True 或设 env）
     return False
 
 
@@ -1017,10 +1024,13 @@ class _Handler(BaseHTTPRequestHandler):
             "heartbeat_interval": st.heartbeat_interval,
             "last_action": st.last_action,
             "last_error": st.last_error,
-            "device_name": _licensing_pkg.get_manager()._device,
-            "app_id": _licensing_pkg.APP_ID,
+            # 已激活才返回设备名 / server；未激活不给（避免识别 + 定位服务端）
+            "device_name": (
+                _licensing_pkg.get_manager()._device if ui_active else ""
+            ),
             "app_version": _licensing_pkg.APP_VERSION,
-            "server": _licensing_pkg.get_manager().config.server,
+            # app_id 和 server 完全不再从 API 返回（防止逆向者用来伪造激活服务端）
+            # 前端只用 device_name + app_version 展示，够用。
             # 只返回激活码前后 4 位便于用户确认，不泄露全码
             "code_hint": (
                 (st.code[:4] + "…" + st.code[-4:])
@@ -1203,6 +1213,43 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if route == "/api/components":
             self._json({"components": toolbox.component_statuses()})
+            return
+        if route == "/api/pick_file":
+            # 原生文件选择对话框（tkinter 走 Windows 系统 dialog）——
+            # HTML <input type=file> 出于沙箱安全**拿不到完整路径**，只能拿文件名，
+            # 所以显卡加速的「代表样本」输入必须走后端 dialog 取真实路径。
+            query = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+            exts_raw = query.get("exts") or "*.mp4 *.mov *.mkv"
+            path = ""
+            try:
+                import tkinter as _tk
+                from tkinter import filedialog as _fd
+                _root = _tk.Tk()
+                _root.withdraw()
+                _root.wm_attributes("-topmost", 1)
+                path = _fd.askopenfilename(
+                    filetypes=[("Video", exts_raw), ("All", "*.*")],
+                )
+                _root.destroy()
+            except Exception:  # noqa: BLE001
+                path = ""
+            self._json({"path": path or ""})
+            return
+        if route == "/api/path_exists":
+            # 前端「代表样本」等文件输入实时校验用；只返存在性 + is_file
+            # **不回显路径**（防止未激活/日志中泄露）；不含目录内容
+            query = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+            p = query.get("p") or ""
+            exists = False
+            is_file = False
+            try:
+                if p:
+                    _pp = os.path.abspath(p)
+                    exists = os.path.exists(_pp)
+                    is_file = os.path.isfile(_pp)
+            except Exception:  # noqa: BLE001
+                pass
+            self._json({"exists": bool(exists), "is_file": bool(is_file)})
             return
         if route == "/api/probe":
             # /api/probe 只做**轻量**探活：Edge TTS 走配置检查（live_check=False），
@@ -2178,26 +2225,13 @@ def serve(port: int = DEFAULT_PORT, open_browser: bool = True) -> ThreadingHTTPS
     # 授权：启动时若本地已有激活状态，尝试静默 start（拿新的 session_token
     # 并启动心跳线程）；网络失败/授权失效都不阻塞 server 启动 —— 用户会
     # 看到"未激活"页面并被引导重新输入激活码。
-    try:
-        mgr = _licensing_pkg.get_manager()
-        # RASP 检测：strict 模式（发行包 set DUB_ALIGN_RASP_STRICT=1）
-        # 检测到调试器/frida/vm/篡改 → 立即退出。
-        # 默认软报警：只记录，不退出，避免误伤真实用户。
-        try:
-            report = mgr.rasp_scan()
-            if report.suspicious and _licensing_pkg.rasp.strict_mode_enabled():
-                print(
-                    f"[FATAL] RASP 检测到高风险环境：{report.summary()}，"
-                    f"软件退出。若为误报请联系管理员。",
-                )
-                import sys as _sys
-                _sys.exit(3)
-        except Exception:  # noqa: BLE001
-            pass
-        mgr.start_from_saved()
-    except Exception:  # noqa: BLE001
-        pass
-
+    # RASP 检测：strict 模式下检测到就 sys.exit(3)。
+    # 不再用 try/except Exception 包住整个 RASP 分支（那样任何异常都会被吞掉，
+    # 攻击者只需触发一个 rasp.py 里的 import 错误就能绕过）。
+    # 单独 try 保 mgr.rasp_scan()（怕外部工具异常），但 exit 语句本身不被吞。
+    # 【关键顺序调整】socket bind 必须先于 licensing 网络 IO，
+    # 否则 licensing 服务器慢/不通 → start_from_saved 挂 30 秒 → socket 从没 bind
+    # → pywebview 抢先请求 URL 拿到 ERR_EMPTY_RESPONSE（用户看到的白屏×）
     server = None
     last_error: OSError | None = None
     for candidate in range(port, port + 20):  # 端口被占自动顺延，避免双击闪退
@@ -2209,6 +2243,45 @@ def serve(port: int = DEFAULT_PORT, open_browser: bool = True) -> ThreadingHTTPS
             last_error = exc
     if server is None:
         raise OSError(f"端口 {port}~{port + 19} 均被占用：{last_error}")
+
+    # ---------- 先立即 RASP 硬检查（打包版 strict 命中就退，不给启动机会） ----------
+    try:
+        mgr = _licensing_pkg.get_manager()
+    except Exception as _exc:  # noqa: BLE001
+        print(f"[FATAL] licensing 子系统初始化失败：{_exc}")
+        try:
+            from . import _build_info as _bi
+            if getattr(_bi, "PACKAGED", False):
+                import sys as _sys
+                _sys.exit(4)
+        except ImportError:
+            pass
+        mgr = None
+
+    if mgr is not None:
+        report = None
+        try:
+            report = mgr.rasp_scan()
+        except Exception as _exc:  # noqa: BLE001
+            print(f"[RASP] scan raised: {_exc}")
+        strict = _licensing_pkg.rasp.strict_mode_enabled()
+        if report is not None and report.suspicious and strict:
+            print(
+                f"[FATAL] RASP 检测到高风险环境：{report.summary()}，软件退出。"
+            )
+            import sys as _sys
+            _sys.exit(3)
+
+        # ---------- start_from_saved 放**后台线程** ----------
+        # 网络失败不再挂住主启动（现在 is_active 也是激活过就放行，
+        # 不再要 session_token 一定拿到手）
+        def _lic_boot():
+            try:
+                mgr.start_from_saved()
+            except Exception as _exc:  # noqa: BLE001
+                print(f"[license] start_from_saved (bg): {_exc}")
+        threading.Thread(target=_lic_boot, daemon=True,
+                         name="license-boot").start()
     from .version import full_version
 
     url = f"http://127.0.0.1:{port}/"

@@ -287,16 +287,30 @@ PIP_EXTRA = ["https://mirrors.aliyun.com/pypi/simple", "https://pypi.mirrors.ust
              "https://pypi.org/simple"]
 
 
+# 冻结 exe（PyInstaller windowed）里 subprocess 默认会弹黑色 cmd 窗，
+# 装 pip 组件等场景必须传 CREATE_NO_WINDOW 抑制。
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 def _py() -> str:
     """跑 pip/子进程用的 Python：源码运行=自身；打包 exe=桥接到的系统 Python。
 
-    exe 里的 sys.executable 是软件自己（没有 pip），直接用会静默失败——统一走这里。"""
+    exe 里的 sys.executable 是软件自己（没有 pip）。
+    【关键】冻结模式找不到系统 Python 时**绝不能返回 sys.executable**——那是本 app
+    的 exe，subprocess 起它会把整个前端窗口重新拉起来（用户看到的「不断跳出一模一样
+    的前端界面」）。此时直接抛清晰错误，让安装干净失败并提示装 Python。"""
     if getattr(sys, "frozen", False):
         from . import syspy
 
         found = syspy.system_python()
         if found is not None:
             return str(found)
+        v = sys.version_info
+        raise RuntimeError(
+            f"本机未找到系统 Python {v[0]}.{v[1]}——安装本地模型组件（PyTorch/dots.tts/"
+            f"fish-speech 等）需要它。请先安装 Python {v[0]}.{v[1]}（官网 python.org），"
+            f"或改用「整合离线版」。云配音/Edge TTS 不需要本地 Python。"
+        )
     return sys.executable
 
 
@@ -382,7 +396,7 @@ def _installed_dist_version(package: str) -> str:
     try:
         out = subprocess.check_output(
             [_py(), "-c", f"import importlib.metadata as m;print(m.version({package!r}))"],
-            text=True, stderr=subprocess.DEVNULL).strip()
+            text=True, stderr=subprocess.DEVNULL, creationflags=_NO_WINDOW).strip()
         return out.split("+")[0]
     except Exception:
         return ""
@@ -487,6 +501,7 @@ def _stream_command(cmd: list[str], log: LogFn, error: str, cwd: Path | None = N
         cmd, cwd=str(cwd) if cwd else None, env=env,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace",
+        creationflags=_NO_WINDOW,
     )
     if key:
         with _ACTIVE_LOCK:
@@ -665,6 +680,7 @@ def start_fish_server(log: LogFn, wait_seconds: float = 90.0) -> None:
             cmd, cwd=str(src), env=_fish_subprocess_env(),
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding="utf-8", errors="replace",
+            creationflags=_NO_WINDOW,
         )
         proc = _FISH_PROC
     tail: list[str] = []

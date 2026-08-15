@@ -169,14 +169,22 @@ def test_5_start_network_error_keeps_activated(mgr, monkeypatch):
 # --------------------------------------------------------------------------
 
 
-def test_6_is_active_requires_activated_and_token(mgr, monkeypatch):
-    assert mgr.is_active() is False   # 全空
+def test_6_is_active_persists_after_activation(mgr, monkeypatch):
+    """R15：激活后二次启动不再要 session_token。
+    只有 activated 断（未激活）或 last_action∈INVALID（明确失效）才回激活。"""
+    assert mgr.is_active() is False   # 全空 → 挡
     mgr.store.update(activated=True, code="X")
-    assert mgr.is_active() is False   # 无 session_token
+    assert mgr.is_active() is True    # activated + code → 放行（即使无 session_token；离线中）
     mgr.store.update(session_token="tok")
-    assert mgr.is_active() is True
+    assert mgr.is_active() is True    # 拿到 token 也放行
     mgr.store.update(last_action="expired")
-    assert mgr.is_active() is False   # action=expired
+    assert mgr.is_active() is False   # 到期 → 挡
+    mgr.store.update(last_action="")
+    assert mgr.is_active() is True    # 恢复
+    mgr.store.update(last_action="banned")
+    assert mgr.is_active() is False   # 封禁 → 挡
+    mgr.store.update(last_action="", activated=False)
+    assert mgr.is_active() is False   # deactivate → 挡
 
 
 def test_7_deactivate_clears_everything(mgr, monkeypatch):

@@ -279,9 +279,14 @@ footer b{color:var(--muted);font-weight:600}
     </div>
     <div class="lic-msg" id="license-msg"></div>
     <div class="lic-info">
-      <div>设备指纹（HWID）：<code id="license-hwid">—</code></div>
-      <div>软件 ID：<code id="license-app-id">—</code> · 版本：<code id="license-app-ver">—</code></div>
-      <div>授权服务器：<code id="license-server">—</code></div>
+      <!-- 只在展开时才显示设备/服务端信息，未激活状态默认不暴露 HWID / 服务器 URL -->
+      <details id="license-diag">
+        <summary style="cursor:pointer;font-size:12px;color:#888">高级信息（排障时展开）</summary>
+        <div style="margin-top:6px">
+          <div>设备指纹（HWID）：<code id="license-hwid">—</code></div>
+          <div>软件版本：<code id="license-app-ver">—</code></div>
+        </div>
+      </details>
       <div id="license-expire-line" style="display:none">当前授权到期：<code id="license-expire">—</code></div>
     </div>
   </div>
@@ -965,103 +970,68 @@ footer b{color:var(--muted);font-weight:600}
           <button class="btn gold" style="flex:1" onclick="run('envcheck','checklog')">🩺 环境自检</button></div>
         <p class="hint" style="margin-top:8px"><span id="pathToggle" style="cursor:pointer;color:var(--gold);user-select:none" onclick="togglePaths()">▸ 下载/存档存到哪里？（点击展开）</span></p>
         <p class="hint" id="pathHint" style="display:none;line-height:1.9;margin-top:4px"></p></div>
-      <div class="sp"><span class="f">☁ 云配音（远程 GPU）——本机太慢时，把配音克隆甩给云显卡；其余全在本地，本地路径照旧</span>
+      <div class="sp"><span class="f">☁ 云配音（远程 GPU）</span>
         <div class="row" style="margin-bottom:8px">
-          <input type="text" id="remoteEp" placeholder="云服务器地址，如 https://xxx.example.com（不含 /synthesize）">
+          <input type="text" id="remoteEp" placeholder="服务地址">
         </div>
         <div class="row" style="margin-bottom:8px">
-          <input type="password" id="remoteKey" placeholder="API Key（留空=不改；已设置会显示 ✓）">
-          <button class="btn line" style="flex:none" onclick="saveRemote()">💾 保存云配置</button>
-          <button class="btn" style="flex:none" onclick="testRemote()">🔌 测试连接</button>
+          <input type="password" id="remoteKey" placeholder="API Key">
+          <button class="btn line" style="flex:none" onclick="saveRemote()">保存</button>
+          <button class="btn" style="flex:none" onclick="testRemote()">测试</button>
         </div>
-        <p class="hint" id="remoteHint" style="line-height:1.8;margin-top:2px">填好后到「配音引擎」下拉里选 <b style="color:var(--gold)">dots.tts（云 GPU · 远程）</b> 即可用云显卡克隆。部署见 <code>server/</code> 目录的部署文档。</p></div>
-
-      <!-- ═══ 免费 Edge TTS（Cloudflare Worker · OpenAI 兼容接口 · 预设合成音色 · 非克隆） ═══ -->
-      <div class="sp" id="edgeTtsAnchor"><span class="f">🌐 免费 Edge TTS（Cloudflare Worker · 预设合成音色，不是克隆）</span>
-        <p class="hint" style="margin:2px 0 10px;line-height:1.8">
-          调用 <a href="https://github.com/wangwangit/tts" target="_blank" style="color:var(--gold)">wangwangit/tts（MIT）</a> 部署到 Cloudflare 的 Worker，背后是 <b>Microsoft Edge Read Aloud</b>。
-          <b style="color:#e08c58">建议部署到你自己的 Cloudflare 免费账户</b>；作者公共地址仅适合临时试用，
-          不保证稳定；免费额度归属你的账户。稳定性及生成内容授权不由本软件承诺。
-        </p>
-        <div class="row" style="gap:6px">
-          <input type="text" id="edgeEp" placeholder="Worker 服务根地址，如 https://xxx.workers.dev（软件自动拼 /v1/audio/speech）" style="flex:1">
-          <button class="btn line" style="flex:none" onclick="saveEdgeEndpoint()">💾 保存</button>
-          <button class="btn" style="flex:none" onclick="testEdgeEndpoint()">🔌 测试连接</button>
-        </div>
-        <p class="hint" style="margin-top:8px;line-height:1.8">
-          自建步骤（5 分钟）：
-          <a href="https://github.com/wangwangit/tts" target="_blank" style="color:var(--gold);text-decoration:underline">📖 wangwangit/tts（MIT）</a> ·
-          <a href="https://deploy.workers.cloudflare.com/?url=https://github.com/wangwangit/tts" target="_blank" style="color:var(--gold);text-decoration:underline">🚀 Deploy to Cloudflare Workers</a> ·
-          注册 <a href="https://dash.cloudflare.com/sign-up" target="_blank" style="color:var(--gold);text-decoration:underline">Cloudflare 免费账户</a> → 点 Deploy → 拿到 xxx.workers.dev 填入上方 → 引擎选 <b style="color:var(--gold)">Edge TTS（免费云端 · 预设音色 · 不支持克隆）</b>。
-        </p>
-        <p class="hint" id="edgeHint" style="line-height:1.8;margin-top:2px;color:var(--faint)">—— 未加载 ——</p>
       </div>
 
-      <!-- ═══ 云 GPU 会话（优云智算 / 通用 SSH）：一键唤醒 · 一键关机 · 空闲自动关（DPAPI 本机加密） ═══ -->
-      <div class="sp" id="cloudGpuAnchor"><span class="f">🖥 云 GPU 会话（SSH 唤醒 / 关机 · 可选 CompShare 云 API 停机不计费）</span>
-        <p class="hint" style="margin:2px 0 10px">
-          密码经 <b>Windows DPAPI</b> 加密后仅存本机（换机需重设）；
-          任务活跃时不触发自动关，空闲 <b><span id="cgIdleMinDisp">5</span></b> 分钟才关。
-          <span id="cgCredWarn" style="color:#e08c58;display:none">·（当前机器无 DPAPI，密码降级明文存储）</span>
-        </p>
+      <div class="sp" id="edgeTtsAnchor"><span class="f">🌐 Edge TTS 服务端</span>
+        <div class="row" style="gap:6px">
+          <input type="text" id="edgeEp" placeholder="https://xxx.workers.dev" style="flex:1">
+          <button class="btn line" style="flex:none" onclick="saveEdgeEndpoint()">保存</button>
+          <button class="btn" style="flex:none" onclick="testEdgeEndpoint()">测试</button>
+        </div>
+        <p class="hint" id="edgeHint" style="line-height:1.4;margin-top:4px;color:var(--faint);font-size:12px"></p>
+      </div>
+
+      <div class="sp" id="cloudGpuAnchor"><span class="f">🖥 云 GPU 会话</span>
         <div class="row" style="gap:12px;margin-bottom:8px;flex-wrap:wrap">
           <span class="mini" style="flex:none">停机方式</span>
-          <label class="row mini" style="gap:6px"><input type="radio" name="cgProvider" value="ssh" checked onchange="onProviderChange()">SSH · sudo shutdown</label>
-          <label class="row mini" style="gap:6px"><input type="radio" name="cgProvider" value="compshare" onchange="onProviderChange()">CompShare 云 API · StopUHostInstance（真正停机不计费）</label>
+          <label class="row mini" style="gap:6px"><input type="radio" name="cgProvider" value="ssh" checked onchange="onProviderChange()">SSH shutdown</label>
+          <label class="row mini" style="gap:6px"><input type="radio" name="cgProvider" value="compshare" onchange="onProviderChange()">CompShare API</label>
         </div>
-        <p class="hint" style="margin:6px 0 8px;line-height:1.8">
-          <b style="color:var(--gold)">对齐优云智算控制台：</b>
-          实例卡里点「ssh登录指令 ssh*****」旁的📋 → 粘贴的字符串形如 <code>ssh -p <b>34567</b> root@<b>117.50.190.54</b></code>，
-          <b>-p</b> 后是端口，<b>@</b> 后是主机；密码到「密码 *****」点👁/📋看明文。
-        </p>
+        <span id="cgIdleMinDisp" style="display:none">5</span>
+        <span id="cgCredWarn" style="display:none"></span>
         <div class="grid g2e" style="gap:8px">
           <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:60px">主机</span>
-            <input type="text" id="cgHost" placeholder="控制台「基础网络（外网）」的 IP，如 117.50.190.54" style="flex:1"></div>
+            <input type="text" id="cgHost" style="flex:1"></div>
           <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:60px">端口</span>
-            <input type="number" id="cgPort" value="22" min="1" max="65535" style="width:80px" title="从「ssh登录指令」的 -p 后取；容器实例通常不是 22"></div>
+            <input type="number" id="cgPort" value="22" min="1" max="65535" style="width:80px"></div>
           <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:60px">用户</span>
             <input type="text" id="cgUser" value="root" style="flex:1"></div>
           <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:60px">密码</span>
-            <input type="password" id="cgPass" placeholder="控制台「密码」字段的明文（首次必填一次）" style="flex:1"></div>
+            <input type="password" id="cgPass" style="flex:1"></div>
         </div>
         <div class="row" style="gap:6px;margin-top:8px"><span class="mini" style="flex:none;width:60px">密钥</span>
-          <input type="text" id="cgKey" placeholder="（可选）私钥路径，如 C:\Users\me\.ssh\id_ed25519（有则优先密码）" style="flex:1"></div>
+          <input type="text" id="cgKey" style="flex:1"></div>
         <div class="row" style="gap:6px;margin-top:8px"><span class="mini" style="flex:none;width:60px">唤醒命令</span>
-          <input type="text" id="cgWake" placeholder="机器开机后要跑的命令，比如：nohup bash /root/start_dots.sh &（关机状态 SSH 连不上，需先控制台点启动）" style="flex:1"></div>
+          <input type="text" id="cgWake" style="flex:1"></div>
         <div class="row" style="gap:6px;margin-top:8px"><span class="mini" style="flex:none;width:60px">关机命令</span>
           <input type="text" id="cgSleep" value="sudo shutdown -h now" style="flex:1"></div>
         <div class="row" style="gap:6px;margin-top:8px"><span class="mini" style="flex:none;width:60px">探活 URL</span>
-          <input type="text" id="cgHealth" placeholder="判定服务已上线的 URL，如 http://外网IP:8080/health；没 /health 就填服务根地址" style="flex:1"></div>
+          <input type="text" id="cgHealth" style="flex:1"></div>
         <div class="row" style="gap:12px;margin-top:8px;flex-wrap:wrap">
           <label class="row mini" style="gap:6px"><input type="checkbox" id="cgEnabled">启用云 GPU 会话</label>
           <label class="row mini" style="gap:6px"><input type="checkbox" id="cgAuto" checked>空闲自动关机</label>
           <span class="mini">空闲阈值(分钟) <input type="number" id="cgIdleMin" value="5" min="1" max="240" style="width:60px" oninput="document.getElementById('cgIdleMinDisp').textContent=this.value"></span>
           <button class="btn line" style="flex:none" onclick="saveCloudGpu()">💾 保存云 GPU 配置</button>
         </div>
-        <!-- CompShare 云 API（默认折起；provider=compshare 时展开） -->
         <div id="cgCsBox" style="display:none;border-top:1px dashed var(--line);margin-top:10px;padding-top:10px">
-          <p class="hint" style="margin:0 0 8px;line-height:1.8">
-            <b style="color:#e08c58">⚠ 未验证：</b>
-            优云智算的 GPU 容器实例 API 规格尚未在软件里对齐，此处默认按 UCloud OpenAPI（<code>api.ucloud.cn</code> · <code>StopUHostInstance</code>）尝试。
-            若报错，会自动回退 SSH shutdown 兜底；把返回的 <code>RetCode/Message</code> 反馈可按真实文档改。
-          </p>
-          <p class="hint" style="margin:0 0 8px;line-height:1.8">
-            <b style="color:var(--gold)">对齐控制台三处即可：</b>
-            <b>Public Key / Private Key</b> 到「API 密钥」页点📋复制；
-            <b>Instance ID</b> 到实例卡「ID: uhost-xxxxxxxx」点📋复制。
-            <a href="https://console.compshare.cn/light-gpu/api-keys" target="_blank" style="color:var(--gold);text-decoration:underline">🔑 打开 API 密钥页</a> ·
-            <a href="https://console.compshare.cn/light-gpu/instance" target="_blank" style="color:var(--gold);text-decoration:underline">🖥 打开实例列表</a>
-          </p>
           <div class="grid g2e" style="gap:8px">
             <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:88px">API Endpoint</span>
-              <input type="text" id="csEndpoint" value="https://api.ucloud.cn/" style="flex:1"
-                     title="默认 UCloud 网关；若优云智算文档给了独立 endpoint 请覆盖"></div>
+              <input type="text" id="csEndpoint" value="https://api.ucloud.cn/" style="flex:1"></div>
             <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:88px">Instance ID</span>
-              <input type="text" id="csInstance" placeholder="如 uhost-1tx6jx1ufb1a（图1「ID:」旁点📋）" style="flex:1"></div>
+              <input type="text" id="csInstance" style="flex:1"></div>
             <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:88px">Public Key</span>
-              <input type="text" id="csPub" placeholder="控制台「API 密钥」→「公钥」列点📋" style="flex:1"></div>
+              <input type="text" id="csPub" style="flex:1"></div>
             <div class="row" style="gap:6px"><span class="mini" style="flex:none;width:88px">Private Key</span>
-              <input type="password" id="csSec" placeholder="控制台「API 密钥」→「私钥」列点📋（DPAPI 本机加密）" style="flex:1"></div>
+              <input type="password" id="csSec" style="flex:1"></div>
           </div>
           <!-- 高级：Region/Zone/Project 容器实例通常不需要；控制台文档若要求再填 -->
           <p style="margin:10px 0 4px">
@@ -1100,18 +1070,72 @@ footer b{color:var(--muted);font-weight:600}
         </div>
         <p class="hint" id="cgHint" style="margin-top:6px;line-height:1.7">—— 未加载 ——</p>
       </div>
-      <p class="hint">缺什么点击即可下载/安装（多源 + SHA256 校验 + 断点续传）；<b style="color:var(--gold)">多个下载可同时进行</b>，互不阻塞，进度在下方与各行实时显示。</p>
-      <div id="compList"><p class="empty">读取中…</p></div>
-      <div class="console" id="dlog" style="height:150px;margin-top:14px"><span class="dim">—— 下载/安装日志 · 多任务并行 ——</span></div>
     </div>
 
     <div class="card">
       <h2>链路自检</h2>
-      <div class="row" style="margin-bottom:12px">
-        <button class="btn line" onclick="run('probe','checklog')">探测组件（详细）</button>
-        <button class="btn line" onclick="run('verify','checklog')">端到端渲染自检</button>
+      <!-- 激活码有效期倒计时 -->
+      <div id="licExpireBox" style="display:none;margin-bottom:10px;padding:8px 12px;background:rgba(255,215,0,0.05);border-left:3px solid var(--gold);border-radius:4px;font-size:13px">
+        <span>授权剩余：</span><b id="licExpireCountdown" style="color:var(--gold)">—</b>
+        <span id="licExpireAt" style="color:var(--faint);font-size:12px;margin-left:8px"></span>
       </div>
-      <div class="console" id="checklog" style="height:262px"><span class="dim">—— 就绪 ——</span></div>
+      <div class="row" style="margin-bottom:12px">
+        <button class="btn line" onclick="run('probe','checklog');loadComponents()">探测组件（详细）</button>
+        <button class="btn line" onclick="run('verify','checklog')">端到端渲染自检</button>
+        <button class="btn line" onclick="loadComponents()">刷新状态</button>
+      </div>
+      <script>
+      (function(){
+        // expire_at 是服务端下发的 UTC 字符串 "YYYY-MM-DD HH:MM:SS"（不是 epoch 秒）
+        function parseUtc(s){
+          if (!s) return null;
+          // "2026-08-18 14:32:00" → Date（按 UTC 解析）
+          const m = String(s).trim().match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/);
+          if (!m) return null;
+          const t = Date.UTC(+m[1], +m[2]-1, +m[3], +m[4], +m[5], +m[6]);
+          return isNaN(t) ? null : t;
+        }
+        function fmtRemain(ms){
+          if (ms <= 0) return "已过期";
+          const sec = Math.floor(ms / 1000);
+          const d = Math.floor(sec / 86400);
+          const h = Math.floor((sec % 86400) / 3600);
+          const m = Math.floor((sec % 3600) / 60);
+          if (d > 0) return d + " 天 " + h + " 时";
+          if (h > 0) return h + " 时 " + m + " 分";
+          return Math.max(1, m) + " 分";
+        }
+        async function tickExpire(){
+          const box = document.getElementById("licExpireBox");
+          const cd = document.getElementById("licExpireCountdown");
+          const at = document.getElementById("licExpireAt");
+          if (!box || !cd) return;
+          try {
+            const r = await fetch("/api/license/status", {cache: "no-store"});
+            if (!r.ok) { box.style.display = "none"; return; }
+            const j = await r.json();
+            // 只在「已激活 && 服务端真实下发了到期时间」时才显示倒计时
+            // 未激活 / gate 未启用 / 无 expire_at → 不显示（避免 1970 假倒计时）
+            const expMs = parseUtc(j.expire_at);
+            if (!j.activated || !j.gate_enabled || expMs === null) {
+              box.style.display = "none";
+              return;
+            }
+            const remain = expMs - Date.now();
+            box.style.display = "";
+            cd.textContent = fmtRemain(remain);
+            cd.style.color = remain < 3 * 86400 * 1000 ? "#e57373" : "var(--gold)";
+            if (at) at.textContent = "（" + new Date(expMs).toLocaleString() + " 到期）";
+          } catch (e) { box.style.display = "none"; }
+        }
+        tickExpire();
+        setInterval(tickExpire, 60000);   // 每 60s 刷一次
+      })();
+      </script>
+      <!-- 组件下载列表（原在左侧下方，用户要求移到这里；带 SHA256 校验 + 断点续传） -->
+      <div id="compList"><p class="empty">读取中…</p></div>
+      <div class="console" id="dlog" style="height:120px;margin-top:8px"><span class="dim">—— 下载/安装日志 ——</span></div>
+      <div class="console" id="checklog" style="height:120px;margin-top:8px"><span class="dim">—— 就绪 ——</span></div>
     </div>
   </div>
 </section>
@@ -3174,9 +3198,7 @@ renderMyColors();loadTpls();renderOverlays();loadState();loadComponents();loadSe
   const btnAct = document.getElementById('license-btn-activate');
   const btnRef = document.getElementById('license-btn-refresh');
   const hwid   = document.getElementById('license-hwid');
-  const appId  = document.getElementById('license-app-id');
   const appVer = document.getElementById('license-app-ver');
-  const server = document.getElementById('license-server');
   const expLine= document.getElementById('license-expire-line');
   const expEl  = document.getElementById('license-expire');
 
@@ -3185,10 +3207,11 @@ renderMyColors();loadTpls();renderOverlays();loadState();loadComponents();loadSe
     msg.className = 'lic-msg' + (kind ? (' ' + kind) : '');
   }
   function fillInfo(st){
-    hwid.textContent   = st.device_name || '—';
-    appId.textContent  = st.app_id || '—';
-    appVer.textContent = st.app_version || '—';
-    server.textContent = st.server || '—';
+    // HWID 从设备实际值改用截断哈希，防止暴露原始机器名（避免社工 / 定位）
+    const dn = String(st.device_name || '');
+    if (hwid) hwid.textContent = dn ? (dn.substring(0, 4) + '****' + dn.substring(dn.length - 2)) : '—';
+    if (appVer) appVer.textContent = st.app_version || '—';
+    // 不再回填 app_id / server —— 避免未激活状态就暴露服务端地址
     if(st.expire_at){
       expEl.textContent = st.expire_at + ' UTC';
       expLine.style.display = '';

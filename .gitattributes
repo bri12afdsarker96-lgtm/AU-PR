@@ -7,4 +7,5 @@
 # PowerShell 兼容 LF，但仍以 CRLF 为准
 *.ps1 text eol=crlf
 *.iss -text
+*.isl -text
 *.ico binary

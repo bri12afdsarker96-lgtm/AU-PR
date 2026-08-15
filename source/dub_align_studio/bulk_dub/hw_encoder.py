@@ -63,8 +63,11 @@ def _list_encoders(ffmpeg: str) -> set[str]:
 
 def _sample_encode(ffmpeg: str, encoder: str, extra_args: list[str]) -> tuple[bool, str]:
     cmd = [
-        ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
-        "-f", "lavfi", "-i", "testsrc=size=320x240:duration=2:rate=15",
+        # loglevel=warning 而非 error：nvenc「要求驱动版本 X.Y」这类关键信息
+        # 有时记在 warning 级，用 error 会被吞掉。用 720p 而非 320x240——
+        # 某些 nvenc 对过小分辨率会报无关错误，掩盖真正的驱动问题。
+        ffmpeg, "-y", "-hide_banner", "-loglevel", "warning",
+        "-f", "lavfi", "-i", "testsrc=size=1280x720:duration=1:rate=30",
         "-c:v", encoder, *extra_args,
         "-f", "null", null_sink(),
     ]
@@ -76,8 +79,19 @@ def _sample_encode(ffmpeg: str, encoder: str, extra_args: list[str]) -> tuple[bo
         return False, f"探测失败：{exc}"
     if completed.returncode == 0:
         return True, "样本编码通过"
-    tail = (completed.stderr or completed.stdout or "").strip()[-200:]
-    return False, f"样本编码失败：{tail or '未知错误'}"
+    out = (completed.stderr or completed.stdout or "").strip()
+    # 优先提取真正有用的那一行（含 encoder 名 / driver / nvenc / api / cuda 等关键字），
+    # 而不是取尾部（尾部往往是 "Terminating thread / Nothing was written" 的无用收尾）。
+    keywords = (encoder, "driver", "nvenc", "api version", "nvcuda",
+                "cuda", "not support", "minimum required", "qsv", "amf",
+                "no capable", "no device")
+    hits = []
+    for line in out.splitlines():
+        low = line.lower()
+        if any(k.lower() in low for k in keywords):
+            hits.append(line.strip())
+    detail = " / ".join(hits[:3]) if hits else out[-200:]
+    return False, f"样本编码失败：{detail or '未知错误'}"
 
 
 def probe_family(ffmpeg: str, family: str) -> EncoderProbe:

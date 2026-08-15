@@ -51,6 +51,55 @@ python -m dub_align_studio
 | **构建 metadata** | `pyproject.toml` `setup.py` `requirements*.txt` | 依赖树/内部包名 |
 | **虚拟环境** | `.venv/` `venv/` | 巨大且含全部依赖源 |
 
+## 0.3 一键 exe 安装器（用户零依赖）
+
+面向最终用户的发行形态：**单文件 setup exe**，双击安装向导，无需 Python / ffmpeg / vcredist。
+
+### 打包流程（开发者机器一次配置）
+
+1. **装 Inno Setup 6**：https://jrsoftware.org/isdl.php （国内镜像也有）
+2. **装编译依赖**：`pip install nuitka cython`
+3. **准备 ffmpeg**：把 `ffmpeg.exe` 和 `ffprobe.exe` 放到 `tools/ffmpeg/`（essentials 裁剪版约 40MB，LZMA2 后约 15MB）
+   - 也可让 build_dist 从 PATH 兜底找，但不推荐（用户机构版本可能差异过大）
+4. **一键打包**：
+   ```bat
+   双击 打包_安装器.bat
+   ```
+   → 自动串联 `build_dist.py --with-ffmpeg --require-ffmpeg` + `ISCC.exe installer.iss`
+   → 产物：`dist\安装器\setup_水星配音对齐工作室_v0.7.71_lite.exe`
+
+### 减负核心（installer.iss）
+
+| 手段 | 效果 |
+| --- | --- |
+| `Compression=lzma2/ultra64` | payload 通常压到 40~60% 体积 |
+| `SolidCompression=yes` | 相似文件共享词典，进一步压缩 |
+| `LZMAUseSeparateProcess=yes` | 加快编译（多核） |
+| `Excludes=*.py,*.pyc,__pycache__,tests,docs,settings.json,license.json,queue.sqlite3,gpu_state.json,*.md` | 双保险，防误打包敏感/无用文件 |
+| ffmpeg 用 essentials 版 | 完整版 ~150MB → essentials ~40MB → LZMA2 后 ~15MB |
+| Nuitka `--standalone` 已剥离调试符号 | 主 exe 也小一圈 |
+
+### 用户体验
+
+1. 双击 `setup_水星配音对齐工作室_v0.7.71_lite.exe`
+2. Windows 10 及以上 → 通过 `InitializeSetup()` 版本检查
+3. 选安装目录 → 选是否创建桌面快捷方式
+4. 进度条完成 → 可选立即启动
+5. 首次启动进入激活码 gate（`DUB_ALIGN_LICENSE_REQUIRED=1` 由 `启动软件.bat` 注入）
+
+### 卸载
+
+- 控制面板 → 程序和功能 → 找到 "水星配音对齐工作室 v0.7.71" 卸载
+- **保留用户数据**：只删安装目录，不动 `~/我的文档\水星配音数据` 和 `~/.dub_align_studio/`
+- 卸载器会清理 `_MEIPASS*` / `__pycache__` 等临时残留
+
+### 代码签名（可选，商用推荐）
+
+`installer.iss` 里的 `SignTool` 指令已留占位；有 EV 证书时取消注释即可，产物签名后能：
+- 免 SmartScreen 警告
+- 提高 Windows Defender 信任度
+- 显示发布者名称而不是 "Unknown"
+
 ---
 
 

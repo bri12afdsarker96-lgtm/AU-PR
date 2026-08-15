@@ -17,6 +17,23 @@ from .plugins import ToolPlugin, plugin_catalog, plugin_statuses
 ProgressCallback = Callable[[int, int | None], None]
 
 
+def _ssl_context():
+    """HTTPS 用 SSL context——冻结 exe 缺 CA 证书会导致 HF/GitHub 下载失败。
+    显式用 certifi 的 cacert.pem（certifi 已在打包 spec 里）。"""
+    import ssl
+    try:
+        import certifi  # type: ignore[import-not-found]
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:  # noqa: BLE001
+        try:
+            return ssl.create_default_context()
+        except Exception:  # noqa: BLE001
+            return None
+
+
+_SSL_CTX = _ssl_context()
+
+
 @dataclass
 class ComponentDownloadResult:
     key: str
@@ -66,7 +83,8 @@ def _download_once(url: str, target: Path, progress: ProgressCallback | None = N
     if existing:
         headers["Range"] = f"bytes={existing}-"
     request = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request, timeout=60) as response:
+    _ctx = _SSL_CTX if url.lower().startswith("https") else None
+    with urllib.request.urlopen(request, timeout=60, context=_ctx) as response:
         status = getattr(response, "status", response.getcode())
         restarted_without_range = False
         if existing and status != 206:

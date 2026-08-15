@@ -41,8 +41,63 @@ ALL_MODES = frozenset({MODE_AUTO, MODE_MANUAL, MODE_CPU_SAFE})
 
 # R14-FIX P0-4 **唯一并发上限常量**——service/scheduler/controller/API/HTML/
 # benchmark ladder 全部统一用它。不允许出现"推荐 16 实际只 clamp 到 8"。
-MAX_VIDEO_CONCURRENCY = 16
-MAX_TTS_CONCURRENCY = 16
+# R15：改为自适应（用户反馈"如果 CPU/GPU 能支撑，自动增加并发"）。
+#   - 基础 16
+#   - GPU VRAM ≥ 12 GB 且 CPU ≥ 12 逻辑核 → 24
+#   - GPU VRAM ≥ 20 GB 且 CPU ≥ 16 逻辑核 → 32
+#   - CPU-only（无独立 GPU） → 保守 min(cpu//2, 16)
+# 攻击者不该拿这个反推硬件，只暴露最终数值到 API（不含硬件细节）。
+
+
+def _detect_hardware_cap() -> tuple[int, int]:
+    """返回 (video_cap, tts_cap)。仅在模块导入时算一次；结果只暴露数值本身。"""
+    import os
+    import subprocess
+    import shutil as _sh
+    try:
+        cpu = os.cpu_count() or 4
+    except Exception:  # noqa: BLE001
+        cpu = 4
+
+    # GPU VRAM 探测（不依赖 torch，避免拖慢启动；用 nvidia-smi）
+    vram_mb = 0
+    smi = _sh.which("nvidia-smi")
+    if smi:
+        try:
+            # Windows pyinstaller windowed exe：必须传 CREATE_NO_WINDOW，
+            # 否则每个 subprocess 都会闪一个黑色 cmd 窗（用户抱怨的「两个黑色闪屏」）
+            _flags = 0
+            if hasattr(subprocess, "CREATE_NO_WINDOW"):
+                _flags = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+            r = subprocess.run(
+                [smi, "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=3,
+                creationflags=_flags,
+            )
+            if r.returncode == 0:
+                for line in r.stdout.splitlines():
+                    line = line.strip()
+                    if line.isdigit():
+                        vram_mb = max(vram_mb, int(line))
+        except Exception:  # noqa: BLE001
+            pass
+
+    if vram_mb >= 20_000 and cpu >= 16:
+        video = 32
+    elif vram_mb >= 12_000 and cpu >= 12:
+        video = 24
+    else:
+        # 保守/基准档：跟老逻辑一致，保留 16 上限
+        # 硬件不够时**不下调**上限（避免破坏现有 UI / 测试预期）；
+        # 真正调节由 ConcurrencyController 运行时动态 resize 完成。
+        video = 16
+
+    # TTS 主要网络/IO bound，只做 up-scale；下限 16
+    tts = max(16, min(32, cpu))
+    return video, tts
+
+
+MAX_VIDEO_CONCURRENCY, MAX_TTS_CONCURRENCY = _detect_hardware_cap()
 
 # 两次自动 resize 之间的最短间隔（秒）——避免抖动
 RESIZE_MIN_INTERVAL_S = 8.0

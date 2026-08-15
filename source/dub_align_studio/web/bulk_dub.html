@@ -113,6 +113,7 @@
         <option value="cpu">CPU 兼容模式</option>
       </select>
     </label>
+    <button id="btnEncDiag" class="secondary" title="逐个探测 NVIDIA/Intel/AMD 编码器，看能不能用显卡编码">GPU 编码自检</button>
     <label><input type="checkbox" id="ackDisk"> 已确认磁盘空间充足</label>
     <button id="btnStart">开始批量处理</button>
     <button id="btnPause" class="warn">全局暂停</button>
@@ -120,11 +121,13 @@
     <button id="btnPauseBatch" class="warn">暂停当前批次</button>
     <button id="btnResumeBatch" class="secondary">恢复当前批次</button>
     <button id="btnCancelWait" class="danger">取消等待任务</button>
+    <button id="btnClearBatch" class="danger">清空本批（取消+删除）</button>
     <button id="btnRetryFail" class="secondary">重试失败项</button>
     <button id="btnRetryRetryable" class="secondary">仅重试可重试错误</button>
     <button id="btnCSV" class="secondary">导出结果 CSV</button>
   </div>
   <div id="messages"></div>
+  <div id="encDiagBox" style="display:none;margin:8px 0;padding:10px 12px;border-radius:8px;background:#1a1f2b;border:1px solid #2a3350;font-size:13px;line-height:1.8"></div>
 </div>
 
 <div class="panel">
@@ -164,8 +167,10 @@
     <button id="btnGpuApplyProfile" class="secondary" title="按 profile.recommended_concurrency 设置视频池">应用推荐并发</button>
   </div>
   <div class="row" style="margin-top:6px">
-    <label>代表样本 <input type="text" id="gpuSample" style="flex:1" placeholder="/path/to/10s_representative_video.mp4"></label>
+    <label>代表样本 <input type="text" id="gpuSample" style="flex:1" placeholder="10s 代表性视频路径" oninput="validateGpuSample()"></label>
+    <button type="button" onclick="pickGpuSample()">选择文件</button>
     <button id="btnGpuBench">测显卡（跑基准）</button>
+    <span id="gpuSampleStatus" style="font-size:12px;margin-left:4px"></span>
     <button id="btnGpuCancelBench" class="secondary">取消基准</button>
   </div>
   <div id="gpuStatus" class="estimate-note" style="margin-top:6px">
@@ -428,7 +433,7 @@ function renderTasks(tasks) {
     if (t.stage) stageBits.push(escapeHtml(t.stage));
     if (t.error_type) stageBits.push("<b>" + escapeHtml(t.error_type) + "</b>");
     if (warnTip) stageBits.push('<span title="' + escapeHtml(warnTip) + '">⚠ ' + t.warnings.length + '</span>');
-    tr.innerHTML =
+    let html =
       "<td>" + t.excel_row + "</td>" +
       "<td title=\"" + escapeHtml(t.input_video) + "\">" +
       escapeHtml((t.input_video.split(/[/\\]/).pop()) || t.input_video) + "</td>" +
@@ -440,9 +445,16 @@ function renderTasks(tasks) {
       "<td title=\"" + escapeHtml(t.output_path) + "\">" +
       escapeHtml(((t.output_path || "").split(/[/\\]/).pop()) || "-") + "</td>" +
       "<td>" + durText + "</td>" +
-      "<td>" + t.attempts + "</td>" +
-      "<td><button class=\"danger\" data-cancel=\"" + t.task_id + "\" " +
-      (t.status === 'completed' ? 'disabled' : '') + ">取消</button></td>";
+      "<td>" + t.attempts + "</td>";
+    // 终态任务（completed/failed/cancelled/interrupted/output_committed）→「删除」按钮
+    // 活动态（等待/正在跑）→「取消」按钮。这样按钮永远对当前状态有效。
+    var TERMINAL = ["completed","failed","cancelled","interrupted","output_committed"];
+    if (TERMINAL.indexOf(t.status) >= 0) {
+      html += "<td><button class=\"secondary\" data-delete=\"" + t.task_id + "\">删除</button></td>";
+    } else {
+      html += "<td><button class=\"danger\" data-cancel=\"" + t.task_id + "\">取消</button></td>";
+    }
+    tr.innerHTML = html;
     tb.appendChild(tr);
   }
   tb.querySelectorAll("[data-cancel]").forEach(b => {
@@ -450,6 +462,14 @@ function renderTasks(tasks) {
       try {
         await api("POST", "/api/bulk_dub/cancel_task?task_id=" + b.dataset.cancel);
       } catch (e) { state.msg("取消失败：" + e.message, "err-msg"); }
+      refreshTasks();
+    };
+  });
+  tb.querySelectorAll("[data-delete]").forEach(b => {
+    b.onclick = async () => {
+      try {
+        await api("POST", "/api/bulk_dub/delete_task?task_id=" + b.dataset.delete);
+      } catch (e) { state.msg("删除失败：" + e.message, "err-msg"); }
       refreshTasks();
     };
   });
@@ -631,6 +651,36 @@ $("btnCancelWait").onclick = async () => {
   } catch (e) { state.msg("取消失败：" + e.message, "err-msg"); }
   refreshTasks();
 };
+$("btnEncDiag").onclick = async () => {
+  const box = $("encDiagBox");
+  box.style.display = "";
+  box.innerHTML = "正在探测各编码器（约几秒）…";
+  try {
+    const j = await api("GET", "/api/bulk_dub/encoder_diagnose");
+    let rows = (j.families || []).map(f => {
+      const mark = f.ok ? '<span style="color:#4caf50">✓ 可用</span>'
+                        : '<span style="color:#e57373">✗ 不可用</span>';
+      const name = {nvidia:"NVIDIA", intel:"Intel", amd:"AMD", cpu:"CPU"}[f.family] || f.family;
+      return "<div><b>" + name + "</b>（" + f.encoder + "）：" + mark
+           + " <span style='color:#8a94a6'>" + (f.detail || "") + "</span></div>";
+    }).join("");
+    const hint = j.hint ? ("<div style='margin-top:8px;color:#e0b060'><b>结论：</b>" + j.hint + "</div>") : "";
+    const ff = "<div style='color:#8a94a6;margin-bottom:6px'>ffmpeg: " + (j.ffmpeg || "-")
+             + "　·　带 nvenc: " + (j.nvenc_in_ffmpeg ? "是" : "否") + "</div>";
+    box.innerHTML = ff + rows + hint;
+  } catch (e) {
+    box.innerHTML = "<span style='color:#e57373'>自检失败：" + (e.message || e) + "</span>";
+  }
+};
+$("btnClearBatch").onclick = async () => {
+  if (!state.currentBatch) return state.msg("请先选择或创建批次", "err-msg");
+  if (!confirm("将取消本批次所有等待任务，并删除所有已结束（完成/失败/已取消）的任务。\n正在运行的任务会转为取消中，收敛后再点一次可清掉。确定？")) return;
+  try {
+    const j = await api("POST", "/api/bulk_dub/clear_batch?batch_id=" + state.currentBatch);
+    state.msg("已取消 " + (j.cancelled || 0) + " 条、删除 " + (j.deleted || 0) + " 条", "ok-msg");
+  } catch (e) { state.msg("清空失败：" + e.message, "err-msg"); }
+  refreshTasks();
+};
 $("btnRetryFail").onclick = async () => {
   if (!state.currentBatch) return state.msg("请先选择批次", "err-msg");
   try {
@@ -717,9 +767,69 @@ async function refreshBenchStatus() {
   } catch (e) {}
 }
 
+// 实时校验代表样本路径：存在 → 绿色 √；不存在/空 → 红色 × 并禁用「测显卡」
+let _gpuSampleValid = false;
+let _gpuSampleTimer = null;
+async function validateGpuSample() {
+  const el = $("gpuSample");
+  const st = $("gpuSampleStatus");
+  const btn = $("btnGpuBench");
+  const sv = (el.value || "").trim();
+  clearTimeout(_gpuSampleTimer);
+  if (!sv) {
+    _gpuSampleValid = false;
+    el.style.borderColor = "";
+    if (st) st.textContent = "";
+    if (btn) btn.disabled = true;
+    return;
+  }
+  // 输入防抖 400ms 再问后端
+  _gpuSampleTimer = setTimeout(async () => {
+    try {
+      const r = await api("GET", "/api/path_exists?p=" + encodeURIComponent(sv));
+      if (r && r.exists && r.is_file) {
+        _gpuSampleValid = true;
+        el.style.borderColor = "#4caf50";
+        if (st) { st.textContent = "√ 文件存在"; st.style.color = "#4caf50"; }
+        if (btn) btn.disabled = false;
+      } else {
+        _gpuSampleValid = false;
+        el.style.borderColor = "#e57373";
+        if (st) { st.textContent = "× 文件不存在"; st.style.color = "#e57373"; }
+        if (btn) btn.disabled = true;
+      }
+    } catch (e) {
+      _gpuSampleValid = false;
+      el.style.borderColor = "#e57373";
+      if (st) { st.textContent = "× 校验失败"; st.style.color = "#e57373"; }
+      if (btn) btn.disabled = true;
+    }
+  }, 400);
+}
+document.addEventListener("DOMContentLoaded", () => setTimeout(validateGpuSample, 300));
+
+// 走后端 tkinter 原生 dialog 拿真实文件路径
+// （HTML <input type=file> 出于沙箱安全只能拿到文件名，不能拿完整路径）
+async function pickGpuSample() {
+  try {
+    const r = await api("GET", "/api/pick_file?exts=" + encodeURIComponent("*.mp4 *.mov *.mkv"));
+    if (r && r.path) {
+      $("gpuSample").value = r.path;
+      validateGpuSample();
+    }
+  } catch (e) {
+    alert("文件选择失败：" + (e.message || e));
+  }
+}
+
 async function gpuStartBench() {
   const sv = ($("gpuSample").value || "").trim();
   if (!sv) { alert("请填代表性视频路径"); return; }
+  if (!_gpuSampleValid) {
+    alert("代表样本视频不存在，请选择/输入有效路径");
+    validateGpuSample();
+    return;
+  }
   try {
     await api("POST", "/api/bulk_dub/gpu/start_benchmark?sample_video="
                        + encodeURIComponent(sv));

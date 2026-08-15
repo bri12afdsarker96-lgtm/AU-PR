@@ -46,6 +46,19 @@ vendor_tools/
 build/
 dist/
 *.spec
+# 但 installer/ 下的 spec 是打包脚本源码，必须入库
+!installer/*.spec
+
+# Cython 中间产物（licensing/*.c）
+source/dub_align_studio/licensing/*.c
+source/dub_align_studio/licensing/*.pyd
+source/dub_align_studio/licensing/*.so
+
+# 打包工作目录 / 归档 / 旧命名产物（不入库）
+_archive_旧打包_*/
+打包产物/
+轻量云配版包/
+tools/ffmpeg/
 
 # 软件运行时数据总目录
 水星配音数据/
@@ -54,3 +67,10 @@ source/dub_align_studio/_build_info.py
 # 发布压缩包（带版本号）
 发布包/
 *.zip
+
+# Cython 打包临时（源码备份 + 计数文件）
+.licensing_src_backup/
+_cython_count.tmp
+
+# _build_info 密钥临时文件（打包时短暂存在）
+.build_info_key.tmp
