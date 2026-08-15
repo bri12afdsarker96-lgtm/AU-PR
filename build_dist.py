@@ -406,6 +406,28 @@ def bundle_ffmpeg(dist_dir: Path) -> int:
         except OSError:
             _log(f"内嵌 {name}  <-  {src}")
         n += 1
+
+    # 【关键】内嵌完 ffmpeg 立刻验证它带不带 h264_nvenc——不带的话用户机器
+    # 永远只能 CPU 编码。在打包当下就大声警告，别等装到用户机器才发现。
+    ff = dist_dir / ("ffmpeg.exe" if is_win else "ffmpeg")
+    if ff.exists():
+        try:
+            _flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            r = subprocess.run([str(ff), "-hide_banner", "-encoders"],
+                               capture_output=True, text=True, timeout=15,
+                               creationflags=_flags)
+            enc = (r.stdout or "") + (r.stderr or "")
+            if "h264_nvenc" in enc:
+                _log("[OK] 内嵌 ffmpeg **带 h264_nvenc** → 用户机器可用 NVIDIA 硬件编码")
+            else:
+                _log("=" * 60)
+                _log("[X] 警告：内嵌的 ffmpeg **不带 h264_nvenc**！")
+                _log("    → 用户机器无论怎么选 NVIDIA，都只能 CPU(libx264) 编码。")
+                _log("    → 修复：先跑 准备ffmpeg.bat 把 gyan.dev full 版 ffmpeg")
+                _log("      放进 tools\\ffmpeg\\，再重新打包。")
+                _log("=" * 60)
+        except Exception as exc:  # noqa: BLE001
+            _log(f"[!] 无法验证内嵌 ffmpeg 的 nvenc 支持：{exc}")
     return n
 
 
