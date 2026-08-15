@@ -802,6 +802,45 @@ class BulkDubService:
         except Exception as exc:  # noqa: BLE001
             return False, f"gpu_state 落盘失败：{exc}"[:200]
 
+    def diagnose_encoders(self) -> dict:
+        """逐个探测 nvidia/intel/amd/cpu 编码器，返回每个的可用性 + 真实原因。
+        供 UI「GPU 编码自检」按钮——让用户一眼看清为什么没用上显卡编码
+        （是 ffmpeg 不带 h264_nvenc，还是驱动/样本编码失败）。"""
+        from . import hw_encoder as _hw
+        ffmpeg = studio_settings.ffmpeg_tool("ffmpeg")
+        result = {"ffmpeg": ffmpeg or "(未找到 ffmpeg)", "families": []}
+        if not ffmpeg:
+            result["hint"] = "未找到 ffmpeg，无法探测。请在工具箱确认 ffmpeg 就绪。"
+            return result
+        try:
+            available = sorted(_hw._list_encoders(ffmpeg))
+        except Exception:  # noqa: BLE001
+            available = []
+        result["nvenc_in_ffmpeg"] = "h264_nvenc" in available
+        for fam in ("nvidia", "intel", "amd", "cpu"):
+            try:
+                probe = _hw.probe_family(ffmpeg, fam)
+                result["families"].append({
+                    "family": fam, "encoder": probe.encoder,
+                    "ok": bool(probe.ok), "detail": probe.detail,
+                })
+            except Exception as exc:  # noqa: BLE001
+                result["families"].append({
+                    "family": fam, "encoder": _hw._CANDIDATES[fam][0],
+                    "ok": False, "detail": f"探测异常：{exc}",
+                })
+        # 给一句直白结论
+        nvidia = next((f for f in result["families"] if f["family"] == "nvidia"), {})
+        if nvidia.get("ok"):
+            result["hint"] = "NVIDIA 硬件编码可用！把「硬件编码」选成 NVIDIA（或保持自动）即走显卡。"
+        elif not result["nvenc_in_ffmpeg"]:
+            result["hint"] = ("当前 ffmpeg **不带** h264_nvenc（多半是 essentials 裁剪版）。"
+                              "换 gyan.dev 的 full 版 ffmpeg 即可启用 NVIDIA 硬件编码。")
+        else:
+            result["hint"] = ("ffmpeg 带 nvenc 但样本编码失败——多半是 NVIDIA 驱动过旧或"
+                              "被占用。更新显卡驱动后重试。详情见上面 NVIDIA 行。")
+        return result
+
     def gpu_capability(self) -> dict:
         """返回当前设备能力档案。若未做基准 → 返回骨架元数据（sample=空）。"""
         ffmpeg = studio_settings.ffmpeg_tool("ffmpeg")

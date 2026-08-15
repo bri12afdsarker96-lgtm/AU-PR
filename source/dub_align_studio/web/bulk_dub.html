@@ -113,6 +113,7 @@
         <option value="cpu">CPU 兼容模式</option>
       </select>
     </label>
+    <button id="btnEncDiag" class="secondary" title="逐个探测 NVIDIA/Intel/AMD 编码器，看能不能用显卡编码">GPU 编码自检</button>
     <label><input type="checkbox" id="ackDisk"> 已确认磁盘空间充足</label>
     <button id="btnStart">开始批量处理</button>
     <button id="btnPause" class="warn">全局暂停</button>
@@ -126,6 +127,7 @@
     <button id="btnCSV" class="secondary">导出结果 CSV</button>
   </div>
   <div id="messages"></div>
+  <div id="encDiagBox" style="display:none;margin:8px 0;padding:10px 12px;border-radius:8px;background:#1a1f2b;border:1px solid #2a3350;font-size:13px;line-height:1.8"></div>
 </div>
 
 <div class="panel">
@@ -648,6 +650,27 @@ $("btnCancelWait").onclick = async () => {
     state.msg("取消了 " + j.cancelled + " 条等待任务");
   } catch (e) { state.msg("取消失败：" + e.message, "err-msg"); }
   refreshTasks();
+};
+$("btnEncDiag").onclick = async () => {
+  const box = $("encDiagBox");
+  box.style.display = "";
+  box.innerHTML = "正在探测各编码器（约几秒）…";
+  try {
+    const j = await api("GET", "/api/bulk_dub/encoder_diagnose");
+    let rows = (j.families || []).map(f => {
+      const mark = f.ok ? '<span style="color:#4caf50">✓ 可用</span>'
+                        : '<span style="color:#e57373">✗ 不可用</span>';
+      const name = {nvidia:"NVIDIA", intel:"Intel", amd:"AMD", cpu:"CPU"}[f.family] || f.family;
+      return "<div><b>" + name + "</b>（" + f.encoder + "）：" + mark
+           + " <span style='color:#8a94a6'>" + (f.detail || "") + "</span></div>";
+    }).join("");
+    const hint = j.hint ? ("<div style='margin-top:8px;color:#e0b060'><b>结论：</b>" + j.hint + "</div>") : "";
+    const ff = "<div style='color:#8a94a6;margin-bottom:6px'>ffmpeg: " + (j.ffmpeg || "-")
+             + "　·　带 nvenc: " + (j.nvenc_in_ffmpeg ? "是" : "否") + "</div>";
+    box.innerHTML = ff + rows + hint;
+  } catch (e) {
+    box.innerHTML = "<span style='color:#e57373'>自检失败：" + (e.message || e) + "</span>";
+  }
 };
 $("btnClearBatch").onclick = async () => {
   if (!state.currentBatch) return state.msg("请先选择或创建批次", "err-msg");

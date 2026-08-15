@@ -129,6 +129,10 @@ def dispatch_get(path: str, query: dict[str, str],
         snap = svc.summary()
         return True, *_json_response(snap.get("scheduler", {}).get("encoder", {}))
 
+    if route == "/encoder_diagnose":
+        # 逐个探测 nvidia/intel/amd/cpu，返回每个的可用性 + 真实原因
+        return True, *_json_response(svc.diagnose_encoders())
+
     # R14 显卡加速
     if route == "/gpu/capability":
         return True, *_json_response(svc.gpu_capability())
