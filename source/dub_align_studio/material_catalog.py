@@ -64,6 +64,8 @@ class Catalog:
                            "pending" if probe else "skipped"))
         assets.sort(key=lambda row: row[1])
 
+        if self.db_path.resolve().is_relative_to(self.library):
+            raise ValueError("目录数据库不能位于素材库内")
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         if self.db_path.resolve().is_relative_to(self.library):
             raise ValueError("目录数据库不能位于素材库内")

@@ -155,6 +155,30 @@ class CatalogTests(unittest.TestCase):
             self.assertFalse(database.exists())
             self.assertFalse((inside_cache / database.name).exists())
 
+    def test_refresh_rejects_redirect_before_creating_missing_cache_directory(self):
+        with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
+            root = Path(temp)
+            library = root / "library"
+            library.mkdir()
+            cache_parent = root / "cache"
+            cache_parent.mkdir()
+            database = cache_parent / "missing" / "catalog.sqlite3"
+            catalog = Catalog(database, library)
+            original_resolve = Path.resolve
+
+            def resolve_after_redirect(path, *args, **kwargs):
+                if path == catalog.db_path:
+                    return library / "missing" / database.name
+                return original_resolve(path, *args, **kwargs)
+
+            with patch.object(Path, "resolve", resolve_after_redirect), \
+                    patch.object(Path, "mkdir") as mkdir:
+                with self.assertRaises(ValueError):
+                    catalog.refresh(probe=False)
+                mkdir.assert_not_called()
+
+            self.assertFalse((library / "missing").exists())
+
     def test_schema_and_media_fields_are_persisted(self):
         with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
             root = Path(temp)
