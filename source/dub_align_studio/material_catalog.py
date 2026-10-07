@@ -7,6 +7,7 @@ import json
 import math
 import ntpath
 import os
+import re
 import sqlite3
 import subprocess
 from collections.abc import Callable, Iterator
@@ -17,7 +18,7 @@ from stat import S_ISLNK
 
 from integrated_workbench.proc import run_silent
 
-from . import settings
+from . import settings, xlsx_reader
 from .material_select import VIDEO_EXTENSIONS
 
 
@@ -158,6 +159,15 @@ def _iter_library_files(root: Path) -> Iterator[Path]:
 
 
 @dataclass(frozen=True)
+class AssetDescription:
+    text: str
+    source: str
+    workbook_path: Path
+    row_number: int
+    column: str
+
+
+@dataclass(frozen=True)
 class Asset:
     asset_id: str
     path: Path
@@ -172,6 +182,7 @@ class Asset:
     video_codec: str | None
     audio_codec: str | None
     probe_error: str | None = None
+    descriptions: tuple[AssetDescription, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -367,7 +378,53 @@ class Catalog:
         return ScanStats(asset_count=len(assets), new_count=new_count,
                          changed_count=changed_count, unchanged_count=unchanged_count)
 
-    def list_assets(self) -> list[Asset]:
+    def import_legacy_metadata(self, path: Path) -> int:
+        """Attach first-sheet E/G/H text using exact M-column BJ identifiers.
+
+        The optional evidence table extends schemas 1-3 without changing inventory
+        or health fields. Each import atomically replaces only this workbook's
+        evidence. Refresh the catalog before importing. Returns the number
+        of descriptions attached, counting each matching asset separately.
+        """
+        workbook = Path(path).resolve()
+        workbook_key = ntpath.normcase(str(workbook))
+        rows = xlsx_reader.read_columns(workbook, ("M", "E", "G", "H"), strip=False)
+        with closing(sqlite3.connect(self._database_uri() + "?mode=rw", uri=True)) as conn:
+            with conn:
+                conn.execute("BEGIN")
+                self._validate_binding(conn)
+                conn.execute("""CREATE TABLE IF NOT EXISTS asset_descriptions (
+                    asset_id TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    workbook_key TEXT NOT NULL,
+                    workbook_path TEXT NOT NULL,
+                    row_number INTEGER NOT NULL,
+                    column_name TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    PRIMARY KEY (asset_id, source, workbook_key, row_number, column_name)
+                )""")
+                matches: dict[str, list[str]] = {}
+                for asset_id, relative_path in conn.execute("SELECT asset_id, relative_path FROM assets"):
+                    match = re.match(r"(BJ[0-9]+(?:-[0-9]+)?)(?![A-Za-z0-9-])",
+                                     Path(relative_path).stem, re.I)
+                    if match:
+                        matches.setdefault(match.group(1).upper(), []).append(asset_id)
+                evidence = []
+                for row_number, cells in rows:
+                    identifier = cells.get("M", "").strip().upper()
+                    if not re.fullmatch(r"BJ[0-9]+(?:-[0-9]+)?", identifier):
+                        continue
+                    for asset_id in matches.get(identifier, ()):
+                        for column in ("E", "G", "H"):
+                            if column in cells:
+                                evidence.append((asset_id, "legacy_workbook", workbook_key,
+                                                 str(workbook), row_number, column, cells[column]))
+                conn.execute("DELETE FROM asset_descriptions "
+                             "WHERE source = 'legacy_workbook' AND workbook_key = ?", (workbook_key,))
+                conn.executemany("INSERT INTO asset_descriptions VALUES (?, ?, ?, ?, ?, ?, ?)", evidence)
+        return len(evidence)
+
+    def _database_uri(self) -> str:
         db_path = self.db_path.resolve()
         if db_path.is_relative_to(self.library):
             raise ValueError("目录数据库不能位于素材库内")
@@ -377,20 +434,40 @@ class Catalog:
         if db_path.drive.startswith("\\\\"):
             # SQLite accepts UNC hosts in the path, not as URI authorities.
             db_uri = "file:////" + db_uri[len("file://"):]
+        return db_uri
+
+    def _validate_binding(self, conn: sqlite3.Connection) -> int:
+        schema_version, stored_root = conn.execute(
+            "SELECT schema_version, root_path FROM catalog_meta"
+        ).fetchone()
+        if stored_root != self.root_path:
+            raise ValueError("目录数据库对应的素材库不一致")
+        if schema_version not in (1, 2, SCHEMA_VERSION):
+            raise ValueError(f"不支持目录数据库 schema 版本: {schema_version}")
+        return schema_version
+
+    def list_assets(self) -> list[Asset]:
+        db_uri = self._database_uri()
         with closing(sqlite3.connect(f"{db_uri}?mode=ro", uri=True)) as conn:
-            schema_version, stored_root = conn.execute(
-                "SELECT schema_version, root_path FROM catalog_meta"
-            ).fetchone()
-            if stored_root != self.root_path:
-                raise ValueError("目录数据库对应的素材库不一致")
-            if schema_version not in (1, 2, SCHEMA_VERSION):
-                raise ValueError(f"不支持目录数据库 schema 版本: {schema_version}")
+            schema_version = self._validate_binding(conn)
             error_column = "probe_error" if schema_version >= 3 else "NULL"
             rows = conn.execute(f"""SELECT asset_id, relative_path, size_bytes, mtime_ns,
                 probe_status, duration_seconds, width, height, frame_rate,
                 video_codec, audio_codec, {error_column}
                 FROM assets ORDER BY relative_path""").fetchall()
-        return [Asset(row[0], self.library / Path(row[1]), Path(row[1]), *row[2:])
+            descriptions: dict[str, list[AssetDescription]] = {}
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                            "AND name = 'asset_descriptions'").fetchone():
+                for asset_id, source, workbook, row_number, column, text in conn.execute(
+                    """SELECT asset_id, source, workbook_path, row_number, column_name, text
+                        FROM asset_descriptions
+                        ORDER BY workbook_path, row_number, column_name, text"""
+                ):
+                    descriptions.setdefault(asset_id, []).append(
+                        AssetDescription(text, source, Path(workbook), row_number, column)
+                    )
+        return [Asset(row[0], self.library / Path(row[1]), Path(row[1]), *row[2:],
+                      descriptions=tuple(descriptions.get(row[0], ())))
                 for row in rows]
 
     def eligible_assets(self) -> list[Asset]:
