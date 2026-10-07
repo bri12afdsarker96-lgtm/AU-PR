@@ -1,5 +1,6 @@
 """Catalog indexes media without changing the source library."""
 
+import errno
 import ntpath
 import os
 import sqlite3
@@ -282,10 +283,7 @@ class CatalogTests(unittest.TestCase):
                     self.skipTest(f"cannot create directory junction: {result.stderr}")
                 self.assertEqual(result.returncode, 0, result.stderr)
             else:
-                try:
-                    os.symlink(inside_cache, cache, target_is_directory=True)
-                except OSError as exc:
-                    self.skipTest(f"cannot create directory symlink: {exc}")
+                self._create_directory_symlink(inside_cache, cache)
             self.assertEqual(database.resolve(), inside_cache / database.name)
 
             def library_snapshot():
@@ -300,6 +298,39 @@ class CatalogTests(unittest.TestCase):
                 catalog.list_assets()
             self.assertEqual(library_snapshot(), before)
             self.assertFalse((inside_cache / database.name).exists())
+
+    def _create_directory_symlink(self, target, link):
+        try:
+            os.symlink(target, link, target_is_directory=True)
+        except OSError as exc:
+            if exc.errno in {
+                errno.EPERM, errno.EACCES, errno.ENOSYS,
+                errno.ENOTSUP, errno.EOPNOTSUPP,
+            }:
+                self.skipTest(f"cannot create directory symlink: {exc}")
+            raise
+
+    def test_directory_symlink_invalid_path_error_is_not_skipped(self):
+        with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
+            root = Path(temp)
+            with patch("os.symlink", side_effect=OSError(errno.EINVAL, "invalid path")):
+                with self.assertRaisesRegex(OSError, "invalid path"):
+                    try:
+                        self._create_directory_symlink(root / "target", root / "link")
+                    except unittest.SkipTest as exc:
+                        self.fail(f"path handling error was skipped: {exc}")
+
+    def test_directory_symlink_permission_or_unsupported_errors_are_skipped(self):
+        with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
+            root = Path(temp)
+            for error_code in (
+                errno.EPERM, errno.EACCES, errno.ENOSYS,
+                errno.ENOTSUP, errno.EOPNOTSUPP,
+            ):
+                with self.subTest(error_code=error_code):
+                    with patch("os.symlink", side_effect=OSError(error_code, "unavailable")):
+                        with self.assertRaises(unittest.SkipTest):
+                            self._create_directory_symlink(root / "target", root / "link")
 
     def test_refresh_rejects_redirect_before_creating_missing_cache_directory(self):
         with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
