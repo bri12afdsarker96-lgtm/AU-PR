@@ -103,7 +103,11 @@ class Catalog:
             raise ValueError("目录数据库不能位于素材库内")
         if not db_path.exists():
             raise FileNotFoundError(f"目录数据库不存在: {db_path}")
-        with closing(sqlite3.connect(f"{db_path.as_uri()}?mode=ro", uri=True)) as conn:
+        db_uri = db_path.as_uri()
+        if db_path.drive.startswith("\\\\"):
+            # SQLite accepts UNC hosts in the path, not as URI authorities.
+            db_uri = "file:////" + db_uri[len("file://"):]
+        with closing(sqlite3.connect(f"{db_uri}?mode=ro", uri=True)) as conn:
             stored_root = conn.execute("SELECT root_path FROM catalog_meta").fetchone()[0]
             if stored_root != self.root_path:
                 raise ValueError("目录数据库对应的素材库不一致")

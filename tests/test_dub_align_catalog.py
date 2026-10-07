@@ -1,6 +1,7 @@
 """Catalog indexes media without changing the source library."""
 
 import ntpath
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -12,6 +13,49 @@ from dub_align_studio.material_catalog import Catalog
 
 
 class CatalogTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "UNC URI behavior requires Windows")
+    def test_list_assets_uses_read_only_uri_without_unc_authority(self):
+        with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
+            root = Path(temp)
+            library = root / "library"
+            library.mkdir()
+            (library / "clip.mp4").write_bytes(b"clip")
+            database = root / "cache" / "catalog.sqlite3"
+            catalog = Catalog(database, library)
+            catalog.refresh(probe=False)
+            unc_database = Path(r"\\server\share\catalog.sqlite3")
+            original_resolve = Path.resolve
+            original_exists = Path.exists
+            original_connect = sqlite3.connect
+
+            with self.assertRaisesRegex(sqlite3.OperationalError,
+                                        "invalid uri authority: server"):
+                original_connect(f"{unc_database.as_uri()}?mode=ro", uri=True)
+
+            def resolve_unc(path, *args, **kwargs):
+                if path == catalog.db_path:
+                    return unc_database
+                return original_resolve(path, *args, **kwargs)
+
+            def exists_unc(path):
+                if path == unc_database:
+                    return True
+                return original_exists(path)
+
+            def connect_fixture(database_uri, *, uri=False):
+                self.assertEqual(database_uri,
+                                 "file:////server/share/catalog.sqlite3?mode=ro")
+                self.assertTrue(uri)
+                return original_connect(f"{database.as_uri()}?mode=ro", uri=True)
+
+            with patch.object(Path, "resolve", resolve_unc), \
+                    patch.object(Path, "exists", exists_unc), \
+                    patch("dub_align_studio.material_catalog.sqlite3.connect",
+                          side_effect=connect_fixture):
+                assets = catalog.list_assets()
+
+            self.assertEqual([asset.relative_path.name for asset in assets], ["clip.mp4"])
+
     def test_list_assets_does_not_create_missing_database(self):
         with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
             root = Path(temp)
