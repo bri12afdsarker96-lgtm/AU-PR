@@ -2,8 +2,10 @@
 
 import errno
 import hashlib
+import json
 import ntpath
 import os
+import shutil
 import sqlite3
 import stat
 import subprocess
@@ -15,6 +17,466 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from dub_align_studio.material_catalog import Catalog
+
+
+def _video_payload():
+    return {
+        "format": {"duration": "12.5"},
+        "streams": [
+            {"codec_type": "video", "codec_name": "h264", "width": 1920,
+             "height": 1080, "avg_frame_rate": "30000/1001"},
+            {"codec_type": "audio", "codec_name": "aac"},
+        ],
+    }
+
+
+class CatalogHealthTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="catalog_health_")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.library = self.root / "library"
+        self.library.mkdir()
+        self.source = self.library / "clip.mp4"
+        self.source.write_bytes(b"fixture bytes")
+        self.database = self.root / "cache" / "catalog.sqlite3"
+
+    def test_injected_probe_persists_playable_media_metadata(self):
+        calls = []
+
+        def probe(path):
+            calls.append(path)
+            return _video_payload()
+
+        catalog = Catalog(self.database, self.library, probe_func=probe)
+        stats = catalog.refresh()
+        self.assertEqual(calls, [self.source])
+        self.assertEqual((stats.new_count, stats.changed_count), (1, 0))
+        asset = catalog.list_assets()[0]
+        self.assertEqual(asset.probe_status, "playable")
+        self.assertEqual((asset.duration_seconds, asset.width, asset.height,
+                          asset.video_codec, asset.audio_codec),
+                         (12.5, 1920, 1080, "h264", "aac"))
+        self.assertAlmostEqual(asset.frame_rate, 30000 / 1001)
+
+    def test_default_probe_runs_ffprobe_json_with_hidden_timed_process(self):
+        completed = subprocess.CompletedProcess([], 0, json.dumps(_video_payload()), "")
+        with patch("dub_align_studio.settings.ffmpeg_tool", return_value="test-ffprobe") as tool, \
+                patch("dub_align_studio.material_catalog.run_silent",
+                      return_value=completed) as run:
+            catalog = Catalog(self.database, self.library)
+            catalog.refresh()
+
+        tool.assert_called_once_with("ffprobe")
+        run.assert_called_once()
+        args, kwargs = run.call_args
+        self.assertEqual(args[0], ["test-ffprobe", "-v", "error", "-print_format", "json",
+                                   "-show_format", "-show_streams", str(self.source.resolve())])
+        self.assertTrue(kwargs["capture_output"])
+        self.assertTrue(kwargs["text"])
+        self.assertEqual(kwargs["encoding"], "utf-8")
+        self.assertGreater(kwargs["timeout"], 0)
+        self.assertLessEqual(kwargs["timeout"], 60)
+        self.assertEqual(catalog.list_assets()[0].probe_status, "playable")
+
+    def test_file_removed_during_probe_is_missing_and_retried_on_restore(self):
+        saved = self.source.read_bytes()
+        mtime = self.source.stat().st_mtime_ns
+        calls = []
+
+        def probe(path):
+            calls.append(path)
+            if len(calls) == 1:
+                path.unlink()
+            return _video_payload()
+
+        catalog = Catalog(self.database, self.library, probe_func=probe)
+        try:
+            catalog.refresh()
+        except FileNotFoundError as exc:
+            self.fail(f"disappearing source stopped the scan: {exc}")
+        asset = catalog.list_assets()[0]
+        self.assertEqual(asset.probe_status, "missing")
+        self.assertIn("消失", asset.probe_error)
+        self.assertIsNone(asset.duration_seconds)
+        self.assertEqual(catalog.eligible_assets(), [])
+        self.source.write_bytes(saved)
+        os.utime(self.source, ns=(mtime, mtime))
+        stats = catalog.refresh()
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(stats.changed_count, 1)
+        self.assertEqual(catalog.list_assets()[0].probe_status, "playable")
+
+    def test_probe_execution_failures_are_recorded_without_stopping_scan(self):
+        failures = [
+            (subprocess.TimeoutExpired("ffprobe", 30), "超时"),
+            (subprocess.CompletedProcess([], 0, "not json", ""), "JSON"),
+            (subprocess.CompletedProcess([], 9, json.dumps(_video_payload()),
+                                         "damaged input"), "damaged input"),
+        ]
+        for index, (failure, reason) in enumerate(failures):
+            with self.subTest(reason=reason):
+                database = self.root / f"failure_{index}.sqlite3"
+                good = self.library / "z_good.mp4"
+                good.write_bytes(b"good")
+                catalog = Catalog(database, self.library)
+                completed = subprocess.CompletedProcess([], 0, json.dumps(_video_payload()), "")
+                with patch("dub_align_studio.material_catalog.run_silent",
+                           side_effect=[failure, completed]):
+                    try:
+                        catalog.refresh()
+                    except Exception as exc:
+                        self.fail(f"one media failure stopped the scan: {exc}")
+                assets = catalog.list_assets()
+                self.assertEqual([asset.probe_status for asset in assets],
+                                 ["unreadable", "playable"])
+                self.assertIn(reason, assets[0].probe_error)
+                self.assertIsNone(assets[0].duration_seconds)
+                self.assertIsNone(assets[1].probe_error)
+
+    def test_invalid_metadata_cannot_be_marked_playable(self):
+        payloads = [
+            ([], "元数据"), ({}, "视频流"),
+            ({"streams": "bad"}, "元数据"),
+            ({"streams": [None]}, "元数据"),
+            ({"streams": [{"codec_type": "audio", "codec_name": "aac"}]}, "视频流"),
+        ]
+        for field, values in (("duration", ["nan", "inf", "-inf", "0", "-1", "bad", True]),
+                              ("width", [0, -1, "nan", "inf", 1.5, True, None]),
+                              ("height", [0, -1, "bad", None])):
+            for value in values:
+                payload = _video_payload()
+                payload["streams"][0][field] = value
+                payloads.append((payload, "时长" if field == "duration" else "宽高"))
+        for attached in (1, "1"):
+            payload = _video_payload()
+            payload["streams"][0]["disposition"] = {"attached_pic": attached}
+            payloads.append((payload, "视频流"))
+        payload = _video_payload()
+        payload["streams"][0]["disposition"] = []
+        payloads.append((payload, "元数据"))
+        for index, (payload, reason) in enumerate(payloads):
+            with self.subTest(index=index, reason=reason):
+                catalog = Catalog(self.root / f"invalid_{index}.sqlite3", self.library,
+                                  probe_func=lambda path: payload)
+                try:
+                    catalog.refresh()
+                except Exception as exc:
+                    self.fail(f"malformed metadata stopped the scan: {exc}")
+                asset = catalog.list_assets()[0]
+                self.assertEqual(asset.probe_status, "unreadable")
+                self.assertIn(reason, asset.probe_error)
+                self.assertIsNone(asset.duration_seconds)
+                self.assertIsNone(asset.width)
+
+    def test_eligible_assets_requires_confirmed_playable_status(self):
+        statuses = ("playable", "unreadable", "missing", "pending", "skipped", "ready", "unknown")
+        for status in statuses:
+            (self.library / f"{status}.mp4").write_bytes(b"fixture")
+        catalog = Catalog(self.database, self.library)
+        catalog.refresh(probe=False)
+        with closing(sqlite3.connect(self.database)) as conn, conn:
+            for status in statuses:
+                conn.execute("UPDATE assets SET probe_status = ?, duration_seconds = 12.5, "
+                             "width = 1920, height = 1080 WHERE relative_path = ?",
+                             (status, f"{status}.mp4"))
+        self.assertEqual([asset.relative_path.name for asset in catalog.eligible_assets()],
+                         ["playable.mp4"])
+
+    def test_unchanged_completed_probe_results_are_cached_across_refreshes(self):
+        bad = self.library / "bad.mp4"
+        bad.write_bytes(b"bad")
+        calls = []
+
+        def probe(path):
+            calls.append(path.name)
+            if path.name == "bad.mp4":
+                raise ValueError("fixture is corrupt")
+            return _video_payload()
+
+        catalog = Catalog(self.database, self.library, probe_func=probe)
+        catalog.refresh()
+        before = catalog.list_assets()
+        catalog.refresh(probe=False)
+        self.assertEqual(catalog.list_assets(), before)
+        stats = Catalog(self.database, self.library, probe_func=probe).refresh()
+        self.assertEqual(calls, ["bad.mp4", "clip.mp4"])
+        self.assertEqual(stats.unchanged_count, 2)
+        self.assertEqual(catalog.list_assets(), before)
+
+    def test_incomplete_health_cache_is_not_eligible_and_is_reprobed(self):
+        cases = [("playable", None, 1920, 1080, None),
+                 ("playable", 12.5, 0, 1080, None),
+                 ("playable", float("inf"), 1920, 1080, None),
+                 ("playable", 12.5, 1920, 1080, "old failure"),
+                 ("unreadable", None, None, None, None)]
+        for index, values in enumerate(cases):
+            with self.subTest(values=values):
+                calls = []
+                catalog = Catalog(self.root / f"cache_{index}.sqlite3", self.library,
+                                  probe_func=lambda path: calls.append(path) or _video_payload())
+                catalog.refresh(probe=False)
+                with closing(sqlite3.connect(catalog.db_path)) as conn, conn:
+                    conn.execute("UPDATE assets SET probe_status = ?, duration_seconds = ?, "
+                                 "width = ?, height = ?, probe_error = ?", values)
+                self.assertEqual(catalog.eligible_assets(), [])
+                catalog.refresh()
+                self.assertEqual(calls, [self.source])
+                self.assertEqual(catalog.list_assets()[0].probe_status, "playable")
+                self.assertIsNone(catalog.list_assets()[0].probe_error)
+
+    def test_missing_ffprobe_is_actionable_environment_error_without_poisoning_cache(self):
+        (self.library / "z_second.mp4").write_bytes(b"fixture")
+        catalog = Catalog(self.database, self.library)
+        catalog.refresh(probe=False)
+        before = self.database.read_bytes()
+        for error in (FileNotFoundError("missing executable"),
+                      PermissionError("blocked executable")):
+            with self.subTest(error=type(error).__name__):
+                completed = subprocess.CompletedProcess([], 0, json.dumps(_video_payload()), "")
+                with patch("dub_align_studio.material_catalog.run_silent",
+                           side_effect=[completed, error]):
+                    with self.assertRaisesRegex(RuntimeError, "ffprobe.*安装"):
+                        catalog.refresh()
+                self.assertEqual(self.database.read_bytes(), before)
+        Catalog(self.database, self.library, probe_func=lambda path: _video_payload()).refresh()
+        self.assertEqual([asset.probe_status for asset in catalog.list_assets()],
+                         ["playable", "playable"])
+
+    def test_file_changed_during_probe_does_not_receive_stale_health(self):
+        calls = []
+
+        def probe(path):
+            calls.append(path)
+            if len(calls) == 1:
+                path.write_bytes(b"changed while probing media")
+            return _video_payload()
+
+        catalog = Catalog(self.database, self.library, probe_func=probe)
+        catalog.refresh()
+        asset = catalog.list_assets()[0]
+        self.assertEqual(asset.probe_status, "pending")
+        self.assertIn("变化", asset.probe_error)
+        self.assertIsNone(asset.duration_seconds)
+        self.assertEqual((asset.size_bytes, asset.mtime_ns),
+                         (self.source.stat().st_size, self.source.stat().st_mtime_ns))
+        self.assertEqual(catalog.eligible_assets(), [])
+        catalog.refresh()
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(catalog.list_assets()[0].probe_status, "playable")
+
+    def test_legacy_schema_read_only_and_failed_upgrade_leave_database_unchanged(self):
+        for version in (1, 2):
+            with self.subTest(version=version):
+                database = self.root / f"legacy_{version}.sqlite3"
+                catalog = Catalog(database, self.library)
+                generation = ", scan_generation INTEGER NOT NULL DEFAULT 0" if version == 2 else ""
+                with closing(sqlite3.connect(database)) as conn, conn:
+                    conn.execute("CREATE TABLE catalog_meta (schema_version INTEGER NOT NULL, "
+                                 f"root_path TEXT NOT NULL{generation})")
+                    conn.execute("INSERT INTO catalog_meta (schema_version, root_path) VALUES (?, ?)",
+                                 (version, catalog.root_path))
+                    conn.execute("CREATE TABLE assets (asset_id TEXT PRIMARY KEY, "
+                                 "relative_path TEXT NOT NULL UNIQUE, size_bytes INTEGER NOT NULL, "
+                                 "mtime_ns INTEGER NOT NULL, probe_status TEXT NOT NULL, "
+                                 "duration_seconds REAL, width INTEGER, height INTEGER, "
+                                 "frame_rate REAL, video_codec TEXT, audio_codec TEXT"
+                                 f"{generation})")
+                    asset_id = hashlib.sha256(f"{catalog.root_id}\0clip.mp4".encode()).hexdigest()
+                    conn.execute("INSERT INTO assets (asset_id, relative_path, size_bytes, mtime_ns, "
+                                 "probe_status) VALUES (?, 'clip.mp4', ?, ?, 'skipped')",
+                                 (asset_id, self.source.stat().st_size, self.source.stat().st_mtime_ns))
+                before = database.read_bytes()
+                self.assertIsNone(catalog.list_assets()[0].probe_error)
+                self.assertEqual(catalog.eligible_assets(), [])
+                self.assertEqual(database.read_bytes(), before)
+                with patch("dub_align_studio.material_catalog.run_silent",
+                           side_effect=FileNotFoundError("missing executable")):
+                    with self.assertRaisesRegex(RuntimeError, "ffprobe.*安装"):
+                        catalog.refresh()
+                self.assertEqual(database.read_bytes(), before)
+                Catalog(database, self.library, probe_func=lambda path: _video_payload()).refresh()
+                self.assertEqual(catalog.list_assets()[0].probe_status, "playable")
+                with closing(sqlite3.connect(database)) as conn:
+                    self.assertEqual(conn.execute("SELECT schema_version FROM catalog_meta").fetchone(),
+                                     (3,))
+
+    def test_empty_files_are_unreadable_without_trusting_probe_metadata(self):
+        self.source.write_bytes(b"")
+        calls = []
+        catalog = Catalog(self.database, self.library,
+                          probe_func=lambda path: calls.append(path) or _video_payload())
+        catalog.refresh()
+        asset = catalog.list_assets()[0]
+        self.assertEqual(asset.probe_status, "unreadable")
+        self.assertIn("空文件", asset.probe_error)
+        self.assertIsNone(asset.duration_seconds)
+        self.assertEqual(calls, [])
+        self.assertEqual(catalog.eligible_assets(), [])
+
+    def test_optional_frame_rate_uses_fallback_without_inventing_a_rate(self):
+        for average, fallback, expected in (("0/0", "24/1", 24.0),
+                                             (None, "25", 25.0),
+                                             (None, None, None)):
+            with self.subTest(average=average, fallback=fallback):
+                payload = _video_payload()
+                video = payload["streams"][0]
+                video["avg_frame_rate"] = average
+                video["r_frame_rate"] = fallback
+                video["duration"] = "N/A"
+                cover = dict(video, disposition={"attached_pic": 1})
+                payload["streams"] = [cover, video]
+                database = self.root / f"rate_{expected}.sqlite3"
+                catalog = Catalog(database, self.library, probe_func=lambda path: payload)
+                try:
+                    catalog.refresh()
+                except Exception as exc:
+                    self.fail(f"optional frame rate stopped the scan: {exc}")
+                asset = catalog.list_assets()[0]
+                self.assertEqual(asset.probe_status, "playable")
+                self.assertEqual(asset.frame_rate, expected)
+                self.assertEqual(asset.duration_seconds, 12.5)
+                self.assertIsNone(asset.audio_codec)
+
+    def test_malformed_optional_metadata_is_explained_per_asset(self):
+        payloads = []
+        for rate in ("nan", "inf", "-1", "25/0", "1/2/3", True, [], {}):
+            payload = _video_payload()
+            payload["streams"][0]["avg_frame_rate"] = rate
+            payloads.append((payload, "帧率"))
+        for stream_index in (0, 1):
+            payload = _video_payload()
+            payload["streams"][stream_index]["codec_name"] = {"bad": "codec"}
+            payloads.append((payload, "编码"))
+        payload = _video_payload()
+        payload["streams"][0]["width"] = 1e300
+        payloads.append((payload, "宽高"))
+        for index, (payload, reason) in enumerate(payloads):
+            with self.subTest(index=index):
+                catalog = Catalog(self.root / f"malformed_{index}.sqlite3", self.library,
+                                  probe_func=lambda path: payload)
+                try:
+                    catalog.refresh()
+                except Exception as exc:
+                    self.fail(f"malformed optional metadata stopped the scan: {exc}")
+                asset = catalog.list_assets()[0]
+                self.assertEqual(asset.probe_status, "unreadable")
+                self.assertIn(reason, asset.probe_error)
+
+    def test_real_ffmpeg_ffprobe_tiny_temporary_fixture(self):
+        from dub_align_studio import settings
+        from integrated_workbench.proc import run_silent
+
+        ffmpeg = settings.ffmpeg_tool("ffmpeg")
+        ffprobe = settings.ffmpeg_tool("ffprobe")
+        if not shutil.which(ffmpeg) or not shutil.which(ffprobe):
+            self.skipTest(f"FFmpeg/FFprobe unavailable: {ffmpeg!r}, {ffprobe!r}")
+        valid = self.library / "valid.mp4"
+        audio = self.library / "audio_only.mp4"
+        (self.library / "empty.mp4").write_bytes(b"")
+        commands = [
+            [ffmpeg, "-v", "error", "-nostdin", "-f", "lavfi", "-i",
+             "color=c=black:s=32x24:r=8", "-f", "lavfi", "-i",
+             "sine=frequency=440:sample_rate=8000", "-t", "0.5", "-c:v", "mpeg4",
+             "-c:a", "aac", "-y", str(valid)],
+            [ffmpeg, "-v", "error", "-nostdin", "-f", "lavfi", "-i",
+             "sine=frequency=440:sample_rate=8000", "-t", "0.25", "-c:a", "aac",
+             "-y", str(audio)],
+        ]
+        for command in commands:
+            completed = run_silent(command, capture_output=True, text=True,
+                                   encoding="utf-8", errors="replace", timeout=30)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+        catalog = Catalog(self.database, self.library)
+        stats = catalog.refresh()
+        self.assertEqual(stats.asset_count, 4)
+        assets = {asset.relative_path.name: asset for asset in catalog.list_assets()}
+        self.assertEqual({name: asset.probe_status for name, asset in assets.items()},
+                         {"valid.mp4": "playable", "clip.mp4": "unreadable",
+                          "audio_only.mp4": "unreadable", "empty.mp4": "unreadable"})
+        valid_asset = assets["valid.mp4"]
+        self.assertEqual((valid_asset.width, valid_asset.height, valid_asset.frame_rate,
+                          valid_asset.video_codec, valid_asset.audio_codec),
+                         (32, 24, 8.0, "mpeg4", "aac"))
+        self.assertGreater(valid_asset.duration_seconds, 0)
+        self.assertLessEqual(valid_asset.duration_seconds, 1)
+        self.assertEqual([asset.path for asset in catalog.eligible_assets()], [valid])
+        self.assertIn("视频流", assets["audio_only.mp4"].probe_error)
+        self.assertIn("ffprobe", assets["clip.mp4"].probe_error)
+
+    def test_new_changed_restored_and_unfinished_assets_are_probed(self):
+        calls = []
+        catalog = Catalog(self.database, self.library,
+                          probe_func=lambda path: calls.append(path.name) or _video_payload())
+        for status in ("pending", "ready", "unknown"):
+            (self.library / f"{status}.mp4").write_bytes(b"fixture")
+        catalog.refresh(probe=False)
+        self.assertEqual(calls, [])
+        self.assertEqual(catalog.eligible_assets(), [])
+        with closing(sqlite3.connect(self.database)) as conn, conn:
+            for status in ("pending", "ready", "unknown"):
+                conn.execute("UPDATE assets SET probe_status = ? WHERE relative_path = ?",
+                             (status, f"{status}.mp4"))
+        catalog.refresh()
+        self.assertEqual(calls, ["clip.mp4", "pending.mp4", "ready.mp4", "unknown.mp4"])
+        calls.clear()
+        (self.library / "new.mp4").write_bytes(b"new")
+        self.assertEqual(catalog.refresh().new_count, 1)
+        self.assertEqual(calls, ["new.mp4"])
+        calls.clear()
+        self.source.write_bytes(b"different size")
+        self.assertEqual(catalog.refresh().changed_count, 1)
+        self.assertEqual(calls, ["clip.mp4"])
+        calls.clear()
+        timestamp = self.source.stat().st_mtime_ns + 2_000_000_000
+        os.utime(self.source, ns=(timestamp, timestamp))
+        self.assertEqual(catalog.refresh().changed_count, 1)
+        self.assertEqual(calls, ["clip.mp4"])
+        calls.clear()
+        saved = self.source.read_bytes()
+        self.source.unlink()
+        catalog.refresh()
+        self.assertEqual(calls, [])
+        self.source.write_bytes(saved)
+        os.utime(self.source, ns=(timestamp, timestamp))
+        self.assertEqual(catalog.refresh().changed_count, 1)
+        self.assertEqual(calls, ["clip.mp4"])
+        self.assertEqual(len(catalog.eligible_assets()), 5)
+
+    def test_injected_io_or_timeout_failure_is_local_to_one_asset(self):
+        (self.library / "z_good.mp4").write_bytes(b"fixture")
+        for index, failure in enumerate((PermissionError("cannot read source"),
+                                          subprocess.TimeoutExpired("injected-probe", 1))):
+            with self.subTest(failure=type(failure).__name__):
+                def probe(path):
+                    if path.name == "clip.mp4":
+                        raise failure
+                    return _video_payload()
+
+                catalog = Catalog(self.root / f"io_{index}.sqlite3", self.library, probe_func=probe)
+                try:
+                    catalog.refresh()
+                except Exception as exc:
+                    self.fail(f"injected media failure stopped the scan: {exc}")
+                assets = catalog.list_assets()
+                self.assertEqual([asset.probe_status for asset in assets], ["unreadable", "playable"])
+                self.assertTrue(assets[0].probe_error)
+
+    def test_invalid_completed_cache_fields_are_not_used_as_candidates(self):
+        cases = (("size_bytes", 0), ("width", 2**40), ("frame_rate", float("inf")),
+                 ("video_codec", b"blob"), ("audio_codec", ""))
+        for index, (column, value) in enumerate(cases):
+            with self.subTest(column=column):
+                calls = []
+                catalog = Catalog(self.root / f"invalid_cache_{index}.sqlite3", self.library,
+                                  probe_func=lambda path: calls.append(path) or _video_payload())
+                catalog.refresh()
+                with closing(sqlite3.connect(catalog.db_path)) as conn, conn:
+                    conn.execute(f"UPDATE assets SET {column} = ?", (value,))
+                self.assertEqual(catalog.eligible_assets(), [])
+                catalog.refresh()
+                self.assertEqual(len(calls), 2)
+                self.assertEqual(len(catalog.eligible_assets()), 1)
 
 
 class _ScandirResult:
@@ -140,7 +602,7 @@ class CatalogTests(unittest.TestCase):
             (library / "clip.mp4").write_bytes(b"clip")
             catalog = Catalog(root / "cache" / "catalog.sqlite3", library)
 
-            first = catalog.refresh()
+            first = catalog.refresh(probe=False)
             self.assertEqual((first.new_count, first.changed_count, first.unchanged_count),
                              (1, 0, 0))
             with closing(sqlite3.connect(catalog.db_path)) as conn:
@@ -148,7 +610,7 @@ class CatalogTests(unittest.TestCase):
                     conn.execute("""UPDATE assets SET probe_status = 'ready',
                         duration_seconds = 12.5 WHERE relative_path = 'clip.mp4'""")
 
-            second = catalog.refresh()
+            second = catalog.refresh(probe=False)
 
             self.assertEqual((second.new_count, second.changed_count,
                               second.unchanged_count), (0, 0, 1))
@@ -219,10 +681,11 @@ class CatalogTests(unittest.TestCase):
             library.mkdir()
             source = library / "old.mp4"
             source.write_bytes(b"clip")
-            catalog = Catalog(root / "cache" / "catalog.sqlite3", library)
-            catalog.refresh(probe=False)
+            catalog = Catalog(root / "cache" / "catalog.sqlite3", library,
+                              probe_func=lambda path: _video_payload())
+            catalog.refresh()
             source.rename(library / "new.mp4")
-            catalog.refresh(probe=False)
+            catalog.refresh()
 
             self.assertEqual([asset.relative_path.name for asset in catalog.eligible_assets()],
                              ["new.mp4"])
@@ -249,7 +712,7 @@ class CatalogTests(unittest.TestCase):
 
             self.assertEqual(stats.asset_count, 2)
             self.assertEqual([asset.relative_path.as_posix()
-                              for asset in catalog.eligible_assets()],
+                              for asset in catalog.list_assets()],
                              ["nested/valid.mov", "valid.MP4"])
 
     def test_failed_scan_does_not_mark_unseen_assets_missing(self):
@@ -494,7 +957,7 @@ class CatalogTests(unittest.TestCase):
                                  (asset_id, source.stat().st_size, source.stat().st_mtime_ns))
 
             self.assertEqual(catalog.list_assets()[0].duration_seconds, 12.5)
-            stats = catalog.refresh()
+            stats = catalog.refresh(probe=False)
 
             self.assertEqual((stats.new_count, stats.changed_count,
                               stats.unchanged_count), (0, 0, 1))
@@ -504,7 +967,7 @@ class CatalogTests(unittest.TestCase):
             with closing(sqlite3.connect(database)) as conn:
                 self.assertEqual(conn.execute(
                     "SELECT schema_version, scan_generation FROM catalog_meta"
-                ).fetchone(), (2, 1))
+                ).fetchone(), (3, 1))
                 self.assertEqual(conn.execute(
                     "SELECT scan_generation FROM assets"
                 ).fetchone(), (1,))
@@ -554,14 +1017,14 @@ class CatalogTests(unittest.TestCase):
             removed.write_bytes(b"old")
             (library / "kept.mp4").write_bytes(b"keep")
             catalog = Catalog(root / "cache" / "catalog.sqlite3", library)
-            catalog.refresh()
+            catalog.refresh(probe=False)
             with closing(sqlite3.connect(catalog.db_path)) as conn:
                 with conn:
                     conn.execute("""UPDATE assets SET probe_status = 'ready',
                         duration_seconds = 12.5""")
 
             removed.unlink()
-            stats = catalog.refresh()
+            stats = catalog.refresh(probe=False)
 
             self.assertEqual((stats.asset_count, stats.new_count, stats.changed_count,
                               stats.unchanged_count), (1, 0, 0, 1))
@@ -570,7 +1033,7 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(rows["kept.mp4"].probe_status, "ready")
             self.assertEqual(rows["kept.mp4"].duration_seconds, 12.5)
 
-    def test_returned_missing_asset_is_reactivated_and_reprobed(self):
+    def test_inventory_reactivates_returned_asset_and_invalidates_old_probe(self):
         with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
             root = Path(temp)
             library = root / "library"
@@ -578,7 +1041,7 @@ class CatalogTests(unittest.TestCase):
             source = library / "clip.mp4"
             source.write_bytes(b"clip")
             catalog = Catalog(root / "cache" / "catalog.sqlite3", library)
-            catalog.refresh()
+            catalog.refresh(probe=False)
             original_id = catalog.list_assets()[0].asset_id
             with closing(sqlite3.connect(catalog.db_path)) as conn:
                 with conn:
@@ -588,16 +1051,16 @@ class CatalogTests(unittest.TestCase):
             original_mtime = source.stat().st_mtime_ns
 
             source.unlink()
-            catalog.refresh()
+            catalog.refresh(probe=False)
             source.write_bytes(original_bytes)
             os.utime(source, ns=(original_mtime, original_mtime))
-            stats = catalog.refresh()
+            stats = catalog.refresh(probe=False)
 
             self.assertEqual((stats.new_count, stats.changed_count,
                               stats.unchanged_count), (0, 1, 0))
             asset = catalog.list_assets()[0]
             self.assertEqual(asset.asset_id, original_id)
-            self.assertEqual(asset.probe_status, "pending")
+            self.assertEqual(asset.probe_status, "skipped")
             self.assertIsNone(asset.duration_seconds)
 
     def test_refresh_marks_changed_asset_for_reprobe(self):
@@ -608,7 +1071,7 @@ class CatalogTests(unittest.TestCase):
             source = library / "clip.mp4"
             source.write_bytes(b"clip")
             catalog = Catalog(root / "cache" / "catalog.sqlite3", library)
-            catalog.refresh()
+            catalog.refresh(probe=False)
             with closing(sqlite3.connect(catalog.db_path)) as conn:
                 with conn:
                     conn.execute("""UPDATE assets SET probe_status = 'ready',
@@ -618,14 +1081,14 @@ class CatalogTests(unittest.TestCase):
             source.write_bytes(b"updated clip")
             os.utime(source, ns=(old_mtime_ns + 2_000_000_000,
                                  old_mtime_ns + 2_000_000_000))
-            stats = catalog.refresh()
+            stats = catalog.refresh(probe=False)
 
             self.assertEqual((stats.new_count, stats.changed_count,
                               stats.unchanged_count), (0, 1, 0))
             asset = catalog.list_assets()[0]
             self.assertEqual(asset.size_bytes, len(b"updated clip"))
             self.assertEqual(asset.mtime_ns, source.stat().st_mtime_ns)
-            self.assertEqual(asset.probe_status, "pending")
+            self.assertEqual(asset.probe_status, "skipped")
             self.assertIsNone(asset.duration_seconds)
 
     def test_asset_id_survives_relative_path_case_change(self):
@@ -963,7 +1426,7 @@ class CatalogTests(unittest.TestCase):
                     probe_status, duration_seconds, width, height, frame_rate,
                     video_codec, audio_codec FROM assets""").fetchone()
 
-            self.assertEqual(meta, (2, ntpath.normcase(str(library.resolve()))))
+            self.assertEqual(meta, (3, ntpath.normcase(str(library.resolve()))))
             self.assertGreaterEqual(columns, {"asset_id", "relative_path", "size_bytes",
                                               "mtime_ns", "probe_status", "duration_seconds",
                                               "width", "height", "frame_rate", "video_codec",
