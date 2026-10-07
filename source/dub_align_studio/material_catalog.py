@@ -52,6 +52,7 @@ class Catalog:
         if not self.library.is_dir():
             raise FileNotFoundError(self.library)
         assets = []
+        seen_asset_ids = {}
         for path in self.library.rglob("*"):
             if not path.is_file() or path.suffix.lower() not in VIDEO_EXTENSIONS:
                 continue
@@ -63,6 +64,10 @@ class Catalog:
             asset_id = hashlib.sha256(
                 f"{self.root_id}\0{ntpath.normcase(relative_path.as_posix())}".encode("utf-8")
             ).hexdigest()
+            previous_path = seen_asset_ids.get(asset_id)
+            if previous_path is not None and previous_path != relative_path.as_posix():
+                raise ValueError(f"素材路径归一化后冲突: {previous_path} 与 {relative_path.as_posix()}")
+            seen_asset_ids[asset_id] = relative_path.as_posix()
             assets.append((asset_id, relative_path.as_posix(), stat.st_size, stat.st_mtime_ns,
                            "pending" if probe else "skipped"))
         assets.sort(key=lambda row: row[1])
@@ -91,6 +96,9 @@ class Catalog:
                 video_codec TEXT,
                 audio_codec TEXT
             )""")
+                stored_root = conn.execute("SELECT root_path FROM catalog_meta").fetchone()
+                if stored_root is not None and stored_root[0] != self.root_path:
+                    raise ValueError("目录数据库对应的素材库不一致")
                 conn.execute("DELETE FROM catalog_meta")
                 conn.execute("INSERT INTO catalog_meta VALUES (?, ?)",
                              (SCHEMA_VERSION, self.root_path))

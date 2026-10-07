@@ -179,6 +179,47 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(catalog.list_assets()[0].relative_path.name, "bj1_地球.mp4")
             self.assertEqual(catalog.list_assets()[0].asset_id, original_id)
 
+    def test_refresh_rejects_case_colliding_paths_before_database_write(self):
+        for incremental in (False, True):
+            with self.subTest(incremental=incremental), \
+                    tempfile.TemporaryDirectory(prefix="catalog_") as temp:
+                root = Path(temp)
+                library = root / "library"
+                library.mkdir()
+                upper = library / "A.mp4"
+                lower = library / "a.mp4"
+                upper.write_bytes(b"clip")
+                database = root / "cache" / "catalog.sqlite3"
+                catalog = Catalog(database, library)
+                if incremental:
+                    catalog.refresh(probe=False)
+                before = database.read_bytes() if incremental else None
+                original_is_file = Path.is_file
+                original_stat = Path.stat
+
+                def is_file_with_collision(path, *args, **kwargs):
+                    if str(path) == str(lower):
+                        return True
+                    return original_is_file(path, *args, **kwargs)
+
+                def stat_with_collision(path, *args, **kwargs):
+                    if str(path) == str(lower):
+                        return original_stat(upper, *args, **kwargs)
+                    return original_stat(path, *args, **kwargs)
+
+                with patch.object(Path, "rglob", return_value=[upper, lower]), \
+                        patch.object(Path, "is_file", is_file_with_collision), \
+                        patch.object(Path, "stat", stat_with_collision):
+                    with self.assertRaisesRegex(ValueError, "路径.*冲突"):
+                        catalog.refresh(probe=False)
+
+                if incremental:
+                    self.assertEqual(database.read_bytes(), before)
+                    self.assertEqual([asset.relative_path.name
+                                      for asset in catalog.list_assets()], ["A.mp4"])
+                else:
+                    self.assertFalse(database.exists())
+
     def test_root_path_uses_windows_case_normalization(self):
         with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
             root = Path(temp)
@@ -216,6 +257,34 @@ class CatalogTests(unittest.TestCase):
 
             with self.assertRaises(ValueError):
                 Catalog(database, second_library).list_assets()
+
+    def test_refresh_rejects_database_from_another_library_without_changes(self):
+        with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
+            root = Path(temp)
+            first_library = root / "first"
+            second_library = root / "second"
+            first_library.mkdir()
+            second_library.mkdir()
+            (first_library / "first.mp4").write_bytes(b"first")
+            (second_library / "second.mp4").write_bytes(b"second")
+            database = root / "cache" / "catalog.sqlite3"
+            first_catalog = Catalog(database, first_library)
+            first_catalog.refresh(probe=False)
+
+            with closing(sqlite3.connect(database)) as conn:
+                before_meta = conn.execute("SELECT * FROM catalog_meta").fetchall()
+                before_assets = conn.execute("SELECT * FROM assets").fetchall()
+
+            with self.assertRaisesRegex(ValueError, "素材库不一致"):
+                Catalog(database, second_library).refresh(probe=False)
+
+            with closing(sqlite3.connect(database)) as conn:
+                self.assertEqual(conn.execute("SELECT * FROM catalog_meta").fetchall(),
+                                 before_meta)
+                self.assertEqual(conn.execute("SELECT * FROM assets").fetchall(),
+                                 before_assets)
+            self.assertEqual([asset.relative_path.name
+                              for asset in first_catalog.list_assets()], ["first.mp4"])
 
     def test_refresh_skips_video_removed_before_stat(self):
         with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
