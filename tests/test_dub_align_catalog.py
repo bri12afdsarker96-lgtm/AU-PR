@@ -18,7 +18,6 @@ class CatalogTests(unittest.TestCase):
             library = root / "library"
             library.mkdir()
             cache = root / "cache"
-            cache.mkdir()
             database = cache / "catalog.sqlite3"
             catalog = Catalog(database, library)
 
@@ -26,6 +25,7 @@ class CatalogTests(unittest.TestCase):
                 catalog.list_assets()
 
             self.assertFalse(database.exists())
+            self.assertFalse(cache.exists())
 
     def test_catalog_database_lives_outside_library(self):
         with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
