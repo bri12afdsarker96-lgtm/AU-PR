@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
+from unittest.mock import patch
 
 from dub_align_studio.material_catalog import Catalog
 
@@ -88,6 +89,71 @@ class CatalogTests(unittest.TestCase):
                 Catalog(database, library)
 
             self.assertFalse(database.exists())
+
+    def test_list_assets_rejects_database_from_another_library(self):
+        with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
+            root = Path(temp)
+            first_library = root / "first"
+            second_library = root / "second"
+            first_library.mkdir()
+            second_library.mkdir()
+            (first_library / "clip.mp4").write_bytes(b"first")
+            database = root / "cache" / "catalog.sqlite3"
+            Catalog(database, first_library).refresh(probe=False)
+
+            with self.assertRaises(ValueError):
+                Catalog(database, second_library).list_assets()
+
+    def test_refresh_skips_video_removed_before_stat(self):
+        with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
+            root = Path(temp)
+            library = root / "library"
+            library.mkdir()
+            vanished = library / "a.mp4"
+            vanished.write_bytes(b"vanished")
+            (library / "b.mp4").write_bytes(b"survivor")
+            catalog = Catalog(root / "cache" / "catalog.sqlite3", library)
+            original_stat = Path.stat
+            vanished_stat_calls = 0
+
+            def stat_with_disappearance(path, *args, **kwargs):
+                nonlocal vanished_stat_calls
+                if path == vanished:
+                    vanished_stat_calls += 1
+                    if vanished_stat_calls == 2:
+                        raise FileNotFoundError(path)
+                return original_stat(path, *args, **kwargs)
+
+            with patch.object(Path, "stat", stat_with_disappearance):
+                stats = catalog.refresh(probe=False)
+
+            self.assertGreaterEqual(vanished_stat_calls, 2)
+            self.assertEqual(stats.asset_count, 1)
+            self.assertEqual([asset.relative_path.name for asset in catalog.list_assets()],
+                             ["b.mp4"])
+
+    def test_refresh_rejects_cache_redirected_into_library_after_construction(self):
+        with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
+            root = Path(temp)
+            library = root / "library"
+            library.mkdir()
+            inside_cache = library / "cache"
+            inside_cache.mkdir()
+            database = root / "cache" / "catalog.sqlite3"
+            catalog = Catalog(database, library)
+            original_resolve = Path.resolve
+
+            def resolve_after_redirect(path, *args, **kwargs):
+                if path == catalog.db_path:
+                    return inside_cache / database.name
+                return original_resolve(path, *args, **kwargs)
+
+            with patch.object(Path, "resolve", resolve_after_redirect):
+                with self.assertRaises(ValueError):
+                    catalog.refresh(probe=False)
+
+            self.assertFalse(database.exists())
+            self.assertFalse((inside_cache / database.name).exists())
 
     def test_schema_and_media_fields_are_persisted(self):
         with tempfile.TemporaryDirectory(prefix="catalog_") as temp:

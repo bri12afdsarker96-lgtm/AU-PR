@@ -53,7 +53,10 @@ class Catalog:
             if not path.is_file() or path.suffix.lower() not in VIDEO_EXTENSIONS:
                 continue
             relative_path = path.relative_to(self.library)
-            stat = path.stat()
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
+                continue
             asset_id = hashlib.sha256(
                 f"{self.root_id}\0{ntpath.normcase(relative_path.as_posix())}".encode("utf-8")
             ).hexdigest()
@@ -62,6 +65,8 @@ class Catalog:
         assets.sort(key=lambda row: row[1])
 
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        if self.db_path.resolve().is_relative_to(self.library):
+            raise ValueError("目录数据库不能位于素材库内")
         with closing(sqlite3.connect(self.db_path)) as conn:
             with conn:
                 conn.execute("""CREATE TABLE IF NOT EXISTS catalog_meta (
@@ -92,6 +97,9 @@ class Catalog:
 
     def list_assets(self) -> list[Asset]:
         with closing(sqlite3.connect(self.db_path)) as conn:
+            stored_root = conn.execute("SELECT root_path FROM catalog_meta").fetchone()[0]
+            if stored_root != self.root_path:
+                raise ValueError("目录数据库对应的素材库不一致")
             rows = conn.execute("""SELECT asset_id, relative_path, size_bytes, mtime_ns,
                 probe_status, duration_seconds, width, height, frame_rate,
                 video_codec, audio_codec FROM assets ORDER BY relative_path""").fetchall()
