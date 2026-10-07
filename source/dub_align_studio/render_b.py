@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import os
+import math
 import shutil
 import tempfile
 from dataclasses import dataclass, field
@@ -116,6 +117,7 @@ class ShotPlan:
     target_seconds: float   # = frames / fps（帧量化后的目标时长）
     frames: int
     strategy: str           # 复用 SyncPlan.note，人类可读
+    source_in_seconds: float = 0.0
     segment_file: Path | None = None
 
 
@@ -251,6 +253,7 @@ def render_b(
     progress=None,
     progress_bar: ProgressBar | None = None,
     watermark: Watermark | None = None,
+    source_offsets: list[float] | None = None,
 ) -> DubBResult:
     """整条 master 叠加 + 逐行画面收口渲染，返回带断言结果的 DubBResult。
 
@@ -268,6 +271,10 @@ def render_b(
         raise ValueError(f"计时行数({len(lines)})与画面数({len(videos)})不一致。")
     if not lines:
         raise ValueError("没有可渲染的行。")
+    if source_offsets is None:
+        source_offsets = [0.0] * len(lines)
+    if len(source_offsets) != len(lines):
+        raise ValueError("视频入点数量必须与镜头行数一致。")
 
     master_seconds = probe_seconds(config, master_wav)
     frames = quantize_to_frames([t.duration for t in lines], config.fps, master_seconds)
@@ -278,17 +285,23 @@ def render_b(
 
     shots: list[ShotPlan] = []
     segment_files: list[Path] = []
-    for position, (timing, video, frame_count) in enumerate(zip(lines, videos, frames), start=1):
+    for position, (timing, video, frame_count, source_in) in enumerate(
+            zip(lines, videos, frames, source_offsets), start=1):
         video = Path(video)
         src_seconds = probe_seconds(config, video)
+        source_in = float(source_in)
+        if not math.isfinite(source_in) or source_in < 0 or source_in >= src_seconds:
+            raise ValueError(f"第 {position} 镜视频入点超出源素材时长：{source_in}s / {src_seconds:.3f}s")
+        available_seconds = src_seconds - source_in
         target_seconds = frame_count / config.fps
         vf, note = shot_video_filter(
-            src_seconds, target_seconds, config.width, config.height, config.fps, config.mode
+            available_seconds, target_seconds, config.width, config.height, config.fps, config.mode
         )
-        speed = shot_speed(src_seconds, target_seconds, config.mode)
+        speed = shot_speed(available_seconds, target_seconds, config.mode)
         segment = work_dir / f"{position:03d}.mp4"
         _render_silent_segment(config, video, ",".join(vf), frame_count, segment,
-                               speed=speed, src_seconds=src_seconds)
+                               speed=speed, src_seconds=available_seconds,
+                               source_in_seconds=source_in)
         if progress is not None:
             try:
                 progress(position, len(lines))  # 逐段渲染进度回调
@@ -302,6 +315,7 @@ def render_b(
             target_seconds=round(target_seconds, 3),
             frames=frame_count,
             strategy=note,
+            source_in_seconds=round(source_in, 3),
             segment_file=segment,
         )
         shots.append(shot)
@@ -412,7 +426,7 @@ def _has_audio_stream(config: RenderConfig, source: Path) -> bool:
 
 def _render_silent_segment(
     config: RenderConfig, source: Path, vf: str, frame_count: int, output: Path,
-    speed: float = 1.0, src_seconds: float = 0.0,
+    speed: float = 1.0, src_seconds: float = 0.0, source_in_seconds: float = 0.0,
 ) -> None:
     """按帧数渲染一段分镜；**保留原视频音轨**（无音自动补静音），供 _overlay_master
     按 orig_video_volume 混入成片。旧版一律 `-an` 剥掉原音 → 用户抱怨「原视频音效
@@ -424,11 +438,14 @@ def _render_silent_segment(
       在段末自然截断（不外溢下段），放慢段用 apad 补静音到段尾。
 
     统一 aac/44100/stereo 保证后续 `concat demuxer` 拼接时音轨参数一致（否则会拒拼）。"""
+    if not math.isfinite(source_in_seconds) or source_in_seconds < 0:
+        raise ValueError(f"视频入点必须是非负秒数：{source_in_seconds}")
+    input_seek = ["-ss", f"{source_in_seconds:.3f}"] if source_in_seconds > 0 else []
     has_audio = _has_audio_stream(config, source)
     target_seconds = max(0.05, frame_count / max(1, config.fps))
     if has_audio:
         command = [
-            config.ffmpeg, "-y", "-i", str(source),
+            config.ffmpeg, "-y", *input_seek, "-i", str(source),
             "-vf", vf,
             "-frames:v", str(frame_count),
             "-af", shot_audio_filter(speed, src_seconds, target_seconds),
@@ -441,7 +458,7 @@ def _render_silent_segment(
     else:
         # 无音源：合成一段静音伴随视频，编码同样为 aac/44100/stereo → 拼接时无缝
         command = [
-            config.ffmpeg, "-y", "-i", str(source),
+            config.ffmpeg, "-y", *input_seek, "-i", str(source),
             "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
             "-vf", vf,
             "-frames:v", str(frame_count),

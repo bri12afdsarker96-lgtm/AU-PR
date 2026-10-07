@@ -89,10 +89,28 @@ def segments_from_output(output_dir: Path, count: int) -> list[Path]:
 
 
 def select_shot_videos(shots_dir: Path, lines: list[str], material_mode: str,
-                       seed: int, output_dir: Path, log=None) -> list[Path]:
+                       seed: int, output_dir: Path, log=None,
+                       storyboard_path: Path | None = None) -> list[Path]:
     """按素材模式取每行的视频。flat=平铺旧口径；folder_order/keyword 走 material_select，
     选片结果落 选片清单.csv（重渲染复用同一份，删除该文件即重新选片）。"""
     from . import material_select as ms
+
+    if material_mode == "storyboard":
+        from . import storyboard
+
+        if storyboard_path is None:
+            raise ValueError("表格成片模式需要先选择五列分镜表。")
+        board = storyboard.read_storyboard(storyboard_path)
+        if lines != [shot.narration for shot in board.shots]:
+            raise ValueError("当前文案与表格中的口播文稿不一致；请重新导入表格，或切回普通素材模式。")
+        plan = storyboard.prepare_plan(board, shots_dir, Path(output_dir) / storyboard.PLAN_NAME)
+        videos = storyboard.plan_videos(plan)
+        if log:
+            log(f"  已生成/复用 {storyboard.PLAN_NAME}，共 {len(videos)} 个镜头。")
+            for item in plan["shots"]:
+                hint = " ⚠ 建议复核" if item["review_required"] else ""
+                log(f"  表格第 {item['row']} 行 → {Path(item['source']).name}{hint}")
+        return videos
 
     if material_mode in ("", "flat"):
         videos = list_shot_videos(shots_dir)
@@ -286,12 +304,13 @@ def step_render(
     progress=None,
     progress_bar: "ProgressBar | None" = None,
     watermark: "Watermark | None" = None,
+    source_offsets: list[float] | None = None,
 ) -> DubBResult:
     """③ B 渲染成片（逐行裁/变速 + 整轨叠加 + 帧收口；可选烧字幕 + 文本框 + 进度条 + 动态水印 + BGM/音效混流）。"""
     return render_b(
         Path(master_wav), timings, [Path(v) for v in videos],
         Path(output_dir) / FILM_NAME, config, subtitle_style, overlays, audio_mix, progress,
-        progress_bar=progress_bar, watermark=watermark,
+        progress_bar=progress_bar, watermark=watermark, source_offsets=source_offsets,
     )
 
 

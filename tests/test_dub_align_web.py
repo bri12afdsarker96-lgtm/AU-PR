@@ -10,9 +10,25 @@ import unittest
 import urllib.parse
 import urllib.request
 import wave
+import zipfile
 from pathlib import Path
+from unittest.mock import patch
+from xml.sax.saxutils import escape
 
 from dub_align_studio import web_server
+
+
+def _storyboard_xlsx(path: Path, lines: list[str]) -> None:
+    values = [['镜头序号', '口播文稿', '时长', '图片生成提示词', '视频生成提示词']]
+    values.extend([[str(i), line, '5秒', line, line] for i, line in enumerate(lines, 1)])
+    rows = []
+    for number, values_row in enumerate(values, 1):
+        cells = ''.join(f'<c r="{col}{number}" t="inlineStr"><is><t>{escape(value)}</t></is></c>'
+                        for col, value in zip('ABCDE', values_row))
+        rows.append(f'<row r="{number}">{cells}</row>')
+    xml = '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>' + ''.join(rows) + '</sheetData></worksheet>'
+    with zipfile.ZipFile(path, 'w') as archive:
+        archive.writestr('xl/worksheets/sheet1.xml', xml)
 
 
 def _wav_bytes(seconds: float = 1.0) -> bytes:
@@ -113,6 +129,90 @@ class WebServerTests(unittest.TestCase):
         job = self._wait_job()
         self.assertFalse(job["ok"])
         self.assertTrue(any("失败" in line for line in job["log"]))
+
+    def test_storyboard_parse_endpoint(self):
+        workdir = Path(tempfile.mkdtemp(prefix='web_story_parse_'))
+        try:
+            sheet = workdir / '分镜.xlsx'
+            _storyboard_xlsx(sheet, ['地球太空', '黑洞吞噬恒星'])
+            request = urllib.request.Request(
+                self.base + '/api/storyboard/parse?path=' + urllib.parse.quote(str(sheet)),
+                data=b'', method='POST')
+            parsed = json.loads(urllib.request.urlopen(request).read())
+            self.assertEqual(parsed['count'], 2)
+            self.assertEqual(parsed['shots'][0]['row'], 2)
+            self.assertEqual(parsed['text'], '地球太空\n黑洞吞噬恒星')
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+
+    def test_storyboard_plan_and_choice_api(self):
+        workdir = Path(tempfile.mkdtemp(prefix='web_story_plan_'))
+        try:
+            sheet = workdir / '分镜.xlsx'
+            _storyboard_xlsx(sheet, ['地球太空'])
+            library = workdir / '素材'
+            library.mkdir()
+            for name in ('BJ1_地球太空.mp4', 'BJ2_地球太空.mp4'):
+                (library / name).write_bytes(b'x')
+            output = workdir / '输出'
+            plan = self._post('/api/storyboard/plan', {
+                'storyboard_path': str(sheet), 'shots_dir': str(library),
+                'output_dir': str(output)})
+            self.assertEqual(plan['count'], 1)
+            self.assertEqual(len(plan['shots'][0]['candidates']), 2)
+            other = plan['shots'][0]['candidates'][1]['source']
+            changed = self._post('/api/storyboard/choice', {
+                'output_dir': str(output), 'row': 2, 'source': other,
+                'source_in_seconds': 1.25})
+            self.assertEqual(changed['shots'][0]['source'], other)
+            self.assertEqual(changed['shots'][0]['source_in_seconds'], 1.25)
+            self.assertTrue(changed['shots'][0]['locked'])
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+
+    @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), '需要 ffmpeg/ffprobe')
+    def test_storyboard_run_all_produces_film_and_review_report(self):
+        workdir = Path(tempfile.mkdtemp(prefix='web_story_film_'))
+        try:
+            sheet = workdir / '分镜.xlsx'
+            lines = ['地球太空', '黑洞吞噬恒星']
+            _storyboard_xlsx(sheet, lines)
+            library = workdir / '素材库'
+            library.mkdir()
+            from dub_align_studio.render_b import RenderConfig, _run
+            config = RenderConfig(width=320, height=180)
+            for name in ('BJ1_地球太空.mp4', 'BJ2_黑洞吞噬恒星.mp4'):
+                _run([config.ffmpeg, '-y', '-f', 'lavfi', '-i',
+                      'testsrc=size=320x180:rate=30:duration=6',
+                      '-pix_fmt', 'yuv420p', str(library / name)], '样例')
+            output = workdir / '成片输出'
+            prepared = self._post('/api/storyboard/plan', {
+                'storyboard_path': str(sheet), 'shots_dir': str(library),
+                'output_dir': str(output)})
+            self._post('/api/storyboard/choice', {
+                'output_dir': str(output), 'row': 2,
+                'source': prepared['shots'][0]['source'], 'source_in_seconds': 1.0})
+            payload = {'action': 'run_all', 'text': '\n'.join(lines), 'engine': 'mock',
+                       'aligner': '均分兜底', 'shots_dir': str(library), 'output_dir': str(output),
+                       'storyboard_path': str(sheet), 'material_mode': 'storyboard',
+                       'aspect': '16:9 横屏', 'burn_subtitles': False}
+            with patch('dub_align_studio.studio_pipeline.make_render_config', return_value=config):
+                self.assertTrue(self._post('/api/run', payload)['ok'])
+                job = self._wait_job(timeout=180)
+            self.assertTrue(job['ok'], '\n'.join(job['log']))
+            self.assertTrue((output / '成片.mp4').is_file())
+            self.assertTrue((output / '剪辑方案.json').is_file())
+            snapshot = json.loads((output / '剪辑方案_执行快照.json').read_text(encoding='utf-8'))
+            self.assertEqual(snapshot['shots'][0]['source_in_seconds'], 1.0)
+            self.assertTrue((output / '选片复核清单.csv').is_file())
+            # The existing separate "render" button must also honor the
+            # storyboard selection and source in-point after the first film.
+            with patch('dub_align_studio.studio_pipeline.make_render_config', return_value=config):
+                self.assertTrue(self._post('/api/run', {**payload, 'action': 'render'})['ok'])
+                rerender = self._wait_job(timeout=180)
+            self.assertTrue(rerender['ok'], '\n'.join(rerender['log']))
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
 
     def _post(self, path: str, payload: dict) -> dict:
         request = urllib.request.Request(

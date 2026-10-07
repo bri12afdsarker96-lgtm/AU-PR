@@ -508,12 +508,36 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             JOB.check_cancel()   # 开跑前先看是否已被取消（队列任务）
             shots_dir = Path(str(payload.get("shots_dir") or ""))
             lines = parse_script(text)
-            log(f"素材模式：{ {'flat':'平铺顺序','folder_order':'文件夹顺序','keyword':'关键字匹配'}.get(material_mode, material_mode) }")
+            storyboard_path = Path(str(payload.get("storyboard_path"))) if payload.get("storyboard_path") else None
+            log(f"素材模式：{ {'flat':'平铺顺序','folder_order':'文件夹顺序','keyword':'关键字匹配','storyboard':'五列表格匹配素材库'}.get(material_mode, material_mode) }")
             videos = pipeline.select_shot_videos(shots_dir, lines, material_mode,
-                                                 int(payload.get("seed") or 42), output_dir, log=log)
+                                                 int(payload.get("seed") or 42), output_dir, log=log,
+                                                 storyboard_path=storyboard_path)
+            source_offsets = None
+            if material_mode == "storyboard":
+                from . import storyboard
+                plan_snapshot = json.loads((output_dir / storyboard.PLAN_NAME).read_text(encoding="utf-8"))
+                source_offsets = [float(shot.get("source_in_seconds", 0.0))
+                                  for shot in plan_snapshot["shots"]]
+                (output_dir / "剪辑方案_执行快照.json").write_text(
+                    json.dumps(plan_snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
 
             master_path = output_dir / pipeline.MASTER_NAME
             reuse_dub = bool(payload.get("reuse_dub")) and master_path.is_file()
+            if material_mode == "storyboard":
+                from . import storyboard
+                board = storyboard.read_storyboard(storyboard_path)
+                dub_input_signature = storyboard.dub_signature(
+                    board, engine_key, str(payload.get("voice_id") or ""), options.to_payload(),
+                    voice.reference_wav if voice else None)
+                marker = output_dir / "表格配音来源.json"
+                try:
+                    prior = json.loads(marker.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    prior = {}
+                if reuse_dub and prior.get("synthesis_sha256") != dub_input_signature:
+                    reuse_dub = False
+                    log("  表格/音色/合成参数已变更，不能复用旧配音，将重新合成。")
             if not reuse_dub:
                 JOB.set_progress("① 配音 · 排队中（等待配音槽）…", 5)
             with _PhaseLock(_DUB_LOCK, JOB):   # 配音阶段串行：GPU 一次只跑一个克隆；期间上一个任务可并行渲染
@@ -550,6 +574,10 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                                                before_engine_call=_before,
                                                after_engine_call=_after)
                     log(f"  ✅ master {master.seconds:.2f}s（引擎 {master.engine}）")
+                    if material_mode == "storyboard":
+                        marker.write_text(json.dumps({"workbook_sha256": board.sha256,
+                                                      "synthesis_sha256": dub_input_signature}, ensure_ascii=False),
+                                          encoding="utf-8")
 
             JOB.check_cancel()   # 配音后、量时长前的取消检查点
             JOB.set_progress("② 量时长 · 排队中（等待渲染槽）…", 77)
@@ -572,7 +600,8 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
 
                 result = pipeline.step_render(master_path, timings, videos, output_dir, style,
                                               config=config, overlays=overlays, audio_mix=audio_mix,
-                                              progress=_render_progress, progress_bar=progress_bar, watermark=watermark)
+                                              progress=_render_progress, progress_bar=progress_bar,
+                                              watermark=watermark, source_offsets=source_offsets)
                 log(f"  字幕/文本框：{result.subtitle_note or '未启用'}")
                 capcut = None
                 if payload.get("export_capcut"):
@@ -638,9 +667,16 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
                 JOB.timings, JOB.ok = timings, True
         elif action == "render":
             timings = JOB.timings or pipeline.load_timings(output_dir)
+            storyboard_path = Path(str(payload["storyboard_path"])) if payload.get("storyboard_path") else None
             videos = pipeline.select_shot_videos(Path(str(payload.get("shots_dir") or "")),
                                                  [t.text for t in timings], material_mode,
-                                                 int(payload.get("seed") or 42), output_dir, log=log)
+                                                 int(payload.get("seed") or 42), output_dir, log=log,
+                                                 storyboard_path=storyboard_path)
+            source_offsets = None
+            if material_mode == "storyboard":
+                from . import storyboard
+                plan = json.loads((output_dir / storyboard.PLAN_NAME).read_text(encoding="utf-8"))
+                source_offsets = [float(shot.get("source_in_seconds", 0.0)) for shot in plan["shots"]]
 
             def _render_progress(done: int, total: int) -> None:
                 JOB.set_progress(f"渲染成片 · 第 {done}/{total} 段", int(done / max(1, total) * 100))
@@ -648,7 +684,8 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             result = pipeline.step_render(output_dir / pipeline.MASTER_NAME, timings, videos,
                                           output_dir, style, config=config, overlays=overlays,
                                           audio_mix=audio_mix, progress=_render_progress,
-                                          progress_bar=progress_bar, watermark=watermark)
+                                          progress_bar=progress_bar, watermark=watermark,
+                                          source_offsets=source_offsets)
             log(f"字幕/文本框：{result.subtitle_note or '未启用'}")
             log(("✅ 成片完成：" if result.ok else "❌ 收口断言未通过：") + str(result.output_path))
             if result.ok:
@@ -661,9 +698,16 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             master_path = output_dir / pipeline.MASTER_NAME
             timings = JOB.timings or pipeline.load_timings(output_dir)
             # 与首次成片同一份选片（选片清单.csv 复用）——重烧字幕不换画面
+            storyboard_path = Path(str(payload["storyboard_path"])) if payload.get("storyboard_path") else None
             videos = pipeline.select_shot_videos(Path(str(payload.get("shots_dir") or "")),
                                                  [t.text for t in timings], material_mode,
-                                                 int(payload.get("seed") or 42), output_dir, log=log)
+                                                 int(payload.get("seed") or 42), output_dir, log=log,
+                                                 storyboard_path=storyboard_path)
+            source_offsets = None
+            if material_mode == "storyboard":
+                from . import storyboard
+                plan = json.loads((output_dir / storyboard.PLAN_NAME).read_text(encoding="utf-8"))
+                source_offsets = [float(shot.get("source_in_seconds", 0.0)) for shot in plan["shots"]]
 
             def _fin_progress(done: int, total: int) -> None:
                 JOB.set_progress(f"重烧字幕 · 第 {done}/{total} 段", 5 + int(done / max(1, total) * 90))
@@ -672,7 +716,8 @@ def _run_job(JOB: JobState, action: str, payload: dict) -> None:  # noqa: N803 �
             log("按当前样式重烧字幕成片…（未点「导出剪映草稿」不会生成草稿包）")
             result = pipeline.step_render(master_path, timings, videos, output_dir, style,
                                           config=config, overlays=overlays, audio_mix=audio_mix,
-                                          progress=_fin_progress, progress_bar=progress_bar, watermark=watermark)
+                                          progress=_fin_progress, progress_bar=progress_bar, watermark=watermark,
+                                          source_offsets=source_offsets)
             log(("✅ 成片：" if result.ok else "❌ 收口未过：") + str(result.output_path))
             JOB.set_progress("完成", 100)
             if result.ok:
@@ -1762,6 +1807,55 @@ class _Handler(BaseHTTPRequestHandler):
                     raise ValueError("配置名不能为空。")
                 _save_config_preset(name, payload.get("config") or {})
                 self._json({"ok": True, "presets": _load_config_presets()})
+            except Exception as exc:
+                self._json({"error": str(exc)}, 400)
+            return
+        if route in ("/api/storyboard/plan", "/api/storyboard/choice"):
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                from . import storyboard
+                if length <= 0 or length > _MAX_UPLOAD:
+                    raise ValueError("请求内容为空或过大。")
+                request = json.loads(self.rfile.read(length).decode("utf-8"))
+                output_dir = Path(str(request.get("output_dir") or ""))
+                if not str(request.get("output_dir") or "").strip():
+                    raise ValueError("请先选择输出目录。")
+                plan_path = output_dir / storyboard.PLAN_NAME
+                if route.endswith("/plan"):
+                    board = storyboard.read_storyboard(str(request.get("storyboard_path") or ""))
+                    library = Path(str(request.get("shots_dir") or ""))
+                    plan = storyboard.prepare_plan(board, library, plan_path)
+                else:
+                    plan = storyboard.choose_candidate(plan_path, int(request.get("row")),
+                                                       str(request.get("source") or ""),
+                                                       request.get("source_in_seconds"))
+                self._json({"ok": True, "count": len(plan["shots"]),
+                            "shots": [{"row": shot["row"], "label": shot["label"],
+                                       "narration": shot["narration"], "source": shot["source"],
+                                       "source_in_seconds": shot.get("source_in_seconds", 0.0),
+                                       "locked": shot["locked"],
+                                       "review_reason": shot.get("review_reason", ""),
+                                       "candidates": shot["candidates"]}
+                                      for shot in plan["shots"]]})
+            except Exception as exc:
+                self._json({"error": str(exc)}, 400)
+            return
+        if route == "/api/storyboard/parse":
+            query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+            try:
+                from . import storyboard
+                path = Path(str(query.get("path") or ""))
+                if not path.is_file() or path.suffix.lower() != ".xlsx":
+                    raise ValueError("请选择存在的五列 xlsx 分镜表。")
+                if path.stat().st_size > _MAX_UPLOAD:
+                    raise ValueError("表格文件过大。")
+                board = storyboard.read_storyboard(path)
+                suggested_library = Path("D:/宇宙素材")
+                self._json({"ok": True, "path": str(board.path), "folder": str(board.path.parent),
+                            "text": board.text, "count": len(board.shots),
+                            "suggested_library": str(suggested_library) if suggested_library.is_dir() else "",
+                            "shots": [{"row": s.row, "label": s.label, "narration": s.narration,
+                                       "duration": s.duration} for s in board.shots]})
             except Exception as exc:
                 self._json({"error": str(exc)}, 400)
             return

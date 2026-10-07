@@ -404,6 +404,14 @@ footer b{color:var(--muted);font-weight:600}
   <div class="grid g2">
     <div class="card">
       <h2>文案与配置</h2>
+      <div class="sp" style="padding:12px;border:1px solid var(--line2);border-radius:11px;background:var(--panel2)">
+        <span class="f">表格成片 · 五列分镜表 + 现有视频素材库</span>
+        <div class="row" style="margin-top:7px">
+          <button class="btn gold" onclick="pickDoc('storyboard')">📊 选择五列分镜表</button>
+          <input id="storyboardPath" type="text" readonly placeholder="尚未选择表格" style="flex:1;min-width:180px">
+        </div>
+        <p class="mini" id="storyboardHint" style="color:var(--faint);margin-top:5px">导入后会提取 A–E 列、自动匹配素材；配音沿用当前音色，默认 16:9 横屏。低把握镜头仍可出片，并标记复核。</p>
+      </div>
       <div class="sp"><span class="f">待合成文案 · 一行一句（长短不限）</span>
         <div class="row" style="margin-bottom:8px">
           <button class="btn" onclick="pickDoc('xlsx')">📊 导入表格(xlsx)</button>
@@ -444,7 +452,7 @@ footer b{color:var(--muted);font-weight:600}
         <div><span class="f">计时尺子</span><select id="aligner"></select></div>
         <div><span class="f">画面比例</span><select id="aspect"></select></div>
       </div>
-      <div class="sp"><span class="f">分镜目录 <span class="mini" style="color:var(--faint)">（输出目录默认跟随此目录）</span></span>
+      <div class="sp"><span class="f">分镜目录 / 视频素材库 <span class="mini" style="color:var(--faint)">（表格成片可选择包含多个子目录的素材库）</span></span>
         <div class="row"><input type="text" id="shots" placeholder="D:\素材\分镜（1.mp4、2.mp4 …）" oninput="mirrorOut();scheduleShotsCount()">
         <button class="btn" onclick="pickDir('shots')">📁 选择</button></div>
         <div class="mini" id="shotsCount" style="margin-top:5px"></div></div>
@@ -453,9 +461,15 @@ footer b{color:var(--muted);font-weight:600}
           <option value="flat">平铺顺序 · 目录下 1.mp4、2.mp4…，第 i 行用第 i 个</option>
           <option value="folder_order">文件夹顺序 · 第 i 行用第 i 个子文件夹（行多则从头循环）</option>
           <option value="keyword">关键字匹配 · 子文件夹名↔每行文案打分选夹（无匹配按顺序兜底）</option>
+          <option value="storyboard">表格成片 · 按五列内容在素材库中逐镜头选片</option>
         </select>
-        <p class="mini" style="color:var(--faint);margin-top:5px">夹内按 Seed 确定性随机选片（换 Seed 同文案换一套画面，矩阵去重）；
-          选片结果写「输出目录\选片清单.csv」，重渲染复用同一份——删除该文件即重新选片。</p></div>
+        <p class="mini" style="color:var(--faint);margin-top:5px">普通文件夹模式按 Seed 确定性选片，结果写「选片清单.csv」；
+          表格成片模式另写「剪辑方案.json」和「选片复核清单.csv」，人工替换会保留。</p></div>
+      <div class="sp" id="storyboardReviewBox" style="display:none">
+        <div class="row"><button class="btn" onclick="previewStoryboard()">🔎 预览 / 复核逐镜头选片</button>
+          <span class="mini" style="color:var(--faint)">表格成片模式：可从每镜头候选中替换；视频原文件保持不变。</span></div>
+        <div id="storyboardPreview" style="margin-top:8px;max-height:400px;overflow:auto"></div>
+      </div>
       <div class="sp"><span class="f">输出目录 <span class="mini" style="color:var(--faint)">（配音克隆/成片等全部产物默认写这里 · 默认=分镜目录，可改）</span></span>
         <div class="row"><input type="text" id="outdir" placeholder="默认跟随分镜目录，可自定义" oninput="_outdirManual=true">
         <button class="btn" onclick="pickDir('outdir')">📁 选择</button></div></div>
@@ -1698,6 +1712,7 @@ function buildPayload(action){
   const out=$('outdir').value.trim();
   return {action,text:$('text').value,engine:$('engine').value,aligner:$('aligner').value,
     material_mode:$('matMode')?$('matMode').value:'flat',
+    storyboard_path:($('matMode')&&$('matMode').value==='storyboard')?$('storyboardPath').value.trim():'',
     voice_id:$('voice').value,shots_dir:$('shots').value.trim(),output_dir:out,
     title:_baseName(out)||'成片',
     max_pause:+$('pause').value,speed:+$('speed').value,seed:+$('seed').value,
@@ -2135,15 +2150,20 @@ async function openFolder(){
 let dirTarget=null, dirCurrent='', dirFilesExt='', docKind='';
 // ① 输出目录默认跟随分镜目录（未手动改过时镜像）；手动改了就尊重手动值
 let _outdirManual=false;
-function mirrorOut(){ if(!_outdirManual){const s=$('shots').value.trim(); if(s&&$('outdir'))$('outdir').value=s;} }
+function mirrorOut(){ if($('matMode')&&$('matMode').value==='storyboard')return; if(!_outdirManual){const s=$('shots').value.trim(); if(s&&$('outdir'))$('outdir').value=s;} }
 // A 文案行数 vs 分镜数量 实时校验：数量不匹配提前提醒，避免克隆完才在渲染前报错白等一轮
 let _shotsCountTimer=null;
 function scheduleShotsCount(){ clearTimeout(_shotsCountTimer); _shotsCountTimer=setTimeout(updateShotsCount,400); }
 async function updateShotsCount(){
   const el=$('shotsCount'); if(!el)return;
+  if($('storyboardReviewBox'))$('storyboardReviewBox').style.display=$('matMode')?.value==='storyboard'?'':'none';
   const lines=($('text').value||'').split('\n').map(s=>s.trim()).filter(Boolean).length;
   const dir=$('shots').value.trim();
   if(!dir){ el.textContent=lines?`文案 ${lines} 行 · 请选择分镜目录`:''; el.style.color='var(--faint)'; return; }
+  if($('matMode')?.value==='storyboard'){
+    el.textContent=`文案 ${lines} 行 · 将递归检索素材库并生成剪辑方案；低把握镜头标记复核`;
+    el.style.color='var(--faint)'; return;
+  }
   let vids=0,subs=0;
   try{
     const s=await (await fetch('/api/browse?files=mp4,mov,mkv,avi,webm&path='+encodeURIComponent(dir))).json();
@@ -2172,7 +2192,8 @@ async function pickDir(targetId){
 // ① 导入表格/TXT：本机选文档 → 拿到真实路径 → 解析 + 把分镜/输出目录设为文档所在文件夹
 function pickDoc(kind){
   docKind=kind; dirFilesExt=(kind==='xlsx'?'xlsx':'txt'); dirTarget='';
-  browseDir($('shots').value.trim()||$('outdir').value.trim()||'');
+  if(kind==='storyboard')dirFilesExt='xlsx';
+  browseDir(kind==='storyboard'?($('storyboardPath').value.trim()||$('outdir').value.trim()||''):($('shots').value.trim()||$('outdir').value.trim()||''));
   $('dirModal').classList.add('on');
 }
 async function browseDir(path){
@@ -2182,7 +2203,7 @@ async function browseDir(path){
   dirCurrent=s.path||'';
   $('dirCur').textContent=dirCurrent||'（选择磁盘）';
   const btn=$('dirChoose'); if(btn)btn.style.display=dirFilesExt?'none':'';   // 选文档模式：点文件即完成，无「选此目录」
-  const ttl=$('dirTitle'); if(ttl)ttl.textContent=dirFilesExt?('选择'+(docKind==='xlsx'?'表格(xlsx)':'TXT')+'文档（点文件即导入，目录自动设为其所在文件夹）'):'选择文件夹';
+  const ttl=$('dirTitle'); if(ttl)ttl.textContent=dirFilesExt?(docKind==='storyboard'?'选择五列分镜表（A 镜头、B 口播、C 时长、D/E 画面提示词）':('选择'+(docKind==='xlsx'?'表格(xlsx)':'TXT')+'文档（点文件即导入，目录自动设为其所在文件夹）')):'选择文件夹';
   const list=$('dirList');list.innerHTML='';
   if(!s.roots&&s.parent!==null&&s.parent!==undefined&&s.parent!==dirCurrent){
     const up=document.createElement('div');up.className='item';up.textContent='⬆ 上一级';
@@ -2211,13 +2232,77 @@ function chooseDir(){
 // 选中文档 → 按真实路径解析，并把分镜+输出目录默认设为文档所在文件夹（用户 2026-07-26 ①）
 async function chooseDoc(fullpath){
   $('dirModal').classList.remove('on');
+  if(docKind==='storyboard'){
+    const j=await (await fetch('/api/storyboard/parse?path='+encodeURIComponent(fullpath),{method:'POST'})).json();
+    if(j.error){alert(j.error);return;}
+    $('storyboardPath').value=j.path;
+    $('text').value=j.text;
+    $('matMode').value='storyboard';
+    $('aspect').value='16:9 横屏';
+    if(j.suggested_library)$('shots').value=j.suggested_library;
+    const base=j.path.replace(/\.xlsx$/i,'');
+    $('outdir').value=base+'_成片'; _outdirManual=true;
+    $('storyboardHint').textContent=`已读 ${j.count} 个镜头 · 素材库可在下方更换 · 输出到表格旁的独立目录；画面按配音实测时长收口。`;
+    updateShotsCount();
+    toast(`已导入 ${j.count} 个镜头；确认素材库后点「生成成片」`,'ok');
+    return;
+  }
   const q=new URLSearchParams({kind:docKind, column:$('xlsxCol').value,
     header:(docKind==='xlsx'&&$('xlsxHeader')?.checked)?'1':'0', path:fullpath});
   const j=await (await fetch('/api/script/parse?'+q,{method:'POST'})).json();
   if(j.error){alert(j.error);return;}
   $('text').value=j.lines.join('\n');
+  $('storyboardPath').value=''; $('matMode').value='flat';
   if(j.folder){ $('shots').value=j.folder; _outdirManual=false; if($('outdir'))$('outdir').value=j.folder; }
   toast(`已导入 ${j.lines.length} 行 · 分镜/输出目录已设为文档所在文件夹`,'ok');
+}
+
+function renderStoryboardPreview(data){
+  const box=$('storyboardPreview'); box.innerHTML='';
+  const count=document.createElement('p');count.className='mini';
+  count.textContent=`${data.count} 个镜头 · 当前为文本候选，画面和运动仍需复核；更换候选后自动保存。`;
+  box.appendChild(count);
+  (data.shots||[]).forEach(shot=>{
+    const row=document.createElement('div');row.style.cssText='border-top:1px solid var(--line2);padding:8px 0';
+    const label=document.createElement('div');label.className='mini';
+    label.textContent=`表格第 ${shot.row} 行 · ${shot.label||''} · ${(shot.narration||'').slice(0,70)}`;
+    const select=document.createElement('select');select.style.width='100%';select.style.marginTop='5px';
+    (shot.candidates||[]).forEach(candidate=>{
+      const option=document.createElement('option'); option.value=candidate.source;
+      option.textContent=`${_baseName(candidate.source)} · 文本得分 ${candidate.score}`;
+      select.appendChild(option);
+    });
+    select.value=shot.source;
+    select.onchange=()=>changeStoryboardCandidate(shot.row,select.value);
+    const seek=document.createElement('input');seek.type='number';seek.min='0';seek.step='0.1';
+    seek.value=shot.source_in_seconds||0;seek.style.cssText='width:85px;margin-left:6px';
+    seek.title='从源视频的第几秒开始取画面';
+    seek.onchange=()=>changeStoryboardCandidate(shot.row,select.value,+seek.value);
+    const seekLabel=document.createElement('span');seekLabel.className='mini';seekLabel.textContent='入点(秒)';
+    const note=document.createElement('div');note.className='mini';note.style.color='var(--faint)';
+    note.textContent=(shot.locked?'已人工选定 · ':'')+(shot.review_reason||'请核对画面是否符合分镜');
+    row.append(label,select,seekLabel,seek,note);box.appendChild(row);
+  });
+}
+async function previewStoryboard(){
+  const path=$('storyboardPath').value.trim(),library=$('shots').value.trim(),out=$('outdir').value.trim();
+  if(!path||!library||!out){alert('请先导入五列分镜表，并确认视频素材库和输出目录。');return;}
+  $('storyboardPreview').textContent='正在检索素材库并生成候选…';
+  try{
+    const j=await (await fetch('/api/storyboard/plan',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({storyboard_path:path,shots_dir:library,output_dir:out})})).json();
+    if(j.error)throw new Error(j.error);
+    renderStoryboardPreview(j);
+  }catch(e){$('storyboardPreview').textContent='选片预览失败：'+e.message;}
+}
+async function changeStoryboardCandidate(row,source,sourceInSeconds=null){
+  try{
+    const j=await (await fetch('/api/storyboard/choice',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({output_dir:$('outdir').value.trim(),row,source,
+        source_in_seconds:sourceInSeconds})})).json();
+    if(j.error)throw new Error(j.error);
+    renderStoryboardPreview(j);toast(`表格第 ${row} 行选片已保存`,'ok');
+  }catch(e){alert('替换失败：'+e.message);previewStoryboard();}
 }
 
 /* ── 设置：数据总目录 ── */
