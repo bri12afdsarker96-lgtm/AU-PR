@@ -5,14 +5,35 @@ import hashlib
 import ntpath
 import os
 import sqlite3
+import stat
 import subprocess
 import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from dub_align_studio.material_catalog import Catalog
+
+
+class _ScandirResult:
+    """Context-managed iterator for injecting filesystem faults in scans."""
+
+    def __init__(self, entries):
+        self.entries = iter(entries)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return next(self.entries)
 
 
 class CatalogTests(unittest.TestCase):
@@ -243,11 +264,14 @@ class CatalogTests(unittest.TestCase):
             catalog = Catalog(root / "cache" / "catalog.sqlite3", library)
             catalog.refresh(probe=False)
 
-            def broken_walk(_top, *, onerror):
-                yield (str(library), [], [first.name])
+            with os.scandir(library) as entries:
+                first_entry = next(entry for entry in entries if entry.name == first.name)
+
+            def broken_entries():
+                yield first_entry
                 raise PermissionError("incomplete scan")
 
-            with patch("dub_align_studio.material_catalog.os.walk", broken_walk):
+            with patch("os.scandir", return_value=_ScandirResult(broken_entries())):
                 with self.assertRaisesRegex(PermissionError, "incomplete scan"):
                     catalog.refresh(probe=False)
 
@@ -259,6 +283,131 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual({asset.relative_path.name: asset.probe_status
                               for asset in catalog.list_assets()},
                              {"first.mp4": "skipped", "second.mp4": "skipped"})
+
+    def test_directory_type_error_does_not_commit_incomplete_scan(self):
+        for incremental in (False, True):
+            with self.subTest(incremental=incremental), \
+                    tempfile.TemporaryDirectory(prefix="catalog_") as temp:
+                root = Path(temp)
+                library = root / "library"
+                nested = library / "nested"
+                nested.mkdir(parents=True)
+                (nested / "clip.mp4").write_bytes(b"clip")
+                (library / "first.mp4").write_bytes(b"first")
+                catalog = Catalog(root / "cache" / "catalog.sqlite3", library)
+                if incremental:
+                    catalog.refresh(probe=False)
+                before = catalog.db_path.read_bytes() if incremental else None
+                original_scandir = os.scandir
+                denied_type = Mock(side_effect=PermissionError("cannot classify directory"))
+
+                def entries_with_type_error(path):
+                    if Path(path) != library:
+                        return original_scandir(path)
+                    with original_scandir(path) as entries:
+                        items = [SimpleNamespace(name=entry.name, path=entry.path,
+                                                 is_dir=denied_type,
+                                                 is_symlink=entry.is_symlink)
+                                 if entry.name == "nested" else entry
+                                 for entry in entries]
+                    return _ScandirResult(sorted(items, key=lambda entry: entry.name))
+
+                with patch("os.scandir", side_effect=entries_with_type_error):
+                    with self.assertRaisesRegex(PermissionError, "cannot classify directory"):
+                        catalog.refresh(probe=False)
+
+                denied_type.assert_called()
+                if incremental:
+                    self.assertEqual(catalog.db_path.read_bytes(), before)
+                    self.assertEqual({asset.probe_status for asset in catalog.list_assets()},
+                                     {"skipped"})
+                    with closing(sqlite3.connect(catalog.db_path)) as conn:
+                        self.assertEqual(conn.execute(
+                            "SELECT scan_generation FROM catalog_meta").fetchone(), (1,))
+                else:
+                    self.assertFalse(catalog.db_path.parent.exists())
+
+    def test_queued_directory_replaced_by_symlink_is_not_descended(self):
+        with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
+            root = Path(temp)
+            library = root / "library"
+            nested = library / "nested"
+            nested.mkdir(parents=True)
+            (nested / "clip.mp4").write_bytes(b"clip")
+            first = library / "first.mp4"
+            first.write_bytes(b"first")
+            catalog = Catalog(root / "cache" / "catalog.sqlite3", library)
+            original_is_file = Path.is_file
+            original_lstat = os.lstat
+            original_scandir = os.scandir
+            replaced = False
+            scanned = []
+
+            def replace_while_processing_parent_file(path):
+                nonlocal replaced
+                if path == first:
+                    replaced = True
+                return original_is_file(path)
+
+            def lstat_after_replacement(path, *args, **kwargs):
+                # Simulate the changed filesystem entry without symlink privileges.
+                if Path(path) == nested and replaced:
+                    return SimpleNamespace(st_mode=stat.S_IFLNK | 0o777)
+                return original_lstat(path, *args, **kwargs)
+
+            def record_scandir(path):
+                scanned.append(Path(path))
+                return original_scandir(path)
+
+            with patch.object(Path, "is_file", replace_while_processing_parent_file), \
+                    patch("os.lstat", side_effect=lstat_after_replacement), \
+                    patch("os.scandir", side_effect=record_scandir):
+                stats = catalog.refresh(probe=False)
+
+            self.assertTrue(replaced, "test must replace the queued directory after yielding")
+            self.assertEqual(scanned, [library])
+            self.assertEqual(stats.asset_count, 1)
+            self.assertEqual([asset.relative_path.as_posix() for asset in catalog.list_assets()],
+                             ["first.mp4"])
+
+    def test_queued_directory_lstat_error_does_not_commit_incomplete_scan(self):
+        for incremental in (False, True):
+            with self.subTest(incremental=incremental), \
+                    tempfile.TemporaryDirectory(prefix="catalog_") as temp:
+                root = Path(temp)
+                library = root / "library"
+                nested = library / "nested"
+                nested.mkdir(parents=True)
+                (nested / "clip.mp4").write_bytes(b"clip")
+                (library / "first.mp4").write_bytes(b"first")
+                catalog = Catalog(root / "cache" / "catalog.sqlite3", library)
+                if incremental:
+                    catalog.refresh(probe=False)
+                before = catalog.db_path.read_bytes() if incremental else None
+                original_lstat = os.lstat
+                denied = []
+
+                def denied_lstat(path, *args, **kwargs):
+                    if Path(path) == nested:
+                        denied.append(path)
+                        raise PermissionError("cannot recheck queued directory")
+                    return original_lstat(path, *args, **kwargs)
+
+                with patch("os.lstat", side_effect=denied_lstat):
+                    with self.assertRaisesRegex(PermissionError,
+                                                "cannot recheck queued directory"):
+                        catalog.refresh(probe=False)
+
+                self.assertTrue(denied, "test must exercise the queued directory recheck")
+                if incremental:
+                    self.assertEqual(catalog.db_path.read_bytes(), before)
+                    self.assertEqual({asset.probe_status for asset in catalog.list_assets()},
+                                     {"skipped"})
+                    with closing(sqlite3.connect(catalog.db_path)) as conn:
+                        self.assertEqual(conn.execute(
+                            "SELECT scan_generation FROM catalog_meta").fetchone(), (1,))
+                else:
+                    self.assertFalse(catalog.db_path.parent.exists())
 
     def test_unreadable_nested_directory_does_not_mark_asset_missing(self):
         with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
@@ -524,8 +673,10 @@ class CatalogTests(unittest.TestCase):
                         return original_stat(upper, *args, **kwargs)
                     return original_stat(path, *args, **kwargs)
 
-                with patch("dub_align_studio.material_catalog.os.walk",
-                           return_value=[(str(library), [], [upper.name, lower.name])]), \
+                entries = [SimpleNamespace(name=path.name, path=str(path),
+                                           is_dir=lambda: False, is_symlink=lambda: False)
+                           for path in (upper, lower)]
+                with patch("os.scandir", return_value=_ScandirResult(entries)), \
                         patch.object(Path, "is_file", is_file_with_collision), \
                         patch.object(Path, "stat", stat_with_collision):
                     with self.assertRaisesRegex(ValueError, "路径.*冲突"):

@@ -6,9 +6,11 @@ import hashlib
 import ntpath
 import os
 import sqlite3
+from collections.abc import Iterator
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
+from stat import S_ISLNK
 
 from .material_select import VIDEO_EXTENSIONS
 
@@ -17,8 +19,24 @@ SCHEMA_VERSION = 2
 _EXCLUDED_FOLDERS = {"待人工复核", "非宇宙内容"}
 
 
-def _raise_walk_error(error: OSError) -> None:
-    raise error
+def _iter_library_files(root: Path) -> Iterator[Path]:
+    """Enumerate without suppressing directory I/O or entry-type errors."""
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        # Parent-file processing may have replaced a queued child with a link.
+        if directory != root and S_ISLNK(os.lstat(directory).st_mode):
+            continue
+        files = []
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if entry.is_dir():
+                    if not entry.is_symlink():
+                        pending.append(Path(entry.path))
+                else:
+                    files.append(Path(entry.path))
+        # Close each directory handle before yielding files or descending.
+        yield from files
 
 
 @dataclass(frozen=True)
@@ -59,34 +77,32 @@ class Catalog:
             raise FileNotFoundError(self.library)
         assets = []
         seen_asset_ids = {}
-        for directory, _, filenames in os.walk(self.library, onerror=_raise_walk_error):
-            for filename in filenames:
-                path = Path(directory) / filename
-                if path.suffix.lower() not in VIDEO_EXTENSIONS:
-                    continue
-                relative_path = path.relative_to(self.library)
-                if (path.name == "成片.mp4" or any(
-                    part in _EXCLUDED_FOLDERS or part.endswith("_segments")
-                    for part in relative_path.parts[:-1]
-                )):
-                    continue
-                if not path.is_file():
-                    continue
-                try:
-                    stat = path.stat()
-                except FileNotFoundError:
-                    continue
-                asset_id = hashlib.sha256(
-                    f"{self.root_id}\0{ntpath.normcase(relative_path.as_posix())}".encode("utf-8")
-                ).hexdigest()
-                previous_path = seen_asset_ids.get(asset_id)
-                if previous_path is not None and previous_path != relative_path.as_posix():
-                    raise ValueError(
-                        f"素材路径归一化后冲突: {previous_path} 与 {relative_path.as_posix()}"
-                    )
-                seen_asset_ids[asset_id] = relative_path.as_posix()
-                assets.append((asset_id, relative_path.as_posix(), stat.st_size, stat.st_mtime_ns,
-                               "pending" if probe else "skipped"))
+        for path in _iter_library_files(self.library):
+            if path.suffix.lower() not in VIDEO_EXTENSIONS:
+                continue
+            relative_path = path.relative_to(self.library)
+            if (path.name == "成片.mp4" or any(
+                part in _EXCLUDED_FOLDERS or part.endswith("_segments")
+                for part in relative_path.parts[:-1]
+            )):
+                continue
+            if not path.is_file():
+                continue
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
+                continue
+            asset_id = hashlib.sha256(
+                f"{self.root_id}\0{ntpath.normcase(relative_path.as_posix())}".encode("utf-8")
+            ).hexdigest()
+            previous_path = seen_asset_ids.get(asset_id)
+            if previous_path is not None and previous_path != relative_path.as_posix():
+                raise ValueError(
+                    f"素材路径归一化后冲突: {previous_path} 与 {relative_path.as_posix()}"
+                )
+            seen_asset_ids[asset_id] = relative_path.as_posix()
+            assets.append((asset_id, relative_path.as_posix(), stat.st_size, stat.st_mtime_ns,
+                           "pending" if probe else "skipped"))
         assets.sort(key=lambda row: row[1])
 
         if self.db_path.resolve().is_relative_to(self.library):
