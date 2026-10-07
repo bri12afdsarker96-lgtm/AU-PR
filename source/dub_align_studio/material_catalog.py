@@ -98,7 +98,12 @@ class Catalog:
         return ScanStats(asset_count=len(assets))
 
     def list_assets(self) -> list[Asset]:
-        with closing(sqlite3.connect(self.db_path)) as conn:
+        db_path = self.db_path.resolve()
+        if db_path.is_relative_to(self.library):
+            raise ValueError("目录数据库不能位于素材库内")
+        if not db_path.exists():
+            raise FileNotFoundError(f"目录数据库不存在: {db_path}")
+        with closing(sqlite3.connect(f"{db_path.as_uri()}?mode=ro", uri=True)) as conn:
             stored_root = conn.execute("SELECT root_path FROM catalog_meta").fetchone()[0]
             if stored_root != self.root_path:
                 raise ValueError("目录数据库对应的素材库不一致")

@@ -12,6 +12,21 @@ from dub_align_studio.material_catalog import Catalog
 
 
 class CatalogTests(unittest.TestCase):
+    def test_list_assets_does_not_create_missing_database(self):
+        with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
+            root = Path(temp)
+            library = root / "library"
+            library.mkdir()
+            cache = root / "cache"
+            cache.mkdir()
+            database = cache / "catalog.sqlite3"
+            catalog = Catalog(database, library)
+
+            with self.assertRaisesRegex(FileNotFoundError, "目录数据库不存在"):
+                catalog.list_assets()
+
+            self.assertFalse(database.exists())
+
     def test_catalog_database_lives_outside_library(self):
         with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
             root = Path(temp)
@@ -154,6 +169,25 @@ class CatalogTests(unittest.TestCase):
 
             self.assertFalse(database.exists())
             self.assertFalse((inside_cache / database.name).exists())
+
+    def test_list_assets_rejects_cache_redirected_into_library_after_construction(self):
+        with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
+            root = Path(temp)
+            library = root / "library"
+            library.mkdir()
+            database = root / "cache" / "catalog.sqlite3"
+            catalog = Catalog(database, library)
+            catalog.refresh(probe=False)
+            original_resolve = Path.resolve
+
+            def resolve_after_redirect(path, *args, **kwargs):
+                if path == catalog.db_path:
+                    return library / "cache" / database.name
+                return original_resolve(path, *args, **kwargs)
+
+            with patch.object(Path, "resolve", resolve_after_redirect):
+                with self.assertRaisesRegex(ValueError, "目录数据库不能位于素材库内"):
+                    catalog.list_assets()
 
     def test_refresh_rejects_redirect_before_creating_missing_cache_directory(self):
         with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
