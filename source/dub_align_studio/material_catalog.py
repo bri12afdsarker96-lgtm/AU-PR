@@ -24,6 +24,11 @@ from .material_select import VIDEO_EXTENSIONS
 
 SCHEMA_VERSION = 3
 _EXCLUDED_FOLDERS = {"待人工复核", "非宇宙内容"}
+_PROBE_COLUMNS = (
+    "asset_id", "relative_path", "size_bytes", "mtime_ns", "probe_status",
+    "duration_seconds", "width", "height", "frame_rate", "video_codec", "audio_codec",
+    "probe_error", "scan_generation",
+)
 
 
 class ProbeUnavailableError(RuntimeError):
@@ -193,13 +198,41 @@ class ScanStats:
     unchanged_count: int
 
 
+@dataclass(frozen=True)
+class ProbeProgress:
+    """Immutable progress for the queue captured after a complete inventory.
+
+    total includes reusable cached assets; processed counts queue entries checked
+    this run, and remaining is total - processed, not the number needing probes.
+    Health counts classify the latest observed records in that queue. pending
+    includes incomplete or invalid health. Missing historical rows are excluded.
+    Terminal reports reread the queue's database records; assets added by another
+    refresh belong to the next run. completed means every entry is classified,
+    including unreadable/missing entries, while incomplete means pending > 0.
+    running and cancelled are the other states. reason explains a non-completion.
+    inventory_complete is false when cancellation prevented inventory altogether.
+    """
+
+    total: int
+    processed: int
+    remaining: int
+    playable: int
+    unreadable: int
+    missing: int
+    pending: int
+    state: str
+    reason: str | None = None
+    inventory_complete: bool = True
+
+
 class Catalog:
     def __init__(self, db_path: Path, library: Path, *,
                  probe_func: Callable[[Path], dict] | None = None):
         """Inject a Path -> FFprobe JSON object callable, or use the bundled tool resolver.
 
-        ProbeUnavailableError aborts and rolls back the scan; ValueError, OSError,
-        and subprocess failures describe individual unreadable media files.
+        ProbeUnavailableError rolls back refresh(), but refresh_resumable() keeps
+        prior commits. ValueError, OSError, and subprocess failures from the probe
+        describe individual unreadable media files.
         """
         self._probe_func = probe_func if probe_func is not None else _ffprobe_payload
         self.library = Path(library).resolve()
@@ -377,6 +410,128 @@ class Catalog:
                     WHERE scan_generation != ?""", (generation,))
         return ScanStats(asset_count=len(assets), new_count=new_count,
                          changed_count=changed_count, unchanged_count=unchanged_count)
+
+    def refresh_resumable(self, *, progress: Callable[[ProbeProgress], None] | None = None,
+                          cancel_requested: Callable[[], bool] | None = None) -> ProbeProgress:
+        """Inventory atomically, then persist health one asset at a time.
+
+        Cancellation is checked between assets, not inside the running probe.
+        The default FFprobe still has its 30-second timeout. Callback and tool
+        exceptions propagate while already committed asset results survive.
+        Callbacks run with no connection or transaction held. Per-asset records
+        and file signatures are checked before probing; changed files remain
+        pending, and a concurrent database update prevents stale writeback.
+        """
+        if cancel_requested is not None and cancel_requested():
+            result = ProbeProgress(0, 0, 0, 0, 0, 0, 0, "cancelled",
+                                   "已取消，尚未盘点素材库", inventory_complete=False)
+            if progress is not None:
+                progress(result)
+            return result
+        self.refresh(probe=False)
+        records = self._probe_records()
+        records = {key: row for key, row in records.items() if row["probe_status"] != "missing"}
+        processed = 0
+        counts = {key: 0 for key in ("playable", "unreadable", "missing", "pending")}
+        for row in records.values():
+            counts[self._probe_health(row)] += 1
+
+        def observe(asset_id: str, row: dict) -> None:
+            counts[self._probe_health(records[asset_id])] -= 1
+            records[asset_id] = row
+            counts[self._probe_health(row)] += 1
+
+        def report(state: str, reason: str | None = None) -> ProbeProgress:
+            if state != "running":
+                current = self._probe_records()
+                for key in records:
+                    observe(key, current.get(key, {"probe_status": "pending"}))
+            if state == "completed" and counts["pending"]:
+                state, reason = "incomplete", "仍有待检素材，请再次刷新"
+            result = ProbeProgress(len(records), processed, len(records) - processed,
+                                   **counts, state=state, reason=reason)
+            if progress is not None:
+                progress(result)
+            return result
+
+        report("running")
+        for asset_id in records:
+            if cancel_requested is not None and cancel_requested():
+                return report("cancelled", "已取消，已保存的探测结果可继续复用")
+            row = self._probe_records(asset_id)[asset_id]
+            previous = row.copy()
+            source = self.library / row["relative_path"]
+            try:
+                current_stat = source.stat()
+            except FileNotFoundError:
+                current_stat = None
+            changed = current_stat is None or (current_stat.st_size, current_stat.st_mtime_ns) != (
+                row["size_bytes"], row["mtime_ns"])
+            if changed or self._probe_health(row) == "pending":
+                try:
+                    if not changed and row["size_bytes"] == 0:
+                        raise ValueError("空文件，无法读取视频")
+                    metadata = _media_metadata(self._probe_func(source)) if not changed else (None,) * 6
+                    status, error = "playable", None
+                except (ValueError, OSError, subprocess.SubprocessError) as exc:
+                    metadata = (None,) * 6
+                    status, error = "unreadable", f"媒体探测失败: {exc}"
+                try:
+                    current_stat = source.stat()
+                except FileNotFoundError:
+                    current_stat = None
+                if current_stat is None:
+                    metadata = (None,) * 6
+                    status, error = "missing", "探测前后文件消失"
+                elif changed or (current_stat.st_size, current_stat.st_mtime_ns) != (
+                    row["size_bytes"], row["mtime_ns"]
+                ):
+                    metadata = (None,) * 6
+                    status, error = "pending", "探测前后文件发生变化，需重新探测"
+                    row.update(size_bytes=current_stat.st_size, mtime_ns=current_stat.st_mtime_ns)
+                with closing(sqlite3.connect(self._database_uri() + "?mode=rw", uri=True)) as conn:
+                    with conn:
+                        conn.execute("BEGIN IMMEDIATE")
+                        self._validate_binding(conn)
+                        compare = " AND ".join(f"{key} IS ?" for key in _PROBE_COLUMNS)
+                        conn.execute(f"""UPDATE assets SET probe_status = ?, probe_error = ?,
+                            duration_seconds = ?, width = ?, height = ?, frame_rate = ?,
+                            video_codec = ?, audio_codec = ?, size_bytes = ?, mtime_ns = ?
+                            WHERE {compare} AND (SELECT scan_generation FROM catalog_meta) = ?""",
+                                     (status, error, *metadata, row["size_bytes"], row["mtime_ns"],
+                                      *(previous[key] for key in _PROBE_COLUMNS),
+                                      previous["catalog_generation"]))
+                row = self._probe_records(asset_id)[asset_id]
+            observe(asset_id, row)
+            processed += 1
+            report("running")
+        if cancel_requested is not None and cancel_requested():
+            return report("cancelled", "已取消，已保存的探测结果可继续复用")
+        return report("completed")
+
+    def _probe_records(self, asset_id: str | None = None) -> dict[str, dict]:
+        with closing(sqlite3.connect(self._database_uri() + "?mode=ro", uri=True)) as conn:
+            self._validate_binding(conn)
+            conn.row_factory = sqlite3.Row
+            columns = ", ".join(f"assets.{key}" for key in _PROBE_COLUMNS)
+            query = f"SELECT {columns}, catalog_meta.scan_generation AS catalog_generation " \
+                    "FROM assets CROSS JOIN catalog_meta"
+            query += " WHERE asset_id = ?" if asset_id is not None else " ORDER BY relative_path"
+            return {row["asset_id"]: dict(row) for row in conn.execute(
+                query, (asset_id,) if asset_id is not None else ())}
+
+    @staticmethod
+    def _probe_health(row: dict) -> str:
+        if row["probe_status"] == "missing":
+            return "missing"
+        if row["probe_status"] == "unreadable" and row["probe_error"]:
+            return "unreadable"
+        if row["probe_status"] == "playable" and _valid_playable_cache(
+            row["duration_seconds"], row["width"], row["height"], row["probe_error"],
+            row["frame_rate"], row["video_codec"], row["audio_codec"], size_bytes=row["size_bytes"]
+        ):
+            return "playable"
+        return "pending"
 
     def import_legacy_metadata(self, path: Path) -> int:
         """Attach first-sheet E/G/H text using exact M-column BJ identifiers.
