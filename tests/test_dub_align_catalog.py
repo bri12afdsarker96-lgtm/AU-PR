@@ -243,11 +243,11 @@ class CatalogTests(unittest.TestCase):
             catalog = Catalog(root / "cache" / "catalog.sqlite3", library)
             catalog.refresh(probe=False)
 
-            def broken_walk(_self, _pattern):
-                yield first
+            def broken_walk(_top, *, onerror):
+                yield (str(library), [], [first.name])
                 raise PermissionError("incomplete scan")
 
-            with patch.object(Path, "rglob", broken_walk):
+            with patch("dub_align_studio.material_catalog.os.walk", broken_walk):
                 with self.assertRaisesRegex(PermissionError, "incomplete scan"):
                     catalog.refresh(probe=False)
 
@@ -259,6 +259,38 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual({asset.relative_path.name: asset.probe_status
                               for asset in catalog.list_assets()},
                              {"first.mp4": "skipped", "second.mp4": "skipped"})
+
+    def test_unreadable_nested_directory_does_not_mark_asset_missing(self):
+        with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
+            root = Path(temp)
+            library = root / "library"
+            nested = library / "nested"
+            nested.mkdir(parents=True)
+            source = nested / "clip.mp4"
+            source.write_bytes(b"clip")
+            catalog = Catalog(root / "cache" / "catalog.sqlite3", library)
+            catalog.refresh(probe=False)
+            original_scandir = os.scandir
+            denied = []
+
+            def unreadable_nested(path):
+                if Path(path) == nested:
+                    denied.append(path)
+                    raise PermissionError("cannot enumerate nested directory")
+                return original_scandir(path)
+
+            with patch("os.scandir", side_effect=unreadable_nested):
+                with self.assertRaisesRegex(PermissionError,
+                                            "cannot enumerate nested directory"):
+                    catalog.refresh(probe=False)
+
+            self.assertTrue(denied, "test must exercise nested directory failure")
+            with closing(sqlite3.connect(catalog.db_path)) as conn:
+                generation = conn.execute(
+                    "SELECT scan_generation FROM catalog_meta"
+                ).fetchone()[0]
+            self.assertEqual(generation, 1)
+            self.assertEqual(catalog.list_assets()[0].probe_status, "skipped")
 
     def test_stat_permission_error_does_not_mark_assets_missing(self):
         with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
@@ -492,7 +524,8 @@ class CatalogTests(unittest.TestCase):
                         return original_stat(upper, *args, **kwargs)
                     return original_stat(path, *args, **kwargs)
 
-                with patch.object(Path, "rglob", return_value=[upper, lower]), \
+                with patch("dub_align_studio.material_catalog.os.walk",
+                           return_value=[(str(library), [], [upper.name, lower.name])]), \
                         patch.object(Path, "is_file", is_file_with_collision), \
                         patch.object(Path, "stat", stat_with_collision):
                     with self.assertRaisesRegex(ValueError, "路径.*冲突"):
