@@ -12,7 +12,8 @@ from pathlib import Path
 from .material_select import VIDEO_EXTENSIONS
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+_EXCLUDED_FOLDERS = {"待人工复核", "非宇宙内容"}
 
 
 @dataclass(frozen=True)
@@ -54,9 +55,16 @@ class Catalog:
         assets = []
         seen_asset_ids = {}
         for path in self.library.rglob("*"):
-            if not path.is_file() or path.suffix.lower() not in VIDEO_EXTENSIONS:
+            if path.suffix.lower() not in VIDEO_EXTENSIONS:
                 continue
             relative_path = path.relative_to(self.library)
+            if (path.name == "成片.mp4" or any(
+                part in _EXCLUDED_FOLDERS or part.endswith("_segments")
+                for part in relative_path.parts[:-1]
+            )):
+                continue
+            if not path.is_file():
+                continue
             try:
                 stat = path.stat()
             except FileNotFoundError:
@@ -81,7 +89,8 @@ class Catalog:
             with conn:
                 conn.execute("""CREATE TABLE IF NOT EXISTS catalog_meta (
                 schema_version INTEGER NOT NULL,
-                root_path TEXT NOT NULL
+                root_path TEXT NOT NULL,
+                scan_generation INTEGER NOT NULL DEFAULT 0
             )""")
                 conn.execute("""CREATE TABLE IF NOT EXISTS assets (
                 asset_id TEXT PRIMARY KEY,
@@ -94,18 +103,38 @@ class Catalog:
                 height INTEGER,
                 frame_rate REAL,
                 video_codec TEXT,
-                audio_codec TEXT
+                audio_codec TEXT,
+                scan_generation INTEGER NOT NULL DEFAULT 0
             )""")
-                stored_root = conn.execute("SELECT root_path FROM catalog_meta").fetchone()
-                if stored_root is not None and stored_root[0] != self.root_path:
+                stored_meta = conn.execute(
+                    "SELECT schema_version, root_path FROM catalog_meta"
+                ).fetchone()
+                if stored_meta is not None and stored_meta[1] != self.root_path:
                     raise ValueError("目录数据库对应的素材库不一致")
+                if stored_meta is not None and stored_meta[0] not in (1, SCHEMA_VERSION):
+                    raise ValueError(f"不支持目录数据库 schema 版本: {stored_meta[0]}")
+                if "scan_generation" not in {
+                    row[1] for row in conn.execute("PRAGMA table_info(catalog_meta)")
+                }:
+                    conn.execute("ALTER TABLE catalog_meta ADD COLUMN scan_generation "
+                                 "INTEGER NOT NULL DEFAULT 0")
+                if "scan_generation" not in {
+                    row[1] for row in conn.execute("PRAGMA table_info(assets)")
+                }:
+                    conn.execute("ALTER TABLE assets ADD COLUMN scan_generation "
+                                 "INTEGER NOT NULL DEFAULT 0")
+                previous_generation = conn.execute(
+                    "SELECT scan_generation FROM catalog_meta"
+                ).fetchone()
+                generation = previous_generation[0] + 1 if previous_generation else 1
                 conn.execute("DELETE FROM catalog_meta")
-                conn.execute("INSERT INTO catalog_meta VALUES (?, ?)",
-                             (SCHEMA_VERSION, self.root_path))
+                conn.execute("INSERT INTO catalog_meta VALUES (?, ?, ?)",
+                             (SCHEMA_VERSION, self.root_path, generation))
                 existing = {
                     row[0]: row[1:]
                     for row in conn.execute(
-                        "SELECT asset_id, relative_path, size_bytes, mtime_ns FROM assets"
+                        """SELECT asset_id, relative_path, size_bytes, mtime_ns,
+                            probe_status FROM assets"""
                     )
                 }
                 new_count = changed_count = unchanged_count = 0
@@ -113,25 +142,29 @@ class Catalog:
                     previous = existing.get(asset_id)
                     if previous is None:
                         conn.execute("""INSERT INTO assets (
-                            asset_id, relative_path, size_bytes, mtime_ns, probe_status
-                        ) VALUES (?, ?, ?, ?, ?)""",
+                            asset_id, relative_path, size_bytes, mtime_ns, probe_status,
+                            scan_generation
+                        ) VALUES (?, ?, ?, ?, ?, ?)""",
                                      (asset_id, relative_path, size_bytes, mtime_ns,
-                                      probe_status))
+                                      probe_status, generation))
                         new_count += 1
-                    elif previous[1:] == (size_bytes, mtime_ns):
-                        if previous[0] != relative_path:
-                            conn.execute("UPDATE assets SET relative_path = ? WHERE asset_id = ?",
-                                         (relative_path, asset_id))
+                    elif previous[1:3] == (size_bytes, mtime_ns) and previous[3] != "missing":
+                        conn.execute("""UPDATE assets SET relative_path = ?,
+                            scan_generation = ? WHERE asset_id = ?""",
+                                     (relative_path, generation, asset_id))
                         unchanged_count += 1
                     else:
                         conn.execute("""UPDATE assets SET relative_path = ?,
                             size_bytes = ?, mtime_ns = ?, probe_status = ?,
+                            scan_generation = ?,
                             duration_seconds = NULL, width = NULL, height = NULL,
                             frame_rate = NULL, video_codec = NULL, audio_codec = NULL
                             WHERE asset_id = ?""",
                                      (relative_path, size_bytes, mtime_ns, probe_status,
-                                      asset_id))
+                                      generation, asset_id))
                         changed_count += 1
+                conn.execute("""UPDATE assets SET probe_status = 'missing'
+                    WHERE scan_generation != ?""", (generation,))
         return ScanStats(asset_count=len(assets), new_count=new_count,
                          changed_count=changed_count, unchanged_count=unchanged_count)
 
@@ -154,3 +187,8 @@ class Catalog:
                 video_codec, audio_codec FROM assets ORDER BY relative_path""").fetchall()
         return [Asset(row[0], self.library / Path(row[1]), Path(row[1]), *row[2:])
                 for row in rows]
+
+    def eligible_assets(self) -> list[Asset]:
+        """Return scanned assets that have not been marked missing."""
+        return [asset for asset in self.list_assets()
+                if asset.probe_status != "missing"]

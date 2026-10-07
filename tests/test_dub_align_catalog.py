@@ -1,6 +1,7 @@
 """Catalog indexes media without changing the source library."""
 
 import errno
+import hashlib
 import ntpath
 import os
 import sqlite3
@@ -133,6 +134,271 @@ class CatalogTests(unittest.TestCase):
             asset = catalog.list_assets()[0]
             self.assertEqual(asset.probe_status, "ready")
             self.assertEqual(asset.duration_seconds, 12.5)
+
+    def test_successful_refresh_advances_scan_generation_for_seen_assets(self):
+        with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
+            root = Path(temp)
+            library = root / "library"
+            library.mkdir()
+            (library / "clip.mp4").write_bytes(b"clip")
+            catalog = Catalog(root / "cache" / "catalog.sqlite3", library)
+
+            catalog.refresh(probe=False)
+            with closing(sqlite3.connect(catalog.db_path)) as conn:
+                first_meta = conn.execute(
+                    "SELECT scan_generation FROM catalog_meta"
+                ).fetchone()[0]
+                first_asset = conn.execute(
+                    "SELECT scan_generation FROM assets"
+                ).fetchone()[0]
+
+            catalog.refresh(probe=False)
+            with closing(sqlite3.connect(catalog.db_path)) as conn:
+                second_meta = conn.execute(
+                    "SELECT scan_generation FROM catalog_meta"
+                ).fetchone()[0]
+                second_asset = conn.execute(
+                    "SELECT scan_generation FROM assets"
+                ).fetchone()[0]
+
+            self.assertEqual((first_meta, first_asset), (1, 1))
+            self.assertEqual((second_meta, second_asset), (2, 2))
+
+    def test_renamed_asset_is_marked_missing_and_new_path_is_new_asset(self):
+        with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
+            root = Path(temp)
+            library = root / "library"
+            library.mkdir()
+            original = library / "old.mp4"
+            original.write_bytes(b"clip")
+            catalog = Catalog(root / "cache" / "catalog.sqlite3", library)
+            catalog.refresh(probe=False)
+            old_id = catalog.list_assets()[0].asset_id
+
+            original.rename(library / "new.mp4")
+            stats = catalog.refresh(probe=False)
+
+            self.assertEqual((stats.asset_count, stats.new_count, stats.changed_count),
+                             (1, 1, 0))
+            rows = {asset.relative_path.name: asset for asset in catalog.list_assets()}
+            self.assertEqual(rows["old.mp4"].asset_id, old_id)
+            self.assertEqual(rows["old.mp4"].probe_status, "missing")
+            self.assertNotEqual(rows["new.mp4"].asset_id, old_id)
+            self.assertEqual(rows["new.mp4"].probe_status, "skipped")
+            with closing(sqlite3.connect(catalog.db_path)) as conn:
+                generations = dict(conn.execute(
+                    "SELECT relative_path, scan_generation FROM assets"
+                ))
+            self.assertEqual(generations, {"old.mp4": 1, "new.mp4": 2})
+
+    def test_eligible_assets_excludes_missing_paths(self):
+        with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
+            root = Path(temp)
+            library = root / "library"
+            library.mkdir()
+            source = library / "old.mp4"
+            source.write_bytes(b"clip")
+            catalog = Catalog(root / "cache" / "catalog.sqlite3", library)
+            catalog.refresh(probe=False)
+            source.rename(library / "new.mp4")
+            catalog.refresh(probe=False)
+
+            self.assertEqual([asset.relative_path.name for asset in catalog.eligible_assets()],
+                             ["new.mp4"])
+            self.assertEqual({asset.relative_path.name for asset in catalog.list_assets()},
+                             {"old.mp4", "new.mp4"})
+
+    def test_refresh_uses_storyboard_video_exclusions(self):
+        with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
+            root = Path(temp)
+            library = root / "library"
+            library.mkdir()
+            for relative in (
+                "valid.MP4", "notes.txt", "成片.mp4",
+                "待人工复核/review.mp4", "非宇宙内容/other.mp4",
+                "成片_segments/segment.mp4", "nested/custom_segments/segment.mp4",
+                "nested/valid.mov",
+            ):
+                path = library / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"clip")
+            catalog = Catalog(root / "cache" / "catalog.sqlite3", library)
+
+            stats = catalog.refresh(probe=False)
+
+            self.assertEqual(stats.asset_count, 2)
+            self.assertEqual([asset.relative_path.as_posix()
+                              for asset in catalog.eligible_assets()],
+                             ["nested/valid.mov", "valid.MP4"])
+
+    def test_failed_scan_does_not_mark_unseen_assets_missing(self):
+        with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
+            root = Path(temp)
+            library = root / "library"
+            library.mkdir()
+            first = library / "first.mp4"
+            second = library / "second.mp4"
+            first.write_bytes(b"first")
+            second.write_bytes(b"second")
+            catalog = Catalog(root / "cache" / "catalog.sqlite3", library)
+            catalog.refresh(probe=False)
+
+            def broken_walk(_self, _pattern):
+                yield first
+                raise PermissionError("incomplete scan")
+
+            with patch.object(Path, "rglob", broken_walk):
+                with self.assertRaisesRegex(PermissionError, "incomplete scan"):
+                    catalog.refresh(probe=False)
+
+            with closing(sqlite3.connect(catalog.db_path)) as conn:
+                generation = conn.execute(
+                    "SELECT scan_generation FROM catalog_meta"
+                ).fetchone()[0]
+            self.assertEqual(generation, 1)
+            self.assertEqual({asset.relative_path.name: asset.probe_status
+                              for asset in catalog.list_assets()},
+                             {"first.mp4": "skipped", "second.mp4": "skipped"})
+
+    def test_stat_permission_error_does_not_mark_assets_missing(self):
+        with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
+            root = Path(temp)
+            library = root / "library"
+            library.mkdir()
+            source = library / "clip.mp4"
+            source.write_bytes(b"clip")
+            catalog = Catalog(root / "cache" / "catalog.sqlite3", library)
+            catalog.refresh(probe=False)
+            original_stat = Path.stat
+
+            def denied_stat(path, *args, **kwargs):
+                if path == source:
+                    raise PermissionError("cannot inspect media")
+                return original_stat(path, *args, **kwargs)
+
+            with patch.object(Path, "stat", denied_stat):
+                with self.assertRaisesRegex(PermissionError, "cannot inspect media"):
+                    catalog.refresh(probe=False)
+
+            self.assertEqual(catalog.list_assets()[0].probe_status, "skipped")
+
+    def test_refresh_upgrades_v1_database_without_losing_probe_cache(self):
+        with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
+            root = Path(temp)
+            library = root / "library"
+            library.mkdir()
+            source = library / "clip.mp4"
+            source.write_bytes(b"clip")
+            database = root / "cache" / "catalog.sqlite3"
+            database.parent.mkdir()
+            catalog = Catalog(database, library)
+            asset_id = hashlib.sha256(
+                f"{catalog.root_id}\0clip.mp4".encode("utf-8")
+            ).hexdigest()
+            with closing(sqlite3.connect(database)) as conn:
+                with conn:
+                    conn.execute("""CREATE TABLE catalog_meta (
+                        schema_version INTEGER NOT NULL, root_path TEXT NOT NULL)""")
+                    conn.execute("INSERT INTO catalog_meta VALUES (1, ?)",
+                                 (catalog.root_path,))
+                    conn.execute("""CREATE TABLE assets (
+                        asset_id TEXT PRIMARY KEY, relative_path TEXT NOT NULL UNIQUE,
+                        size_bytes INTEGER NOT NULL, mtime_ns INTEGER NOT NULL,
+                        probe_status TEXT NOT NULL, duration_seconds REAL,
+                        width INTEGER, height INTEGER, frame_rate REAL,
+                        video_codec TEXT, audio_codec TEXT)""")
+                    conn.execute("""INSERT INTO assets VALUES
+                        (?, 'clip.mp4', ?, ?, 'ready', 12.5, 1920, 1080, 30.0,
+                         'h264', 'aac')""",
+                                 (asset_id, source.stat().st_size, source.stat().st_mtime_ns))
+
+            stats = catalog.refresh()
+
+            self.assertEqual((stats.new_count, stats.changed_count,
+                              stats.unchanged_count), (0, 0, 1))
+            asset = catalog.list_assets()[0]
+            self.assertEqual((asset.probe_status, asset.duration_seconds,
+                              asset.video_codec), ("ready", 12.5, "h264"))
+            with closing(sqlite3.connect(database)) as conn:
+                self.assertEqual(conn.execute(
+                    "SELECT schema_version, scan_generation FROM catalog_meta"
+                ).fetchone(), (2, 1))
+                self.assertEqual(conn.execute(
+                    "SELECT scan_generation FROM assets"
+                ).fetchone(), (1,))
+
+    def test_refresh_rejects_unknown_schema_without_rewriting_database(self):
+        with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
+            root = Path(temp)
+            library = root / "library"
+            library.mkdir()
+            (library / "clip.mp4").write_bytes(b"clip")
+            catalog = Catalog(root / "cache" / "catalog.sqlite3", library)
+            catalog.refresh(probe=False)
+            with closing(sqlite3.connect(catalog.db_path)) as conn:
+                with conn:
+                    conn.execute("UPDATE catalog_meta SET schema_version = 99")
+            before = catalog.db_path.read_bytes()
+
+            with self.assertRaisesRegex(ValueError, "schema.*99"):
+                catalog.refresh(probe=False)
+
+            self.assertEqual(catalog.db_path.read_bytes(), before)
+
+    def test_removed_asset_is_marked_missing_while_unchanged_media_is_preserved(self):
+        with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
+            root = Path(temp)
+            library = root / "library"
+            library.mkdir()
+            removed = library / "removed.mp4"
+            removed.write_bytes(b"old")
+            (library / "kept.mp4").write_bytes(b"keep")
+            catalog = Catalog(root / "cache" / "catalog.sqlite3", library)
+            catalog.refresh()
+            with closing(sqlite3.connect(catalog.db_path)) as conn:
+                with conn:
+                    conn.execute("""UPDATE assets SET probe_status = 'ready',
+                        duration_seconds = 12.5""")
+
+            removed.unlink()
+            stats = catalog.refresh()
+
+            self.assertEqual((stats.asset_count, stats.new_count, stats.changed_count,
+                              stats.unchanged_count), (1, 0, 0, 1))
+            rows = {asset.relative_path.name: asset for asset in catalog.list_assets()}
+            self.assertEqual(rows["removed.mp4"].probe_status, "missing")
+            self.assertEqual(rows["kept.mp4"].probe_status, "ready")
+            self.assertEqual(rows["kept.mp4"].duration_seconds, 12.5)
+
+    def test_returned_missing_asset_is_reactivated_and_reprobed(self):
+        with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
+            root = Path(temp)
+            library = root / "library"
+            library.mkdir()
+            source = library / "clip.mp4"
+            source.write_bytes(b"clip")
+            catalog = Catalog(root / "cache" / "catalog.sqlite3", library)
+            catalog.refresh()
+            original_id = catalog.list_assets()[0].asset_id
+            with closing(sqlite3.connect(catalog.db_path)) as conn:
+                with conn:
+                    conn.execute("""UPDATE assets SET probe_status = 'ready',
+                        duration_seconds = 12.5""")
+            original_bytes = source.read_bytes()
+            original_mtime = source.stat().st_mtime_ns
+
+            source.unlink()
+            catalog.refresh()
+            source.write_bytes(original_bytes)
+            os.utime(source, ns=(original_mtime, original_mtime))
+            stats = catalog.refresh()
+
+            self.assertEqual((stats.new_count, stats.changed_count,
+                              stats.unchanged_count), (0, 1, 0))
+            asset = catalog.list_assets()[0]
+            self.assertEqual(asset.asset_id, original_id)
+            self.assertEqual(asset.probe_status, "pending")
+            self.assertIsNone(asset.duration_seconds)
 
     def test_refresh_marks_changed_asset_for_reprobe(self):
         with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
@@ -494,11 +760,11 @@ class CatalogTests(unittest.TestCase):
                     probe_status, duration_seconds, width, height, frame_rate,
                     video_codec, audio_codec FROM assets""").fetchone()
 
-            self.assertEqual(meta, (1, ntpath.normcase(str(library.resolve()))))
+            self.assertEqual(meta, (2, ntpath.normcase(str(library.resolve()))))
             self.assertGreaterEqual(columns, {"asset_id", "relative_path", "size_bytes",
                                               "mtime_ns", "probe_status", "duration_seconds",
                                               "width", "height", "frame_rate", "video_codec",
-                                              "audio_codec"})
+                                              "audio_codec", "scan_generation"})
             self.assertEqual(row[:4], ("BJ1_地球.mp4", source.stat().st_size,
                                        source.stat().st_mtime_ns, "skipped"))
             self.assertEqual(row[4:], (None, None, None, None, None, None))
