@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-import os
+import ntpath
 import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
@@ -42,7 +42,7 @@ class Catalog:
         self.db_path = Path(db_path).resolve()
         if self.db_path.is_relative_to(self.library):
             raise ValueError("目录数据库不能位于素材库内")
-        self.root_path = os.path.normcase(str(self.library)).casefold()
+        self.root_path = ntpath.normcase(str(self.library))
         self.root_id = hashlib.sha256(self.root_path.encode("utf-8")).hexdigest()
 
     def refresh(self, probe: bool = True) -> ScanStats:
@@ -55,7 +55,7 @@ class Catalog:
             relative_path = path.relative_to(self.library)
             stat = path.stat()
             asset_id = hashlib.sha256(
-                f"{self.root_id}\0{relative_path.as_posix().casefold()}".encode("utf-8")
+                f"{self.root_id}\0{ntpath.normcase(relative_path.as_posix())}".encode("utf-8")
             ).hexdigest()
             assets.append((asset_id, relative_path.as_posix(), stat.st_size, stat.st_mtime_ns,
                            "pending" if probe else "skipped"))
