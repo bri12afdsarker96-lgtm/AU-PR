@@ -179,9 +179,13 @@ class Catalog:
             # SQLite accepts UNC hosts in the path, not as URI authorities.
             db_uri = "file:////" + db_uri[len("file://"):]
         with closing(sqlite3.connect(f"{db_uri}?mode=ro", uri=True)) as conn:
-            stored_root = conn.execute("SELECT root_path FROM catalog_meta").fetchone()[0]
+            schema_version, stored_root = conn.execute(
+                "SELECT schema_version, root_path FROM catalog_meta"
+            ).fetchone()
             if stored_root != self.root_path:
                 raise ValueError("目录数据库对应的素材库不一致")
+            if schema_version not in (1, SCHEMA_VERSION):
+                raise ValueError(f"不支持目录数据库 schema 版本: {schema_version}")
             rows = conn.execute("""SELECT asset_id, relative_path, size_bytes, mtime_ns,
                 probe_status, duration_seconds, width, height, frame_rate,
                 video_codec, audio_codec FROM assets ORDER BY relative_path""").fetchall()

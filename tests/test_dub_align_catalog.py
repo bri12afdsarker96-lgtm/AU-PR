@@ -312,6 +312,7 @@ class CatalogTests(unittest.TestCase):
                          'h264', 'aac')""",
                                  (asset_id, source.stat().st_size, source.stat().st_mtime_ns))
 
+            self.assertEqual(catalog.list_assets()[0].duration_seconds, 12.5)
             stats = catalog.refresh()
 
             self.assertEqual((stats.new_count, stats.changed_count,
@@ -342,6 +343,24 @@ class CatalogTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "schema.*99"):
                 catalog.refresh(probe=False)
+
+            self.assertEqual(catalog.db_path.read_bytes(), before)
+
+    def test_list_assets_rejects_unknown_schema_without_rewriting_database(self):
+        with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
+            root = Path(temp)
+            library = root / "library"
+            library.mkdir()
+            (library / "clip.mp4").write_bytes(b"clip")
+            catalog = Catalog(root / "cache" / "catalog.sqlite3", library)
+            catalog.refresh(probe=False)
+            with closing(sqlite3.connect(catalog.db_path)) as conn:
+                with conn:
+                    conn.execute("UPDATE catalog_meta SET schema_version = 99")
+            before = catalog.db_path.read_bytes()
+
+            with self.assertRaisesRegex(ValueError, "schema.*99"):
+                catalog.list_assets()
 
             self.assertEqual(catalog.db_path.read_bytes(), before)
 
