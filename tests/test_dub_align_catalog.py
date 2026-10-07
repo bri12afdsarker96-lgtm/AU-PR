@@ -3,6 +3,7 @@
 import ntpath
 import os
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from contextlib import closing
@@ -232,6 +233,47 @@ class CatalogTests(unittest.TestCase):
             with patch.object(Path, "resolve", resolve_after_redirect):
                 with self.assertRaisesRegex(ValueError, "目录数据库不能位于素材库内"):
                     catalog.list_assets()
+
+    def test_list_assets_rejects_redirected_cache(self):
+        with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
+            root = Path(temp)
+            library = root / "library"
+            library.mkdir()
+            (library / "clip.mp4").write_bytes(b"original media bytes")
+            cache = root / "cache"
+            database = cache / "catalog.sqlite3"
+            catalog = Catalog(database, library)
+            catalog.refresh(probe=False)
+
+            inside_cache = library / "cache"
+            inside_cache.mkdir()
+            cache.rename(root / "former_cache")
+            if os.name == "nt":
+                result = subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", str(cache), str(inside_cache)],
+                    capture_output=True, text=True,
+                )
+                if result.returncode:
+                    self.skipTest(f"cannot create directory junction: {result.stderr}")
+            else:
+                try:
+                    os.symlink(inside_cache, cache, target_is_directory=True)
+                except OSError as exc:
+                    self.skipTest(f"cannot create directory symlink: {exc}")
+            self.assertEqual(database.resolve(), inside_cache / database.name)
+
+            def library_snapshot():
+                return {
+                    path.relative_to(library).as_posix():
+                        ("directory", None) if path.is_dir() else ("file", path.read_bytes())
+                    for path in library.rglob("*")
+                }
+
+            before = library_snapshot()
+            with self.assertRaisesRegex(ValueError, "目录数据库不能位于素材库内"):
+                catalog.list_assets()
+            self.assertEqual(library_snapshot(), before)
+            self.assertFalse((inside_cache / database.name).exists())
 
     def test_refresh_rejects_redirect_before_creating_missing_cache_directory(self):
         with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
