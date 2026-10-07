@@ -34,6 +34,9 @@ class Asset:
 @dataclass(frozen=True)
 class ScanStats:
     asset_count: int
+    new_count: int
+    changed_count: int
+    unchanged_count: int
 
 
 class Catalog:
@@ -91,11 +94,38 @@ class Catalog:
                 conn.execute("DELETE FROM catalog_meta")
                 conn.execute("INSERT INTO catalog_meta VALUES (?, ?)",
                              (SCHEMA_VERSION, self.root_path))
-                conn.execute("DELETE FROM assets")
-                conn.executemany("""INSERT INTO assets (
-                asset_id, relative_path, size_bytes, mtime_ns, probe_status
-            ) VALUES (?, ?, ?, ?, ?)""", assets)
-        return ScanStats(asset_count=len(assets))
+                existing = {
+                    row[0]: row[1:]
+                    for row in conn.execute(
+                        "SELECT asset_id, relative_path, size_bytes, mtime_ns FROM assets"
+                    )
+                }
+                new_count = changed_count = unchanged_count = 0
+                for asset_id, relative_path, size_bytes, mtime_ns, probe_status in assets:
+                    previous = existing.get(asset_id)
+                    if previous is None:
+                        conn.execute("""INSERT INTO assets (
+                            asset_id, relative_path, size_bytes, mtime_ns, probe_status
+                        ) VALUES (?, ?, ?, ?, ?)""",
+                                     (asset_id, relative_path, size_bytes, mtime_ns,
+                                      probe_status))
+                        new_count += 1
+                    elif previous[1:] == (size_bytes, mtime_ns):
+                        if previous[0] != relative_path:
+                            conn.execute("UPDATE assets SET relative_path = ? WHERE asset_id = ?",
+                                         (relative_path, asset_id))
+                        unchanged_count += 1
+                    else:
+                        conn.execute("""UPDATE assets SET relative_path = ?,
+                            size_bytes = ?, mtime_ns = ?, probe_status = ?,
+                            duration_seconds = NULL, width = NULL, height = NULL,
+                            frame_rate = NULL, video_codec = NULL, audio_codec = NULL
+                            WHERE asset_id = ?""",
+                                     (relative_path, size_bytes, mtime_ns, probe_status,
+                                      asset_id))
+                        changed_count += 1
+        return ScanStats(asset_count=len(assets), new_count=new_count,
+                         changed_count=changed_count, unchanged_count=unchanged_count)
 
     def list_assets(self) -> list[Asset]:
         db_path = self.db_path.resolve()

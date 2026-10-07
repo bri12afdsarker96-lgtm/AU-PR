@@ -110,6 +110,58 @@ class CatalogTests(unittest.TestCase):
 
             self.assertEqual(catalog.list_assets()[0].probe_status, "skipped")
 
+    def test_refresh_preserves_unchanged_asset_and_cached_media(self):
+        with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
+            root = Path(temp)
+            library = root / "library"
+            library.mkdir()
+            (library / "clip.mp4").write_bytes(b"clip")
+            catalog = Catalog(root / "cache" / "catalog.sqlite3", library)
+
+            first = catalog.refresh()
+            self.assertEqual((first.new_count, first.changed_count, first.unchanged_count),
+                             (1, 0, 0))
+            with closing(sqlite3.connect(catalog.db_path)) as conn:
+                with conn:
+                    conn.execute("""UPDATE assets SET probe_status = 'ready',
+                        duration_seconds = 12.5 WHERE relative_path = 'clip.mp4'""")
+
+            second = catalog.refresh()
+
+            self.assertEqual((second.new_count, second.changed_count,
+                              second.unchanged_count), (0, 0, 1))
+            asset = catalog.list_assets()[0]
+            self.assertEqual(asset.probe_status, "ready")
+            self.assertEqual(asset.duration_seconds, 12.5)
+
+    def test_refresh_marks_changed_asset_for_reprobe(self):
+        with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
+            root = Path(temp)
+            library = root / "library"
+            library.mkdir()
+            source = library / "clip.mp4"
+            source.write_bytes(b"clip")
+            catalog = Catalog(root / "cache" / "catalog.sqlite3", library)
+            catalog.refresh()
+            with closing(sqlite3.connect(catalog.db_path)) as conn:
+                with conn:
+                    conn.execute("""UPDATE assets SET probe_status = 'ready',
+                        duration_seconds = 12.5 WHERE relative_path = 'clip.mp4'""")
+
+            old_mtime_ns = source.stat().st_mtime_ns
+            source.write_bytes(b"updated clip")
+            os.utime(source, ns=(old_mtime_ns + 2_000_000_000,
+                                 old_mtime_ns + 2_000_000_000))
+            stats = catalog.refresh()
+
+            self.assertEqual((stats.new_count, stats.changed_count,
+                              stats.unchanged_count), (0, 1, 0))
+            asset = catalog.list_assets()[0]
+            self.assertEqual(asset.size_bytes, len(b"updated clip"))
+            self.assertEqual(asset.mtime_ns, source.stat().st_mtime_ns)
+            self.assertEqual(asset.probe_status, "pending")
+            self.assertIsNone(asset.duration_seconds)
+
     def test_asset_id_survives_relative_path_case_change(self):
         with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
             root = Path(temp)
