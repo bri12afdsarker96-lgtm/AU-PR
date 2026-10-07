@@ -235,8 +235,17 @@ class CatalogTests(unittest.TestCase):
                     catalog.list_assets()
 
     def test_list_assets_rejects_redirected_cache(self):
+        self._assert_list_assets_rejects_redirected_cache()
+
+    def test_list_assets_rejects_redirected_cache_with_ampersand_path(self):
+        self._assert_list_assets_rejects_redirected_cache("amp&redirect")
+
+    def _assert_list_assets_rejects_redirected_cache(self, subdirectory=None):
         with tempfile.TemporaryDirectory(prefix="catalog_") as temp:
             root = Path(temp)
+            if subdirectory is not None:
+                root /= subdirectory
+                root.mkdir()
             library = root / "library"
             library.mkdir()
             (library / "clip.mp4").write_bytes(b"original media bytes")
@@ -250,11 +259,28 @@ class CatalogTests(unittest.TestCase):
             cache.rename(root / "former_cache")
             if os.name == "nt":
                 result = subprocess.run(
-                    ["cmd", "/c", "mklink", "/J", str(cache), str(inside_cache)],
+                    [
+                        "powershell", "-NoProfile", "-NonInteractive", "-Command",
+                        "try { New-Item -ItemType Junction "
+                        "-Path $env:CATALOG_JUNCTION_LINK "
+                        "-Target $env:CATALOG_JUNCTION_TARGET "
+                        "-ErrorAction Stop | Out-Null } "
+                        "catch { "
+                        "if ($_.CategoryInfo.Category -eq 'PermissionDenied' -or "
+                        "$_.Exception -is [System.UnauthorizedAccessException] -or "
+                        "$_.Exception -is [System.PlatformNotSupportedException]) { exit 77 }; "
+                        "[Console]::Error.WriteLine($_.Exception.ToString()); exit 1 }",
+                    ],
                     capture_output=True, text=True,
+                    env={
+                        **os.environ,
+                        "CATALOG_JUNCTION_LINK": str(cache),
+                        "CATALOG_JUNCTION_TARGET": str(inside_cache),
+                    },
                 )
-                if result.returncode:
+                if result.returncode == 77:
                     self.skipTest(f"cannot create directory junction: {result.stderr}")
+                self.assertEqual(result.returncode, 0, result.stderr)
             else:
                 try:
                     os.symlink(inside_cache, cache, target_is_directory=True)
